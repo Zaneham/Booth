@@ -795,6 +795,17 @@ typedef struct {
 } elf64_shdr_t;   /* 64 bytes */
 
 typedef struct {
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
+} elf64_phdr_t;   /* 56 bytes */
+
+typedef struct {
     uint32_t st_name;
     uint8_t  st_info;
     uint8_t  st_other;
@@ -1344,10 +1355,11 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
     ehdr.e_ident[5] = 1;    /* ELFDATA2LSB */
     ehdr.e_ident[6] = 1;    /* EV_CURRENT */
     ehdr.e_ident[7] = ELFOSABI_AMDGPU_HSA;
-    ehdr.e_ident[8] = 4;    /* ABI version 4 — code object v6 */
+    ehdr.e_ident[8] = 1;    /* ELFABIVERSION_AMDGPU_HSA_V3 */
     ehdr.e_type = 3;         /* ET_DYN */
     ehdr.e_machine = EM_AMDGPU;
     ehdr.e_version = 1;
+    ehdr.e_entry = 0;
     ehdr.e_phoff = phdr_off;
     ehdr.e_shoff = shdr_off;
     ehdr.e_flags = A->elf_mach;
