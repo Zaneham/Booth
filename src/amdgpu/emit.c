@@ -926,17 +926,21 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
                                     (1u << 27);    /* MEM_ORDERED (RDNA only) */
         }
 
-        /* compute_pgm_rsrc2 — [0] SCRATCH_EN, [5:1] USER_SGPR_COUNT,
-           [7] TGID_X, [8] TGID_Y, [9] TGID_Z, [12:11] VGPR_WORKITEM_ID.
-           Layout matches what isel's scan_kernel_needs() decided. */
+        /* compute_pgm_rsrc2.
+         * CDNA/GFX9 uses TGID bits at 11/12/13. RDNA keeps 7/8/9 and
+         * VGPR_WORKITEM_ID at 12:11. */
         {
-            uint32_t user_sgpr = 2u; /* s[0:1] = kernarg only */
+            uint32_t tgid_x = cdna ? 11u : 7u;
+            uint32_t tgid_y = cdna ? 12u : 8u;
+            uint32_t tgid_z = cdna ? 13u : 9u;
+            uint32_t user_sgpr = 4u; /* dispatch_ptr + kernarg_ptr */
             uint32_t rsrc2 = ((F->scratch_bytes > 0) ? 1u : 0u) |
                              (user_sgpr << 1) |
-                             (1u << 7);       /* TGID_X always enabled */
-            if (F->max_dim >= 1) rsrc2 |= (1u << 8);  /* TGID_Y */
-            if (F->max_dim >= 2) rsrc2 |= (1u << 9);  /* TGID_Z */
-            rsrc2 |= ((uint32_t)F->max_dim << 11);    /* VGPR_WORKITEM_ID */
+                             (1u << tgid_x);
+            if (F->max_dim >= 1) rsrc2 |= (1u << tgid_y);
+            if (F->max_dim >= 2) rsrc2 |= (1u << tgid_z);
+            if (!cdna)
+                rsrc2 |= ((uint32_t)F->max_dim << 11);
             kd.compute_pgm_rsrc2 = rsrc2;
         }
 
@@ -950,9 +954,12 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
             kd.compute_pgm_rsrc3 = accum_off & 0x3F;
         }
 
-        /* kernel_code_properties — only KERNARG_PTR.
-         * No dispatch_ptr; blockDim/gridDim come from hidden kernarg. */
-        kd.kernel_code_properties = (1u << 3);   /* ENABLE_SGPR_KERNARG_PTR */
+        /* kernel_code_properties (amd_hsa_kernel_code.h) */
+        kd.kernel_code_properties = (1u << 1) |  /* ENABLE_SGPR_DISPATCH_PTR */
+                                    (1u << 3) |  /* ENABLE_SGPR_KERNARG_PTR */
+                                    (1u << 19);  /* IS_PTR64 */
+        if (!cdna)
+            kd.kernel_code_properties |= (1u << 10); /* WAVEFRONT_SIZE32 */
 
         if (rodata_len + 64 <= sizeof(rodata)) {
             memcpy(rodata + rodata_len, &kd, 64);
