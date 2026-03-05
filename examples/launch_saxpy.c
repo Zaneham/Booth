@@ -34,7 +34,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* kernarg layout: {float *y, float *x, float a, int n} = 24 bytes */
+    /* kernarg layout follows AMDHSA alignment; keep n at byte offset 24. */
     bc_kernel_t kern;
     rc = bc_load_kernel(&dev, hsaco, "saxpy", &kern);
     if (rc != BC_RT_OK) {
@@ -72,13 +72,17 @@ int main(int argc, char *argv[])
         void    *y;
         void    *x;
         float    a;
+        uint32_t _pad0;
         uint32_t n;
+        uint32_t _pad1;
     } args;
 
     args.y = d_y;
     args.x = d_x;
     args.a = A_VAL;
+    args._pad0 = 0;
     args.n = N;
+    args._pad1 = 0;
 
     uint32_t num_blocks = (N + BLOCK - 1) / BLOCK;
     printf("  dispatch: %u blocks x %d threads\n", num_blocks, BLOCK);
