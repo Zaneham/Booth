@@ -75,6 +75,12 @@ int main(int argc, char *argv[])
         uint32_t _pad0;
         uint32_t n;
         uint32_t _pad1;
+        uint32_t hidden_block_count_x;
+        uint32_t hidden_block_count_y;
+        uint32_t hidden_block_count_z;
+        uint16_t hidden_group_size_x;
+        uint16_t hidden_group_size_y;
+        uint16_t hidden_group_size_z;
     } args;
 
     args.y = d_y;
@@ -83,8 +89,14 @@ int main(int argc, char *argv[])
     args._pad0 = 0;
     args.n = N;
     args._pad1 = 0;
-
     uint32_t num_blocks = (N + BLOCK - 1) / BLOCK;
+    args.hidden_block_count_x = num_blocks;
+    args.hidden_block_count_y = 1;
+    args.hidden_block_count_z = 1;
+    args.hidden_group_size_x = BLOCK;
+    args.hidden_group_size_y = 1;
+    args.hidden_group_size_z = 1;
+
     printf("  dispatch: %u blocks x %d threads\n", num_blocks, BLOCK);
 
     rc = bc_dispatch(&dev, &kern, num_blocks, 1, 1, BLOCK, 1, 1,

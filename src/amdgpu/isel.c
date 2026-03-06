@@ -1839,13 +1839,20 @@ static void scan_kernel_needs(const bir_func_t *F)
     }
     if (S.max_dim > 2) S.max_dim = 2; /* clamp */
 
-    /* SGPR layout — always: s[0:1]=kernarg, s2+=TGID.
-     * No dispatch_ptr; blockDim/gridDim read from hidden kernarg
-     * (same approach as hipcc — dispatch_ptr + multi-arg is cursed). */
-    S.sgpr_dispatch = 0xFFFF;
-    S.sgpr_kernarg  = 0;     /* s[0:1] = kernarg ptr */
-    S.sgpr_wg_base  = 2;     /* s2+ = workgroup IDs */
-    S.kern_reserved = 2 + 1 + S.max_dim; /* after last TGID */
+    /* SGPR layout depends on dispatch usage.
+     * With dispatch_ptr: s[0:1]=dispatch, s[2:3]=kernarg, s4+=TGID.
+     * Without dispatch_ptr: s[0:1]=kernarg, s2+=TGID. */
+    if (S.needs_dispatch) {
+        S.sgpr_dispatch = 0;
+        S.sgpr_kernarg = 2;
+        S.sgpr_wg_base = 4;
+        S.kern_reserved = 4 + 1 + S.max_dim;
+    } else {
+        S.sgpr_dispatch = 0xFFFF;
+        S.sgpr_kernarg = 0;
+        S.sgpr_wg_base = 2;
+        S.kern_reserved = 2 + 1 + S.max_dim;
+    }
     /* Align reserved to even for SGPR pair loads */
     if (S.kern_reserved & 1) S.kern_reserved++;
 }
