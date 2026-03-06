@@ -821,17 +821,6 @@ typedef struct {
 } elf64_nhdr_t;   /* 12 bytes */
 
 typedef struct {
-    uint32_t p_type;
-    uint32_t p_flags;
-    uint64_t p_offset;
-    uint64_t p_vaddr;
-    uint64_t p_paddr;
-    uint64_t p_filesz;
-    uint64_t p_memsz;
-    uint64_t p_align;
-} elf64_phdr_t;   /* 56 bytes */
-
-typedef struct {
     int64_t  d_tag;
     uint64_t d_val;
 } elf64_dyn_t;    /* 16 bytes */
