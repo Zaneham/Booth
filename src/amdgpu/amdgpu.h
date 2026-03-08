@@ -372,8 +372,8 @@ typedef struct {
     uint32_t compute_pgm_rsrc3;
     uint32_t compute_pgm_rsrc1;
     uint32_t compute_pgm_rsrc2;
-    uint16_t kernel_code_properties;
-    uint8_t  reserved2[6];
+    uint32_t kernel_code_properties;
+    uint8_t  reserved2[4];
 } amd_kernel_descriptor_t;  /* 64 bytes */
 
 /* ---- Module ---- */
