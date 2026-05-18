@@ -1,0 +1,60 @@
+BarraCUDA — Changelog
+=====================
+
+2026-03-18 — NVIDIA PTX backend (--nvidia-ptx). Compiles CUDA to PTX
+text, loaded via CUDA Driver API and JIT-compiled by the NVIDIA driver.
+Validated on RTX 4060 Ti running a Monte Carlo neutron transport
+benchmark with correct physics results. No NVCC required. Also:
+anonymous struct/union support in parser, sema, and lowerer
+(struct { float f; int i; } cvt; pattern).
+
+2026-03-14 — Divergence-aware SSA register allocator (--ssa-ra).
+Eliminates all 186 VGPR spills on a 654-line Monte Carlo transport
+kernel — scratch traffic drops 78%, total instructions drop 28%.
+Exploits the 64:1 cost asymmetry between divergent and uniform VGPR
+spills on Wave64 hardware: uniform values spill via v_readfirstlane
+at 4 bytes each, divergent values stay in registers where they belong.
+Based on the divergence analysis of Sampaio et al. (2013). ~1,300
+lines of C99, all static memory, no malloc.
+
+2026-03-09 — Post-isel verification pass (bc_vfy). The encoder used
+to trust isel to produce valid machine instructions. It shouldn't
+have. bc_vfy runs twice (post-isel, post-RA) and catches 5 classes
+of encoding violation before the binary leaves the compiler. Its
+first run immediately found 7 isel bugs across GFX10 and GFX942 —
+every one a silent miscompile that would fault on hardware with
+"Reason: Unknown." Fixed them all. Also: bc_abend runtime crash
+diagnostics, because if IBM could do post-mortem dumps in 1964, we
+can do it for GPUs in 2026.
+
+2026-03-08 — Error localisation infrastructure. Every diagnostic
+now has a language-neutral ID (E001–E111). External translation
+files via --lang <file>. English reference at lang/en.txt, te reo
+Maori at lang/mi.txt. Unified error structs. Lowering errors now
+displayed.
+
+2026-03-05 — CDNA 3 additions: GFX942 backend hardening, MFMA,
+Wave64 divergence, tinygrad compat. 8/8 tests passing on MI300X
+(PR#56: https://github.com/Zaneham/BarraCUDA/pull/56).
+
+2026-03-05 — Instruction scheduling
+(PR#52: https://github.com/Zaneham/BarraCUDA/pull/52).
+
+2026-03-03 — CDNA 2 support (--gfx90a, MI250). Tinygrad
+compatibility.
+
+2026-02-28 — Tenstorrent Tensix backend (--tensix). Compiles CUDA
+to TT-Metalium C++ for Blackhole. Constant folding
+(PR#51: https://github.com/Zaneham/BarraCUDA/pull/51). Dead code
+elimination (PR#48: https://github.com/Zaneham/BarraCUDA/pull/48).
+
+2026-02-25 — HSA runtime launcher
+(PR#40: https://github.com/Zaneham/BarraCUDA/pull/40). RDNA 2
+support (--gfx1030, PR#38: https://github.com/Zaneham/BarraCUDA/pull/38).
+Test suite (PR#41: https://github.com/Zaneham/BarraCUDA/pull/41).
+
+2026-02-20 — RDNA 4 support
+(--gfx1200, PR#32: https://github.com/Zaneham/BarraCUDA/pull/32).
+
+2026-02-16 — Initial release. CUDA compiler targeting AMD RDNA 3
+(gfx1100).
