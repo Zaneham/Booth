@@ -11,6 +11,8 @@
 #include "verify.h"
 #include "tensix.h"
 #include "nvidia.h"
+#include "metal.h"
+#include "intel.h"
 #include <stdlib.h>
 
 static char       source_buf[BC_MAX_SOURCE];
@@ -85,7 +87,13 @@ static void usage(const char *prog)
         "  --max-vgprs N    Cap VGPR count for regalloc (forces spills)\n"
         "  --tensix      Compile to TT-Metalium C++ (Tensix SFPU)\n"
         "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89)\n"
-        "  -o <file>     Output file (for --amdgpu-bin, --tensix, --nvidia-ptx)\n"
+        "  --metal       Compile to Apple Metal Shading Language (stub)\n"
+        "  --intel-spirv Compile to SPIR-V for Intel Arc Xe (stub)\n"
+        "  --xe-lpg      Target Xe-LPG (Arc / integrated)\n"
+        "  --xe-hpg      Target Xe-HPG (Alchemist, Battlemage) [default]\n"
+        "  --xe-hpc      Target Xe-HPC (Ponte Vecchio)\n"
+        "  --xe2         Target Xe2 (Lunar Lake, next-gen Arc)\n"
+        "  -o <file>     Output file (for --amdgpu-bin, --tensix, --nvidia-ptx, --metal, --intel-spirv)\n"
         "  --lang <file> Load translated error messages\n"
         "  --help        Show this message\n"
         "\n", prog);
@@ -105,6 +113,9 @@ int main(int argc, char *argv[])
     int mode_amdgpu_bin = 0;
     int mode_tensix = 0;
     int mode_nvidia = 0;
+    int mode_metal = 0;
+    int mode_intel = 0;
+    intel_target_t intel_target = INTEL_TARGET_XE_HPG;
     int nv_bkhit = 0;
     int no_mem2reg = 0;
     int no_cfold = 0;
@@ -187,6 +198,18 @@ int main(int argc, char *argv[])
             mode_tensix = 1;
         else if (strcmp(argv[i], "--nvidia-ptx") == 0)
             mode_nvidia = 1;
+        else if (strcmp(argv[i], "--metal") == 0)
+            mode_metal = 1;
+        else if (strcmp(argv[i], "--intel-spirv") == 0)
+            mode_intel = 1;
+        else if (strcmp(argv[i], "--xe-lpg") == 0)
+            intel_target = INTEL_TARGET_XE_LPG;
+        else if (strcmp(argv[i], "--xe-hpg") == 0)
+            intel_target = INTEL_TARGET_XE_HPG;
+        else if (strcmp(argv[i], "--xe-hpc") == 0)
+            intel_target = INTEL_TARGET_XE_HPC;
+        else if (strcmp(argv[i], "--xe2") == 0)
+            intel_target = INTEL_TARGET_XE2;
         else if (strcmp(argv[i], "--bkhit") == 0)
             nv_bkhit = 1;
         else if (strcmp(argv[i], "--lang") == 0 && i + 1 < argc)
@@ -239,7 +262,8 @@ int main(int argc, char *argv[])
     }
 
     if (!mode_pp && !mode_lex && !mode_parse && !mode_sema && !mode_ir &&
-        !mode_amdgpu && !mode_amdgpu_bin && !mode_tensix && !mode_nvidia)
+        !mode_amdgpu && !mode_amdgpu_bin && !mode_tensix && !mode_nvidia &&
+        !mode_metal && !mode_intel)
         mode_parse = 1;
 
     /* Load translation file before any diagnostics fire */
@@ -316,7 +340,7 @@ int main(int argc, char *argv[])
     }
 
     if (mode_parse || mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-        mode_tensix || mode_nvidia) {
+        mode_tensix || mode_nvidia || mode_metal || mode_intel) {
         parser_t P;
         parser_init(&P, token_buf, L.num_tokens, lex_src,
                     node_buf, BC_MAX_NODES);
@@ -339,7 +363,8 @@ int main(int argc, char *argv[])
         /* Semantic analysis */
         sema_ctx_t *sema_ctx = NULL;
         if ((mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-             mode_tensix || mode_nvidia) && P.num_errors == 0)
+             mode_tensix || mode_nvidia || mode_metal || mode_intel) &&
+            P.num_errors == 0)
         {
             sema_ctx = (sema_ctx_t *)malloc(sizeof(sema_ctx_t));
             if (!sema_ctx) {
@@ -368,7 +393,8 @@ int main(int argc, char *argv[])
         }
 
         if ((mode_ir || mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
-             mode_nvidia) && P.num_errors == 0) {
+             mode_nvidia || mode_metal || mode_intel) &&
+            P.num_errors == 0) {
             bc_error_t lower_errs[BC_MAX_ERRORS];
             int num_lower_errs = 0;
             bir_module = (bir_module_t *)malloc(sizeof(bir_module_t));
@@ -513,6 +539,47 @@ int main(int argc, char *argv[])
                         rc = nrc;
                     }
                     free(nvm);
+                }
+
+                if (mode_metal) {
+                    metal_module_t *mm = (metal_module_t *)malloc(sizeof(metal_module_t));
+                    if (!mm) {
+                        fprintf(stderr, "error: failed to allocate Metal module\n");
+                        free(bir_module);
+                        return 1;
+                    }
+                    int mrc = metal_compile(bir_module, mm);
+                    if (mrc == BC_OK) {
+                        metal_emit_msl(mm,
+                            output_file ? output_file : "a.metal");
+                    } else {
+                        fprintf(stderr,
+                            "error: Metal backend is staked-out territory, "
+                            "not yet a working compiler. Watch this space.\n");
+                        rc = mrc;
+                    }
+                    free(mm);
+                }
+
+                if (mode_intel) {
+                    intel_module_t *im = (intel_module_t *)malloc(sizeof(intel_module_t));
+                    if (!im) {
+                        fprintf(stderr, "error: failed to allocate Intel module\n");
+                        free(bir_module);
+                        return 1;
+                    }
+                    int irc = intel_compile(bir_module, im, intel_target);
+                    if (irc == BC_OK) {
+                        intel_emit_spirv(im,
+                            output_file ? output_file : "a.spv");
+                    } else {
+                        fprintf(stderr,
+                            "error: Intel SPIR-V backend is also staked-out "
+                            "territory, also not yet a working compiler. "
+                            "Same disclaimer, different vendor.\n");
+                        rc = irc;
+                    }
+                    free(im);
                 }
             }
             free(bir_module);

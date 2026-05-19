@@ -1,6 +1,16 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-19 — Apple Metal and Intel Arc Xe backend stubs (--metal,
+--intel-spirv with --xe-lpg / --xe-hpg / --xe-hpc / --xe2 variants).
+Just a stub for now: the directories exist, the headers declare
+module structs and entry points, the CLI flags parse, the modes
+flow through preproc, lex, parse, sema, BIR lowering, and the
+optimisation passes, and the backend functions politely return an
+error code rather than actual machine code. Plan is MSL text emit
+for Apple and SPIR-V emit for Intel, both following the "let the
+vendor's driver finish" pattern that PTX already uses for NVIDIA.
+
 2026-03-18 — NVIDIA PTX backend (--nvidia-ptx). Compiles CUDA to PTX
 text, loaded via CUDA Driver API and JIT-compiled by the NVIDIA driver.
 Validated on RTX 4060 Ti running a Monte Carlo neutron transport
