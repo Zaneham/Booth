@@ -10,7 +10,7 @@ See [CHANGELOG.txt](CHANGELOG.txt) for recent updates.
 
 ## What It Does
 
-Takes CUDA C source code, the same `.cu` files you'd feed to `nvcc`, and compiles them to AMD RDNA 2/3/4 binaries, NVIDIA PTX, or Tenstorrent Tensix Metalium C++.
+Takes CUDA C and HIP source code, the same `.cu` or `.hip`  files you'd feed to `nvcc` or `ROCm`, and compiles them to AMD RDNA 2/3/4 binaries, NVIDIA PTX, or Tenstorrent Tensix Metalium C++.
 
 ## Building
 
