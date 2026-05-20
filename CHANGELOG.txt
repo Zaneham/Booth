@@ -1,6 +1,65 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-20 — Triton expression parser, sitting two. The opaque
+ExprSpan token-range node is mostly retired and replaced by a real
+AST shape: Name, Literal (with int / float / string / None / True /
+False subkinds), Tuple, BinOp (thirteen arithmetic and bitwise
+codes), UnOp, BoolOp (and / or), Compare (single comparison, chains
+are a future sitting), Call with positional and keyword arguments,
+Keyword, Attr, Subscript, Slice (with a present-component bitmask
+because Python lets you leave any of the three pieces empty), List
+display, and conditional expressions of the x-if-cond-else-y kind.
+
+The parser is precedence climbing, one function per binding level,
+following Python's published precedence table from the language
+reference. Power is right-associative; unary plus / minus / invert
+sit BETWEEN power and the multiplicative level so that -2**2
+correctly parses as -(2**2) the way the spec says. For-loop
+targets bypass the comparison level so `for k in range(...)` does
+not eat the `in` keyword as a comparison operator. ExprSpan is
+kept as a graceful fallback for genuinely unrecognised constructs
+(comprehensions, walrus, await, yield) which the parser will note
+with a polite diagnostic and continue past.
+
+Validated on a Triton vector add, a matmul kernel with all the
+heavy address arithmetic and tuple subscripts, and an expression
+torture file exercising precedence, conditional expressions,
+boolean operators, slicing with all three components, and calls
+with keyword arguments. No regressions: CUDA -> AMD, HIP -> AMD,
+and Metal MSL emission all still work, test suite 90/90 still
+passes.
+
+2026-05-20 — Triton parser, sitting one. The --triton --parse mode
+now builds a real AST from the token stream the lexer produces.
+Every statement Triton kernels actually use has its own node kind:
+FuncDef with its parameter and decorator slots, Block for the
+indent-delimited suite, Assign and AugAssign (the latter carrying
+the operator subcode in its flags field), ExprStmt for a bare
+expression used for its side effect, If with elif and else
+branches, For with optional else, While with optional else,
+Return, Pass, Break, Continue, Import and ImportFrom with their
+dotted-name children. Expressions are still opaque token spans
+because the real expression parser waits its turn for the next
+sitting.
+
+The parser is recursive descent with one token of lookahead and
+uses a scratch-pool pattern for child storage: each grammar
+function records the scratch top on entry, pushes its children
+as it parses them, and commits the contiguous range to either
+inline kid slots or to the extra_kids overflow pool when the node
+finishes. This was the fix for an interleaving bug an earlier
+incremental approach suffered from, in which a child node's
+overflow writes would happily scribble inside its parent's reserved
+overflow range, leaving the parent dump with the wrong children
+indexed at the wrong offsets. The scratch-pool guarantees each
+node's children are contiguous in extra_kids and never trampled
+by a descendant.
+
+Validated on a Triton vector add and a matmul kernel including a
+for-loop body with += AugAssign and nested function calls. Dumps
+the full structural tree to stdout when --triton --parse is set.
+
 2026-05-20 — Triton frontend, first sitting. The --triton flag now
 routes the input file through a brand new self contained Python
 tokenizer at src/triton/lex.c rather than through the C99
