@@ -6,42 +6,11 @@ This is what happens when you look at NVIDIA's walled garden and think "how hard
 
 See [CHANGELOG.txt](CHANGELOG.txt) for recent updates.
 
+**update** HIP is now being supported.
+
 ## What It Does
 
 Takes CUDA C source code, the same `.cu` files you'd feed to `nvcc`, and compiles them to AMD RDNA 2/3/4 binaries, NVIDIA PTX, or Tenstorrent Tensix Metalium C++.
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                          BarraCUDA Pipeline                              │
-├───────────────────────────────────────────────────────────────────────────┤
-│  Source (.cu)                                                            │
-│       ↓                                                                  │
-│  Preprocessor → #include, #define, macros, conditionals                  │
-│       ↓                                                                  │
-│  Lexer → Tokens                                                          │
-│       ↓                                                                  │
-│  Parser (Recursive Descent) → AST                                        │
-│       ↓                                                                  │
-│  Semantic Analysis → Type checking, scope resolution                     │
-│       ↓                                                                  │
-│  BIR (BarraCUDA IR) → SSA form, typed instructions                       │
-│       ↓                                                                  │
-│  mem2reg → Promotes allocas to SSA registers                             │
-│       ↓                                                                  │
-│  Instruction Selection                                                   │
-│       ├──────────────────┬──────────────────┬────────────────────┤       │
-│       ↓ AMD              ↓ NVIDIA            ↓ Tenstorrent       │       │
-│  VGPR/SGPR regalloc  PTX isel + emit    Tensix SFPU isel        │       │
-│       ↓                  ↓                   ↓                   │       │
-│  GFX9/10/11/12       .ptx text          Metalium C++             │       │
-│  binary encoding     (driver JIT)       compute/reader/writer    │       │
-│       ↓                  ↓                   ↓                   │       │
-│  .hsaco ELF          Runs on NVIDIA     Runs on Tenstorrent      │       │
-│       ↓              hardware            hardware                │       │
-│  Runs on AMD                                                     │       │
-│  hardware                                                        │       │
-└───────────────────────────────────────────────────────────────────────────┘
-```
-
 
 ## Building
 
