@@ -90,8 +90,8 @@ static void usage(const char *prog)
         "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89)\n"
         "  --hip         HIP frontend mode (predefines __HIPCC__ and platform macros;\n"
         "                auto-on for .hip files; combine with --amdgpu-bin or --nvidia-ptx)\n"
-        "  --triton      Triton frontend mode (parses Python source, --lex dumps tokens;\n"
-        "                lexer-only in this sitting, parser/sema/lower still to come)\n"
+        "  --triton      Triton frontend mode (parses Python source); use --lex to dump\n"
+        "                tokens or --parse to dump the AST; sema/lower still to come\n"
         "  --metal       Compile to Apple Metal Shading Language (stub)\n"
         "  --intel-spirv Compile to SPIR-V for Intel Arc Xe (stub)\n"
         "  --xe-lpg      Target Xe-LPG (Arc / integrated)\n"
@@ -346,11 +346,32 @@ int main(int argc, char *argv[])
                    tn_lex_state.num_tokens, tn_lex_state.num_errors);
             return trc != BC_OK ? 1 : 0;
         }
-        /* Anything beyond --lex is not implemented yet for Triton. */
+        if (mode_parse) {
+            tn_parse_t *tnp = (tn_parse_t *)malloc(sizeof(tn_parse_t));
+            if (!tnp) {
+                fprintf(stderr, "error: failed to allocate Triton parser\n");
+                return 1;
+            }
+            tn_parse_init(tnp, &tn_lex_state);
+            int prc = tn_parse(tnp);
+            for (int i = 0; i < tnp->num_errors; i++) {
+                fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
+                        file,
+                        tnp->errors[i].loc.line,
+                        tnp->errors[i].loc.col,
+                        tnp->errors[i].eid,
+                        tnp->errors[i].msg);
+            }
+            tn_ast_dump(tnp, stdout);
+            free(tnp);
+            return prc != BC_OK ? 1 : 0;
+        }
+        /* Anything beyond --lex and --parse is not implemented yet
+         * for Triton. Sema and BIR lowering arrive in future sittings. */
         fprintf(stderr,
-            "triton: lexer only in this sitting. Parser, sema, and BIR\n"
-            "        lowering arrive in future sittings. Use --lex to\n"
-            "        dump the token stream for now.\n");
+            "triton: lexer and parser only in this sitting. Sema and\n"
+            "        BIR lowering arrive in future sittings. Use --lex\n"
+            "        to dump tokens or --parse to dump the AST.\n");
         return trc != BC_OK ? 1 : 0;
     }
 

@@ -3,6 +3,7 @@
 
 #include "barracuda.h"
 #include "bir.h"
+#include <stdio.h>
 
 /* Triton frontend, by which we mean the part of BarraCUDA that accepts
  * the dialect of Python that OpenAI saw fit to bolt a GPU compiler onto
@@ -143,7 +144,7 @@ typedef struct {
     int         num_errors;
 } tn_lex_t;
 
-/* ---- Public API ---- */
+/* ---- Public API: Lexer ---- */
 
 void        tn_lex_init(tn_lex_t *L, const char *src, uint32_t len,
                         tn_tok_t *tokens, uint32_t max_tokens);
@@ -152,11 +153,180 @@ const char *tn_tok_name(int kind);
 int         tn_tok_text(const tn_lex_t *L, const tn_tok_t *tok,
                         char *buf, int bufsize);
 
-/* Parser, sema, and lowering live in parallel files and arrive in
- * subsequent sittings. For now they exist as stubs so the build can
- * compile against the public surface and main.c can route through. */
+/* ---- AST Node Kinds ----
+ * The shape of the tree the parser builds. Function definitions,
+ * statements, parameters, dotted names, and the opaque expression
+ * span used by sitting one to defer the real expression parser to a
+ * later visit. Anything that does not have a more specific node kind
+ * arrives at the sema stage as a TN_NK_EXPR_SPAN, which records the
+ * first and last tokens of an expression and trusts the next pass
+ * to do something more interesting with them. */
 
-int  tn_parse(const tn_lex_t *L);
+typedef enum {
+    TN_NK_MODULE = 0,       /* program root */
+    TN_NK_IMPORT,           /* import dotted_name [as ident] (, ...)* */
+    TN_NK_IMPORT_FROM,      /* from dotted_name import names */
+    TN_NK_FUNCDEF,          /* def NAME ( params ) [ -> ret ] : suite */
+    TN_NK_DECORATOR,        /* @ dotted_name [ ( args ) ] */
+    TN_NK_PARAM,            /* IDENT [: anno] [= default] */
+    TN_NK_BLOCK,            /* INDENT-delimited statement suite */
+    TN_NK_ASSIGN,           /* target = expr */
+    TN_NK_AUG_ASSIGN,       /* target op= expr; flags carries op kind */
+    TN_NK_EXPR_STMT,        /* expression evaluated for its side effect */
+    TN_NK_IF,               /* if test : suite [elif...]* [else] */
+    TN_NK_FOR,              /* for target in iter : suite [else] */
+    TN_NK_WHILE,            /* while test : suite [else] */
+    TN_NK_RETURN,           /* return [expr] */
+    TN_NK_PASS,
+    TN_NK_BREAK,
+    TN_NK_CONTINUE,
+    TN_NK_DOTTED_NAME,      /* ident (.ident)* with no further structure */
+    TN_NK_EXPR_SPAN,        /* opaque expression: tok_off..tok_off+tok_len */
+
+    /* Expression nodes added in parser sitting two. They live below
+     * EXPR_SPAN in the enum so dump tables stay readable in numeric
+     * order. The expression parser produces these instead of opaque
+     * spans wherever the syntax is one of the forms a sane Triton
+     * kernel would actually contain. */
+    TN_NK_NAME,             /* identifier reference; tok_off names it */
+    TN_NK_LITERAL,          /* int / float / string / None / True / False */
+    TN_NK_TUPLE,            /* (a, b, c) or top-level a, b, c */
+    TN_NK_BINOP,            /* a OP b; flags carries the op code */
+    TN_NK_UNOP,             /* OP a; flags carries the op code */
+    TN_NK_BOOLOP,           /* a and b, a or b; flags = AND or OR */
+    TN_NK_COMPARE,          /* a < b (sitting two does not chain) */
+    TN_NK_CALL,             /* f(args); kids[0] = callee, rest = args */
+    TN_NK_KEYWORD,          /* name=value inside a Call's argument list */
+    TN_NK_ATTR,             /* a.b; kids[0] = a, name in tok span */
+    TN_NK_SUBSCRIPT,        /* a[i]; kids[0] = base, kids[1..] = index */
+    TN_NK_SLICE,            /* i:j:k inside subscripts */
+    TN_NK_IFEXPR,           /* x if cond else y */
+    TN_NK_LIST,             /* [a, b, c] */
+
+    TN_NK_COUNT
+} tn_nk_t;
+
+/* Operator subcodes for BINOP. Packed into flags. */
+
+enum {
+    TN_BOP_ADD = 0, TN_BOP_SUB, TN_BOP_MUL, TN_BOP_DIV, TN_BOP_FDIV,
+    TN_BOP_MOD, TN_BOP_POW, TN_BOP_MATMUL,
+    TN_BOP_AND, TN_BOP_OR, TN_BOP_XOR,
+    TN_BOP_SHL, TN_BOP_SHR,
+    TN_BOP_COUNT
+};
+
+/* Unary operator subcodes for UNOP. */
+
+enum {
+    TN_UOP_POS = 0, TN_UOP_NEG, TN_UOP_INV, TN_UOP_NOT,
+    TN_UOP_COUNT
+};
+
+/* Boolean operator subcodes for BOOLOP. */
+
+enum {
+    TN_LOP_AND = 0, TN_LOP_OR,
+    TN_LOP_COUNT
+};
+
+/* Comparison operator subcodes for COMPARE. */
+
+enum {
+    TN_CMP_LT = 0, TN_CMP_LE, TN_CMP_GT, TN_CMP_GE,
+    TN_CMP_EQ, TN_CMP_NE,
+    TN_CMP_IS, TN_CMP_ISNOT,
+    TN_CMP_IN, TN_CMP_NOTIN,
+    TN_CMP_COUNT
+};
+
+/* Literal kind subcodes for LITERAL. */
+
+enum {
+    TN_LIT_INT = 0, TN_LIT_FLOAT, TN_LIT_STRING,
+    TN_LIT_NONE, TN_LIT_TRUE, TN_LIT_FALSE,
+    TN_LIT_COUNT
+};
+
+/* Augmented assignment subcodes, packed into tn_node_t::flags. */
+
+enum {
+    TN_AUG_ADD = 0, TN_AUG_SUB, TN_AUG_MUL, TN_AUG_DIV,
+    TN_AUG_FDIV,    TN_AUG_MOD, TN_AUG_POW,
+    TN_AUG_AND,     TN_AUG_OR,  TN_AUG_XOR,
+    TN_AUG_SHL,     TN_AUG_SHR, TN_AUG_MATMUL,
+    TN_AUG_COUNT
+};
+
+/* ---- AST Node ----
+ * Fixed 32 bytes, six inline child indices, overflow flag for the
+ * rare case (function bodies with more than six statements, mainly)
+ * which redirects children into an external pool the same way BIR
+ * handles instructions with more than six operands. The pattern is
+ * deliberate: it keeps the common-case node small and cache-friendly
+ * while still letting the unusual node spend extra space when it
+ * really has to. */
+
+#define TN_NODE_INLINE_KIDS    6
+#define TN_NODE_KIDS_OVERFLOW  0xFF
+
+typedef struct {
+    uint8_t  kind;                              /* tn_nk_t */
+    uint8_t  num_kids;                          /* or TN_NODE_KIDS_OVERFLOW */
+    uint16_t flags;                             /* per-kind subcode */
+    uint32_t tok_off;                           /* first token in this node */
+    uint32_t tok_len;                           /* token count in this node */
+    uint32_t kids[TN_NODE_INLINE_KIDS];         /* inline child indices */
+} tn_node_t;                                    /* 32 bytes */
+
+#define TN_MAX_EXTRA_KIDS  (1 << 18)
+#define TN_MAX_KID_SCRATCH (1 << 16)
+
+/* ---- Parser State ----
+ * Heap-allocated so the embedded arrays do not blow main's stack
+ * frame. The shape follows the same convention as sema_ctx_t in the
+ * C99 frontend: one big context struct, freed at the end of the
+ * pass, no internal allocations during parsing.
+ *
+ * kid_scratch is a stack of child indices used during parsing. Each
+ * grammar function records kid_scratch_top on entry, pushes its
+ * children onto the scratch as it parses them, then commits the
+ * whole contiguous range into either the node's inline kids slots
+ * or into the extra_kids overflow pool at the end. The pattern
+ * stops nested nodes from interleaving their overflow writes with
+ * one another, which is the bug that the simpler incremental
+ * add_kid had: a child node's overflow could happily scribble
+ * inside its parent's reserved overflow range. */
+
+typedef struct {
+    const tn_lex_t *lex;
+    uint32_t        cur;                        /* current token index */
+
+    tn_node_t       nodes[TN_MAX_NODES];
+    uint32_t        num_nodes;
+
+    uint32_t        extra_kids[TN_MAX_EXTRA_KIDS];
+    uint32_t        num_extra;
+
+    uint32_t        kid_scratch[TN_MAX_KID_SCRATCH];
+    uint32_t        kid_scratch_top;
+
+    bc_error_t      errors[BC_MAX_ERRORS];
+    int             num_errors;
+
+    uint32_t        root;                       /* module node index */
+} tn_parse_t;
+
+/* ---- Public API: Parser ---- */
+
+void        tn_parse_init(tn_parse_t *P, const tn_lex_t *L);
+int         tn_parse(tn_parse_t *P);
+const char *tn_nk_name(int kind);
+void        tn_ast_dump(const tn_parse_t *P, FILE *out);
+
+/* ---- Public API: Sema and Lowering ----
+ * Stubs in this sitting, real work in later ones. */
+
 int  tn_sema(void);
 int  tn_lower(bir_module_t *out);
 
