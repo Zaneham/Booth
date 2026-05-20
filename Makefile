@@ -6,7 +6,7 @@ CFLAGS  = -std=c99 -Wall -Wextra -pedantic -Werror -O2 \
           -Wconversion -Wold-style-definition \
           -Wdouble-promotion -Wswitch-enum -Wredundant-decls -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -fcf-protection \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/runtime
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime
 LDFLAGS = -pie
 LIBS    = -lm
 # Linux/ELF only: -Wl,-z,relro,-z,now -Wl,-z,noexecstack
@@ -18,7 +18,8 @@ SOURCES = src/main.c \
           src/tensix/isel.c src/tensix/emit.c src/tensix/coarsen.c src/tensix/datamov.c \
           src/nvidia/isel.c src/nvidia/emit.c \
           src/metal/emit.c \
-          src/intel/emit.c
+          src/intel/emit.c \
+          src/triton/lex.c src/triton/parse.c src/triton/sema.c src/triton/lower.c
 OBJECTS = $(SOURCES:.c=.o)
 TARGET  = barracuda
 
@@ -32,7 +33,7 @@ $(TARGET): $(OBJECTS)
 
 # ---- Test Suite ----
 TCFLAGS = -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/runtime
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime
 TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/ttabs.c tests/ttypes.c tests/terrs.c tests/tphase.c \
           tests/tdce.c \
