@@ -2,6 +2,104 @@
 *.o
 *.exe
 *.hsaco
+*.ptx
+*.spv
+*.metal
+
+# Backups and scratch revisions of source files
+*.bak
+*.new
+
+# Python cache (test harnesses, emu runner)
+__pycache__/
+*.pyc
+
+# Mainframe-style scratch datasets, named with the dollar-prefix
+# convention that nobody else in the world uses, deeply personal,
+# and not something the repo needs to know about.
+@$*
+@file*.txt
+
+# One-off scratch files in the root that accumulated during
+# compiler bring-up and refuse to leave on their own.
+/dbg.txt
+/ebcquine.txt
+/errmess.txt
+/gmdlib.txt
+/hello1.txt
+/spill_analysis.txt
+/moa_asm.s
+/nul_host.cpp
+/nul_reader.cpp
+/nul_writer.cpp
+/sizecheck.c
+/a.hsaco
+/a.ptx
+/a.spv
+/a.metal
+/a_compute.cpp
+/a_host.cpp
+/a_reader.cpp
+/a_writer.cpp
+
+# Ad-hoc test kernels and runners that piled up during the Moa GPU
+# port and the parameter-count and scratch-allocation investigations.
+# Listed by name rather than pattern so future intentional tests are
+# not accidentally silenced by an overzealous wildcard.
+/tests/anon_struct.cu
+/tests/moa_kern.s
+/tests/moa_runner.hip
+/tests/scratch_runner.hip
+/tests/test_10param.cu
+/tests/test_10ptr.cu
+/tests/test_11param.cu
+/tests/test_11ptr.cu
+/tests/test_12param.cu
+/tests/test_12param_runner.hip
+/tests/test_12ptr.cu
+/tests/test_13ptr.cu
+/tests/test_14mixed.cu
+/tests/test_15mixed.cu
+/tests/test_16mixed.cu
+/tests/test_17mixed.cu
+/tests/test_20mixed.cu
+/tests/test_26const.cu
+/tests/test_26dispatch.cu
+/tests/test_26param.cu
+/tests/test_26read.cu
+/tests/test_26scratch.cu
+/tests/test_8param.cu
+/tests/test_9param.cu
+/tests/test_bigp_nobi.cu
+/tests/test_bigp_nobi_runner.hip
+/tests/test_bigp_noscr.cu
+/tests/test_bigparam.cu
+/tests/test_bigparam_runner.hip
+/tests/test_cell_load.cu
+/tests/test_else.cu
+/tests/test_gpu_run.c
+/tests/test_intparam.cu
+/tests/test_moa_and.cu
+/tests/test_moa_chain.cu
+/tests/test_moa_diag.cu
+/tests/test_moa_entry.cu
+/tests/test_moa_loop.cu
+/tests/test_moa_nest.cu
+/tests/test_moa_nhdr.cu
+/tests/test_moa_ptrs.cu
+/tests/test_moa_sigt.cu
+/tests/test_moa_while.cu
+/tests/test_moa_xs.cu
+/tests/test_moa_xs2.cu
+/tests/test_nested.cu
+/tests/test_scopy_runner.hip
+/tests/test_scratch.cu
+/tests/test_scratch_big.cu
+/tests/test_scratch_mini.cu
+/tests/test_scratch_runner.hip
+/tests/test_scrmini_runner.hip
+/tests/test_struct_load.cu
+/tests/tnv_rt.c
 
 # Editor cruft
 *.swp

@@ -13,6 +13,7 @@
 #include "nvidia.h"
 #include "metal.h"
 #include "intel.h"
+#include "triton.h"
 #include <stdlib.h>
 
 static char       source_buf[BC_MAX_SOURCE];
@@ -89,6 +90,8 @@ static void usage(const char *prog)
         "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89)\n"
         "  --hip         HIP frontend mode (predefines __HIPCC__ and platform macros;\n"
         "                auto-on for .hip files; combine with --amdgpu-bin or --nvidia-ptx)\n"
+        "  --triton      Triton frontend mode (parses Python source, --lex dumps tokens;\n"
+        "                lexer-only in this sitting, parser/sema/lower still to come)\n"
         "  --metal       Compile to Apple Metal Shading Language (stub)\n"
         "  --intel-spirv Compile to SPIR-V for Intel Arc Xe (stub)\n"
         "  --xe-lpg      Target Xe-LPG (Arc / integrated)\n"
@@ -118,6 +121,7 @@ int main(int argc, char *argv[])
     int mode_metal = 0;
     int mode_intel = 0;
     int mode_hip = 0;           /* HIP frontend: see HIP NOTES below */
+    int mode_triton = 0;        /* Triton frontend: see TRITON NOTES below */
     intel_target_t intel_target = INTEL_TARGET_XE_HPG;
     int nv_bkhit = 0;
     int no_mem2reg = 0;
@@ -215,6 +219,8 @@ int main(int argc, char *argv[])
             intel_target = INTEL_TARGET_XE2;
         else if (strcmp(argv[i], "--hip") == 0)
             mode_hip = 1;
+        else if (strcmp(argv[i], "--triton") == 0)
+            mode_triton = 1;
         else if (strcmp(argv[i], "--bkhit") == 0)
             nv_bkhit = 1;
         else if (strcmp(argv[i], "--lang") == 0 && i + 1 < argc)
@@ -298,6 +304,55 @@ int main(int argc, char *argv[])
     uint32_t src_len = 0;
     if (read_file(file, source_buf, BC_MAX_SOURCE, &src_len) != BC_OK)
         return 1;
+
+    /* ---- TRITON NOTES -------------------------------------------------
+     * The Triton frontend is a parallel input path that does not share
+     * the C99 preprocessor or lexer. When --triton is on, we route the
+     * source through src/triton/ instead of through src/fe/. For now
+     * the Triton frontend stops at the lexer; --lex dumps the token
+     * stream and the program exits without going any further down the
+     * pipeline, because the parser, sema, and lowering passes are
+     * still stubs. The downstream backends do not need to know any of
+     * this is happening: once tn_lower starts producing BIR, the same
+     * BIR consumers we use for CUDA and HIP will accept it without
+     * comment. */
+    if (mode_triton) {
+        static tn_lex_t   tn_lex_state;
+        static tn_tok_t   tn_tok_buf[TN_MAX_TOKENS];
+        tn_lex_init(&tn_lex_state, source_buf, src_len,
+                    tn_tok_buf, TN_MAX_TOKENS);
+        int trc = tn_tokenize(&tn_lex_state);
+        if (tn_lex_state.num_errors > 0) {
+            for (int i = 0; i < tn_lex_state.num_errors; i++) {
+                fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
+                        file,
+                        tn_lex_state.errors[i].loc.line,
+                        tn_lex_state.errors[i].loc.col,
+                        tn_lex_state.errors[i].eid,
+                        tn_lex_state.errors[i].msg);
+            }
+        }
+        if (mode_lex) {
+            char text[256];
+            for (uint32_t i = 0; i < tn_lex_state.num_tokens; i++) {
+                const tn_tok_t *t = &tn_tok_buf[i];
+                tn_tok_text(&tn_lex_state, t, text, sizeof(text));
+                printf("%4u:%-3u  %-12s  %s\n",
+                       t->line, (unsigned)t->col,
+                       tn_tok_name(t->kind),
+                       text);
+            }
+            printf("\n%u tokens, %d error(s)\n",
+                   tn_lex_state.num_tokens, tn_lex_state.num_errors);
+            return trc != BC_OK ? 1 : 0;
+        }
+        /* Anything beyond --lex is not implemented yet for Triton. */
+        fprintf(stderr,
+            "triton: lexer only in this sitting. Parser, sema, and BIR\n"
+            "        lowering arrive in future sittings. Use --lex to\n"
+            "        dump the token stream for now.\n");
+        return trc != BC_OK ? 1 : 0;
+    }
 
     /* Preprocessing */
     const char *lex_src = source_buf;
@@ -609,8 +664,7 @@ int main(int argc, char *argv[])
                             output_file ? output_file : "a.metal");
                     } else {
                         fprintf(stderr,
-                            "error: Metal backend is staked-out territory, "
-                            "not yet a working compiler. Watch this space.\n");
+                            "error: Metal backend compilation failed\n");
                         rc = mrc;
                     }
                     free(mm);
