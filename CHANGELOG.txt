@@ -1,6 +1,22 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-20 — Apple Metal backend, first sitting. The --metal flag now
+produces a complete and syntactically valid MSL source file rather
+than the polite refusal of the earlier stub. metal_compile walks
+every BIR function, picks out the __global__ kernels and __device__
+helpers, extracts parameters from the entry block's BIR_PARAM
+instructions, and scans each function for thread-model opcodes so
+the emit stage only synthesises the [[thread_position_in_threadgroup]]
+and friends the kernel actually references. metal_emit_msl writes
+the metal_stdlib include, a kernel signature with the correct
+device, constant, and threadgroup address-space qualifiers,
+[[buffer(N)]] binding indices on real parameters, and the MSL-mandated
+constant-reference form for scalar kernel arguments. Function bodies
+remain TODO comments with a value-initialised return for any
+non-void __device__ helper. Hardware validation against xcrun metal
+on macOS is tracked as issue #68.
+
 2026-05-19 — HIP frontend mode (--hip, plus auto-detect on the .hip
 file extension). HIP source is syntactically a superset of CUDA, so
 no new parser was required; the entire change is one block in main.c
