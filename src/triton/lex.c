@@ -1,13 +1,24 @@
 /* Triton frontend lexer: a tokenizer for the dialect of Python that
  * Triton kernels are written in. We do this entirely in C99, no
  * embedded Python, no shelled-out helper script, no third party
- * library. The grammar we have to handle is a small subset of
- * Python, the algorithm is a textbook recursive descent over
- * characters, and the only genuinely novel ingredient is Python's
- * indentation tokenizer, which maintains a stack of column positions
- * and emits INDENT and DEDENT tokens at the boundaries of nested
- * blocks. This is the same algorithm CPython uses, written here in
- * a more economical handful of lines because we are doing less. */
+ * library, and no apologies. The grammar we have to handle is a
+ * small subset of Python, the algorithm is a textbook recursive
+ * descent over characters, and the only genuinely novel ingredient
+ * is Python's indentation tokenizer, which maintains a stack of
+ * column positions and emits INDENT and DEDENT tokens at the
+ * boundaries of nested blocks. This is the same algorithm CPython
+ * uses, written here in a more economical handful of lines because
+ * we are doing less, do not have to retain bug-for-bug compatibility
+ * with twenty years of CPython, and are not measured on how often we
+ * occured in this morning's pandas trace.
+ *
+ * The historical irony is not lost on us. C was the language Python
+ * was written in to begin with, and Python is the language OpenAI
+ * decided every modern GPU kernel should be authored in, and now C
+ * is the language we are using to parse the Python that produces
+ * the GPU kernels. The wheel turns; the toolchain accumulates
+ * layers of cake; somebody, somewhere, is eventually going to want
+ * a Fortran frontend, and we will at least know how to type one. */
 
 #include "triton.h"
 
@@ -150,6 +161,30 @@ static void tn_emit(tn_lex_t *L, int kind, uint32_t off, uint32_t len)
     t->pad  = 0;
 }
 
+/* tn_emit_at is the variant that lets a scanner record the token's
+ * position from the start of the literal rather than from the
+ * lexer's current location. Multi-line scanners need it because by
+ * the time they finish the scan, L->line and L->line_start have
+ * moved past the token's beginning and the regular tn_emit would
+ * produce a column number that has rolled under into the millions.
+ * Column 65227 is technically a valid column on a sufficiently wide
+ * editor but is rarely what the programmer meant, and your error
+ * messages tend to lose the sympathy of the reader once they cross
+ * the four digit threshold. */
+
+static void tn_emit_at(tn_lex_t *L, int kind, uint32_t off, uint32_t len,
+                       uint32_t line, uint32_t line_start)
+{
+    if (L->num_tokens >= L->max_tokens) return;
+    tn_tok_t *t = &L->tokens[L->num_tokens++];
+    t->kind = kind;
+    t->off  = off;
+    t->len  = len;
+    t->line = line;
+    t->col  = (uint16_t)(off - line_start);
+    t->pad  = 0;
+}
+
 /* ---- Indentation Handler ----
  * Called when the lexer is at the start of a logical line and is not
  * inside any parentheses or brackets. It counts the leading spaces,
@@ -158,7 +193,14 @@ static void tn_emit(tn_lex_t *L, int kind, uint32_t off, uint32_t len)
  * at all depending on how the new indentation compares to the
  * current stack. Tabs are converted to one column each, which is
  * not strictly what CPython does but is good enough for Triton
- * kernels written by people who set their editors up sensibly. */
+ * kernels written by people who set their editors up sensibly.
+ *
+ * If you are reading this comment because you discovered that mixing
+ * tabs and spaces broke your file, the correct response is to pick
+ * one and stick with it for the rest of your career, rather than to
+ * file a bug. PEP 8 has been suggesting this for over twenty years,
+ * and CPython has been getting progressively less patient with
+ * people who refuse to listen, so the trajectory is clear. */
 
 static int tn_indent(tn_lex_t *L)
 {
@@ -281,8 +323,18 @@ static void tn_scan_num(tn_lex_t *L)
            (tx_dig(L->src[L->pos]) || L->src[L->pos] == '_'))
         L->pos++;
 
-    if (L->pos < L->src_len && L->src[L->pos] == '.' &&
-        L->pos + 1 < L->src_len && tx_dig(L->src[L->pos + 1])) {
+    /* Fractional dot, greedy. The main loop only enters this function
+     * with a leading digit or with a dot already known to be followed
+     * by a digit, so any dot we meet here belongs to the float and
+     * cannot possibly be the dot of a member access. This is also
+     * how CPython's tokenizer treats `5.foo`, which it splits into
+     * the float literal `5.` and the identifier `foo` rather than
+     * into an integer followed by member access. The reasoning, if
+     * you ask CPython about it definately enough, is that nobody
+     * writes `5.foo` on purpose, and anyone who does is going to
+     * get a syntax error from the parser shortly after this point
+     * anyway, so we may as well decide here. */
+    if (L->pos < L->src_len && L->src[L->pos] == '.') {
         is_float = 1;
         L->pos++;
         while (L->pos < L->src_len &&
@@ -315,31 +367,144 @@ static void tn_scan_num(tn_lex_t *L)
 }
 
 /* ---- String Literal Scan ----
- * For this sitting we accept single-line single or double quoted
- * strings with simple backslash escapes. Triple quoted strings,
- * f-strings, raw strings, and byte strings can wait their turn. The
- * vast majority of Triton kernels never use strings at all, and the
- * minority that do use them only for very simple cases. */
+ * Single-line strings can be either single or double quoted, on the
+ * principle that the people who designed Python could not seperate
+ * the two camps in good conscience and decided the user could
+ * choose. Triple quoted strings span multiple lines and exist
+ * primarily to host the docstring at the top of every well behaved
+ * Triton kernel, in which the author apologises in advance for what
+ * is about to happen to the GPU in the rest of the function.
+ *
+ * String prefixes (r, b, f, u, plus any one of those followed by
+ * another letter) are detected before the scan begins and folded
+ * into the STRING token's length so that the parser sees one token
+ * per literal regardless of how the user dressed it up that
+ * morning. The actual semantic effect of the prefix (raw, bytes,
+ * formatted, unicode) is deferred to sema, which is the natural
+ * place to decide what to do about it because sema is the only
+ * pass that has the time and the equanimity.
+ *
+ * We accept f-strings syntactically here without parsing the
+ * embedded expressions, on the entirely reasonable grounds that
+ * the kernels we are likely to meet do not actually use them and
+ * the rare ones that do can be greeted with a polite diagnostic
+ * when sema notices. F-strings are, for the record, a parser's
+ * revenge for several centuries of being treated like an unfussy
+ * filing clerk: the price of letting users write {x:.4f} inside a
+ * string and have the runtime format it is that somebody now has
+ * to parse that mess, and that somebody is not us, not today. */
 
-static void tn_scan_str(tn_lex_t *L)
+static void tn_scan_str_at(tn_lex_t *L, uint32_t start)
 {
-    uint32_t start = L->pos;
+    /* Snapshot the line position at the start of the literal so that
+     * triple-quoted strings can still report a sensible line and
+     * column when the closing quote arrives many lines later. */
+    uint32_t start_line       = L->line;
+    uint32_t start_line_start = L->line_start;
+
     char quote = L->src[L->pos];
+
+    /* Triple-quoted: three matching quotes opens a string that ends
+     * only at three matching quotes again, with newlines counted but
+     * not terminating the literal. Docstrings live here. */
+    if (L->pos + 2 < L->src_len &&
+        L->src[L->pos + 1] == quote &&
+        L->src[L->pos + 2] == quote) {
+        L->pos += 3;
+        uint32_t guard = 0;
+        while (L->pos + 2 < L->src_len && guard < L->src_len) {
+            if (L->src[L->pos] == quote &&
+                L->src[L->pos + 1] == quote &&
+                L->src[L->pos + 2] == quote) {
+                L->pos += 3;
+                tn_emit_at(L, TN_TOK_STRING, start, L->pos - start,
+                           start_line, start_line_start);
+                return;
+            }
+            if (L->src[L->pos] == '\\' && L->pos + 1 < L->src_len) {
+                if (L->src[L->pos + 1] == '\n') {
+                    L->line++;
+                    L->line_start = L->pos + 2;
+                }
+                L->pos += 2;
+                guard++;
+                continue;
+            }
+            if (L->src[L->pos] == '\n') {
+                L->line++;
+                L->line_start = L->pos + 1;
+            }
+            L->pos++;
+            guard++;
+        }
+        tn_err(L, 56, "unterminated triple-quoted string");
+        tn_emit_at(L, TN_TOK_STRING, start, L->pos - start,
+                   start_line, start_line_start);
+        return;
+    }
+
+    /* Single-line single or double quoted. */
     L->pos++;
     while (L->pos < L->src_len && L->src[L->pos] != quote) {
         if (L->src[L->pos] == '\\' && L->pos + 1 < L->src_len) {
+            if (L->src[L->pos + 1] == '\n') {
+                /* Explicit line continuation inside a string. Rare
+                 * but legal. */
+                L->line++;
+                L->line_start = L->pos + 2;
+            }
             L->pos += 2;
             continue;
         }
         if (L->src[L->pos] == '\n') {
             tn_err(L, 52, "unterminated string literal");
-            tn_emit(L, TN_TOK_STRING, start, L->pos - start);
+            tn_emit_at(L, TN_TOK_STRING, start, L->pos - start,
+                       start_line, start_line_start);
             return;
         }
         L->pos++;
     }
     if (L->pos < L->src_len) L->pos++;
-    tn_emit(L, TN_TOK_STRING, start, L->pos - start);
+    tn_emit_at(L, TN_TOK_STRING, start, L->pos - start,
+               start_line, start_line_start);
+}
+
+static void tn_scan_str(tn_lex_t *L)
+{
+    tn_scan_str_at(L, L->pos);
+}
+
+/* String prefix detection. Returns the prefix length in characters
+ * (1 or 2) if the next char after the prefix is a quote, otherwise
+ * zero. We accept any combination of one or two letters from the
+ * Python prefix set: r/R, b/B, f/F, u/U.
+ *
+ * Python's actual grammar forbids certain combinations (for
+ * instance, fb is not legal, only bf or rb) but we are deliberately
+ * permissive in the lexer and let sema complain about wierd
+ * combinations later. This is consistent with the rest of the
+ * error recovery in the compiler, which would rather keep
+ * tokenising and tell you about three problems than die at the
+ * first one and leave you guessing about the other two. */
+
+static int tn_is_str_prefix(const tn_lex_t *L)
+{
+    uint32_t p = L->pos;
+    int n = 0;
+    while (n < 2 && p < L->src_len) {
+        char c = L->src[p];
+        if (c == 'r' || c == 'R' || c == 'b' || c == 'B' ||
+            c == 'f' || c == 'F' || c == 'u' || c == 'U') {
+            p++;
+            n++;
+        } else {
+            break;
+        }
+    }
+    if (n == 0) return 0;
+    if (p >= L->src_len) return 0;
+    if (L->src[p] != '"' && L->src[p] != '\'') return 0;
+    return n;
 }
 
 /* ---- Operator and Punctuation Scan ----
@@ -561,8 +726,35 @@ int tn_tokenize(tn_lex_t *L)
             continue;
         }
 
-        if (tx_alph(c)) { tn_scan_ident(L); continue; }
-        if (tx_dig(c))  { tn_scan_num(L);   continue; }
+        if (tx_alph(c)) {
+            /* String prefixes (r, b, f, u, plus two-letter combinations
+             * like rb or fr) want to take the whole literal as a single
+             * STRING token even though they begin with an identifier
+             * letter. Detect those before falling into the normal
+             * identifier scan. */
+            int pre = tn_is_str_prefix(L);
+            if (pre > 0) {
+                uint32_t start = L->pos;
+                L->pos += (uint32_t)pre;
+                tn_scan_str_at(L, start);
+                continue;
+            }
+            tn_scan_ident(L);
+            continue;
+        }
+        if (tx_dig(c)) { tn_scan_num(L); continue; }
+
+        /* A dot followed directly by a digit is a float literal of the
+         * `.5` variety. We have to spot it here because tn_scan_num is
+         * otherwise only entered on a leading digit, and we want to
+         * keep the bare dot meaning member access in every other
+         * context. */
+        if (c == '.' && L->pos + 1 < L->src_len &&
+            tx_dig(L->src[L->pos + 1])) {
+            tn_scan_num(L);
+            continue;
+        }
+
         if (c == '"' || c == '\'') { tn_scan_str(L); continue; }
 
         tn_scan_op(L);
