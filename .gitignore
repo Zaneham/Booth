@@ -42,6 +42,14 @@ __pycache__/
 /a_reader.cpp
 /a_writer.cpp
 
+# Triton test-suite artefacts. The kernel .py files in tests/ stay
+# tracked; the per-kernel codegen drops in the repo root and is
+# regenerated every test run.
+/tri_*_compute.cpp
+/tri_*_host.cpp
+/tri_*_reader.cpp
+/tri_*_writer.cpp
+
 # Ad-hoc test kernels and runners that piled up during the Moa GPU
 # port and the parameter-count and scratch-allocation investigations.
 # Listed by name rather than pattern so future intentional tests are

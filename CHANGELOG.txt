@@ -1,6 +1,132 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-21 — Triton end-to-end test suite. 16 new tests in
+tests/ttriton.c covering the four frontend stages (lex, parse,
+sema, IR) and the three backends a Triton kernel can land on
+(AMD GFX11, NVIDIA PTX, Tensix Metalium). The kernels live as
+.py files in tests/: a minimal arithmetic test, the canonical
+vector add, a goblin-themed variant to confirm the parser is
+name-agnostic, and a deliberately ChatGPT-flavoured
+"high-performance optimized vector addition" with a six-paragraph
+docstring that lowers to the same code the eight-line goblin
+kernel does. Caught one real bug along the way: docstrings inside
+@triton.jit functions were tripping the lowerer; bare-string
+ExprStmt is now silently discarded the way it should be. Test
+suite stands at 107 cases, 106 pass, 1 skip.
+
+2026-05-21 — Triton frontend wired through to every backend. The
+post-lowering pipeline (mem2reg, constant folding, dead code
+elimination, then per-backend codegen) lived inside the C99
+frontend block in main.c since the day BarraCUDA gained its
+second backend. Factored out into run_bir_backends so both
+frontends can call it. Triton kernels now compile end to end:
+--triton --amdgpu-bin produces a working .hsaco, --triton
+--nvidia-ptx produces valid PTX text the NVIDIA driver will JIT,
+--triton --tensix produces TT-Metalium compute / reader / writer
+/ host C++ files, and --triton --metal / --intel-spirv route
+through their respective backends as those mature.
+
+Validated on the canonical vector_add Triton kernel:
+  AMD GFX11      176 bytes of code, 2808-byte .hsaco
+  NVIDIA sm_89   929 bytes of PTX, 20 instructions
+  Tensix         2629-byte compute kernel with SFPI encoding,
+                 reader / writer / host scaffolding, datamov
+                 analysis recognising the three buffers
+
+The mask= keyword arguments on tl.load and tl.store became
+proper warnings rather than counted errors, so the lowering
+returns BC_OK and the backend pipeline runs through. Test suite
+still 90/90, and a side-by-side compile of canonical.cu through
+all three backends confirms no regression on the CUDA path.
+
+2026-05-21 — Triton BIR lowering, sitting two. The vector add
+kernel now lowers end to end into a syntactically valid BIR
+module: tl.program_id and tl.num_programs as before, plus
+tl.arange as BIR_THREAD_ID for the canonical Triton "one thread
+per lane" mapping, tl.load and tl.store as BIR_LOAD and BIR_STORE
+with the BIR convention that store operands are (value, address),
+and tl.cdiv inlined as the obvious (a+b-1)/b ceiling division.
+
+The binop lowerer now dispatches between integer and floating
+point variants based on operand types, with the special case
+that a pointer plus an integer produces a BIR_GEP rather than
+a plain add. Comparisons produce BIR_ICMP or BIR_FCMP with the
+right predicate in the subop slot. AugAssign reads the current
+local value, applies the op, and re-binds the local to the new
+result so subsequent references see the updated state.
+Parameters whose name ends in "_ptr" are typed as f32*, params
+annotated tl.constexpr become i32, and the rest default to
+scalar i32; a proper type inference pass arrives in sitting
+three. The mask= keyword arguments to tl.load and tl.store are
+honoured by a polite diagnostic that explains the load or store
+is being emitted unmasked for now.
+
+Proof of life: the canonical vector_add kernel compiles to a
+clean BIR module with the right shape: pid, block_start, arange,
+mask, two GEPed loads, an fadd, and a GEPed store. The matmul
+kernel still chokes on its tile subscripts and the for loop, all
+of which are tracked for sitting three. Test suite 90/90 still
+passes.
+
+2026-05-21 — Triton BIR lowering, sitting one. The --triton --ir
+mode now walks the sema-annotated AST and produces a BIR module,
+the same intermediate representation the C99 frontend already
+feeds the backends. Triton kernels marked @triton.jit become
+__global__ functions with the right parameter list, BIR_PARAM
+instructions for each parameter, and an entry block terminated
+with BIR_RET. Statements covered in this sitting: Assign (lower
+the RHS and remember the BIR value by the assign node's index so
+later Name references can find it), Return, ExprStmt, Pass /
+Break / Continue (no-op for now). Expressions covered: integer
+and float literals, Name references to params and locals via the
+sema annotations, BinOp arithmetic (add / sub / mul / sdiv /
+srem / shifts / bitwise), unary plus / minus / invert, and the
+scalar thread-model intrinsics tl.program_id and tl.num_programs
+mapped onto BIR_BLOCK_ID and BIR_GRID_DIM with the right axis
+subop. A trivial test kernel exercising program_id, num_programs,
+and a chain of integer arithmetic lowers to 10 BIR instructions
+and dumps as a syntactically valid BIR module.
+
+Known gaps for sitting two: control flow (For, While, If), masked
+loads and stores, subscripts and slices, tile shape inference,
+the full intrinsic catalogue (anything beyond program_id and
+num_programs currently emits a polite "not yet lowered"
+diagnostic), and per-parameter type inference (sitting one
+assumes every pointer is i32* and every scalar is i32). Test
+suite 90/90 still passes, all existing backends still compile.
+
+2026-05-20 — Triton sema, sitting one. The --triton --sema mode now
+runs name resolution and intrinsic dispatch over the AST the parser
+produces. Every Name node is bound to one of: a kernel parameter,
+an assigned local, a for-loop variable, an imported module alias,
+a Python builtin (range, len, min, max, abs and friends), or a
+diagnostic if it does not bind at all. Every Attr node whose base
+resolved to the tl module is checked against the intrinsic table
+and tagged with the corresponding tn_intrinsic_t code, so the
+later lowering pass can dispatch by id rather than by string
+compare.
+
+The intrinsic table covers the tl.* functions and dtypes that
+appear in real Triton kernels: program_id, num_programs, load,
+store, arange, zeros and friends, dot, where, reductions, the
+math library (exp, log, sin, cos, sqrt and the rest), the
+compile-time helpers static_assert / static_print, and the
+numeric dtype markers float16 through uint64. Adding a new
+intrinsic is a one-line table entry.
+
+Known gap for the next sitting: submodule access (tl.math.exp,
+tl.extra.libdevice.*) is not yet resolved, because sema does not
+track sub-modules below the top-level alias. The diagnostic
+(unknown intrinsic: tl.math) is informative and the rest of the
+kernel still resolves around it.
+
+Validated end-to-end on the vector add (0 errors) and the matmul
+kernel including the for loop, AugAssign, and tuple subscripts
+(0 errors). Tile shape inference, constexpr value propagation,
+and arity checking on intrinsic calls are deliberately deferred
+to sema sitting two. Test suite 90/90 still passes.
+
 2026-05-20 — Triton expression parser, sitting two. The opaque
 ExprSpan token-range node is mostly retired and replaced by a real
 AST shape: Name, Literal (with int / float / string / None / True /

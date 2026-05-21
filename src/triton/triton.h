@@ -324,10 +324,185 @@ int         tn_parse(tn_parse_t *P);
 const char *tn_nk_name(int kind);
 void        tn_ast_dump(const tn_parse_t *P, FILE *out);
 
-/* ---- Public API: Sema and Lowering ----
- * Stubs in this sitting, real work in later ones. */
+/* ---- Sema: Symbol Kinds ----
+ * The categories of thing a Name node can resolve to. UNBOUND is
+ * the sentinel for names that did not bind, which is reported as a
+ * diagnostic but does not stop the pass (we keep going so later
+ * names can still be checked). */
 
-int  tn_sema(void);
-int  tn_lower(bir_module_t *out);
+typedef enum {
+    TN_SYM_UNBOUND = 0,
+    TN_SYM_PARAM,           /* kernel parameter; aux = param index */
+    TN_SYM_LOCAL,           /* assigned local; aux = declaring node */
+    TN_SYM_LOOPVAR,         /* for-loop target; aux = declaring node */
+    TN_SYM_MODULE,          /* import alias; aux = builtin module id */
+    TN_SYM_INTRINSIC,       /* tl.* function; aux = tn_intrinsic_t */
+    TN_SYM_TYPE,            /* tl.float32 etc.; aux = tn_intrinsic_t */
+    TN_SYM_KIND_COUNT
+} tn_sym_kind_t;
+
+/* ---- Sema: Builtin Module Ids ----
+ * The handful of modules a Triton kernel imports. We do not run the
+ * import statements; we just recognise the canonical aliases. */
+
+enum {
+    TN_MOD_NONE = 0,
+    TN_MOD_TRITON,          /* `import triton` */
+    TN_MOD_TL,              /* `import triton.language as tl` */
+    TN_MOD_MATH,            /* `import math` (rare in kernels) */
+    TN_MOD_COUNT
+};
+
+/* ---- Sema: tl.* Intrinsic Ids ----
+ * Hardcoded enumeration of the Triton language functions and types
+ * the sema knows about. The list covers the intrinsics that appear
+ * in real Triton kernels in the wild and the canonical numeric
+ * dtypes; adding more is a one-line table entry away. */
+
+typedef enum {
+    TN_TLI_NONE = 0,
+
+    /* Thread model */
+    TN_TLI_PROGRAM_ID,
+    TN_TLI_NUM_PROGRAMS,
+
+    /* Memory */
+    TN_TLI_LOAD,
+    TN_TLI_STORE,
+    TN_TLI_MAKE_BLOCK_PTR,
+    TN_TLI_ADVANCE,
+
+    /* Tile construction */
+    TN_TLI_ARANGE,
+    TN_TLI_ZEROS,
+    TN_TLI_ZEROS_LIKE,
+    TN_TLI_FULL,
+    TN_TLI_BROADCAST_TO,
+    TN_TLI_RESHAPE,
+    TN_TLI_TRANS,
+    TN_TLI_WHERE,
+
+    /* Reductions */
+    TN_TLI_SUM,
+    TN_TLI_MAX,
+    TN_TLI_MIN,
+    TN_TLI_ARGMAX,
+    TN_TLI_ARGMIN,
+
+    /* Matrix */
+    TN_TLI_DOT,
+
+    /* Math (single-arg unless noted) */
+    TN_TLI_EXP, TN_TLI_EXP2, TN_TLI_LOG, TN_TLI_LOG2,
+    TN_TLI_SIN, TN_TLI_COS, TN_TLI_TAN, TN_TLI_TANH,
+    TN_TLI_SQRT, TN_TLI_RSQRT, TN_TLI_ABS,
+    TN_TLI_FLOOR, TN_TLI_CEIL, TN_TLI_ERF,
+    TN_TLI_MAXIMUM, TN_TLI_MINIMUM,
+    TN_TLI_FDIV, TN_TLI_CDIV,
+
+    /* Compile-time helpers */
+    TN_TLI_STATIC_ASSERT,
+    TN_TLI_STATIC_PRINT,
+    TN_TLI_DEVICE_ASSERT,
+    TN_TLI_DEVICE_PRINT,
+    TN_TLI_CONSTEXPR,       /* type marker, not a function */
+
+    /* Numeric types */
+    TN_TLI_FLOAT16, TN_TLI_FLOAT32, TN_TLI_FLOAT64, TN_TLI_BFLOAT16,
+    TN_TLI_INT1, TN_TLI_INT8, TN_TLI_INT16, TN_TLI_INT32, TN_TLI_INT64,
+    TN_TLI_UINT8, TN_TLI_UINT16, TN_TLI_UINT32, TN_TLI_UINT64,
+
+    TN_TLI_COUNT
+} tn_intrinsic_t;
+
+/* ---- Sema: Symbol Table Entry ---- */
+
+typedef struct {
+    uint32_t name_off;      /* source offset of the name token */
+    uint16_t name_len;
+    uint8_t  kind;          /* tn_sym_kind_t */
+    uint8_t  pad;
+    uint32_t aux;           /* param idx, intrinsic id, module id, etc. */
+    uint32_t decl_node;     /* AST node that introduced the binding */
+} tn_sym_t;
+
+typedef struct {
+    uint32_t start;         /* first symbol in this scope (index into syms) */
+    uint32_t end;           /* one past last */
+} tn_scope_t;
+
+#define TN_MAX_SYMBOLS  8192
+#define TN_MAX_SCOPES   128
+
+/* ---- Sema: Per-Node Annotation ----
+ * Two parallel arrays sized to the parser node pool. node_sym_kind
+ * stores the resolved category and node_sym_aux stores whichever
+ * auxiliary value the category implies. For a Name, kind+aux say
+ * what it resolved to. For an Attr matching tl.X, kind=INTRINSIC
+ * and aux is the tn_intrinsic_t. */
+
+typedef struct {
+    const tn_parse_t *parser;
+
+    tn_sym_t        syms[TN_MAX_SYMBOLS];
+    uint32_t        num_syms;
+
+    tn_scope_t      scopes[TN_MAX_SCOPES];
+    int             num_scopes;
+
+    uint8_t         node_sym_kind[TN_MAX_NODES];
+    uint32_t        node_sym_aux[TN_MAX_NODES];
+
+    bc_error_t      errors[BC_MAX_ERRORS];
+    int             num_errors;
+} tn_sema_t;
+
+/* ---- Public API: Sema ---- */
+
+void        tn_sema_init(tn_sema_t *S, const tn_parse_t *P);
+int         tn_sema(tn_sema_t *S);
+void        tn_sema_dump(const tn_sema_t *S, FILE *out);
+const char *tn_sym_kind_name(int kind);
+const char *tn_intrinsic_name(int id);
+
+/* ---- Lowering Context ----
+ * Walks the sema-annotated AST and produces BIR. Heap-allocated to
+ * keep the embedded node-to-value map off main's stack frame. The
+ * per-node map records, for any AST node whose lowering yielded a
+ * BIR value, the value reference (with the BIR_VAL_CONST_BIT flag
+ * for constants). Subsequent references through that node can read
+ * the value back in one lookup. */
+
+typedef struct {
+    const tn_parse_t *parser;
+    const tn_sema_t  *sema;
+    bir_module_t     *bir;
+
+    uint32_t        cur_func;       /* BIR function index in flight */
+    uint32_t        cur_block;      /* BIR block index in flight */
+    uint32_t        cur_param_base; /* index of first BIR_PARAM in current func */
+
+    /* Map from AST node index to BIR value reference, BIR_VAL_NONE
+     * if not yet produced. Used to resolve Name references back to
+     * the value their declaring node generated. */
+    uint32_t        node_val[TN_MAX_NODES];
+
+    /* Common types, looked up once per module so we are not building
+     * the same type entry over and over. */
+    uint32_t        t_i32;
+    uint32_t        t_f32;
+    uint32_t        t_ptr_i32;
+    uint32_t        t_ptr_f32;
+    uint32_t        t_void;
+
+    bc_error_t      errors[BC_MAX_ERRORS];
+    int             num_errors;
+} tn_lower_t;
+
+/* ---- Public API: Lowering ---- */
+
+void tn_lower_init(tn_lower_t *L, const tn_parse_t *P,
+                   const tn_sema_t *S, bir_module_t *M);
+int  tn_lower(tn_lower_t *L);
 
 #endif /* BARRACUDA_TRITON_H */
