@@ -225,6 +225,15 @@ static int tn_indent(tn_lex_t *L)
         }
 
         char c = L->src[L->pos];
+        if (c == '\r') {
+            /* Carriage return on its own (typically the first half of
+             * a CRLF line ending) is just inline whitespace. We skip
+             * it and re-look at the next character; if it is '\n'
+             * the blank-line handler below picks it up, otherwise
+             * normal scanning resumes. */
+            L->pos++;
+            continue;
+        }
         if (c == '#') {
             /* Comment line, skip to newline and try again. */
             while (L->pos < L->src_len && L->src[L->pos] != '\n')
@@ -691,7 +700,7 @@ int tn_tokenize(tn_lex_t *L)
         char c = L->src[L->pos];
 
         /* Skip blank space inside a line. */
-        if (c == ' ' || c == '\t') {
+        if (c == ' ' || c == '\t' || c == '\r') {
             L->pos++;
             continue;
         }

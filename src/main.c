@@ -22,6 +22,181 @@ static token_t    token_buf[BC_MAX_TOKENS];
 static ast_node_t node_buf[BC_MAX_NODES];
 static bir_module_t *bir_module; /* heap-allocated (~11 MB) */
 
+/* ---- Shared Backend Dispatcher ----
+ * After a frontend has filled bir_module, the optimisation passes
+ * and the per-backend code are identical regardless of which
+ * frontend was used. Packaged here so the C99 path and the Triton
+ * path can both call it without duplicating two hundred lines of
+ * backend wiring. */
+
+typedef struct {
+    int             no_mem2reg, no_cfold, no_dce, no_sched;
+    int             mode_ir;
+    int             mode_amdgpu, mode_amdgpu_bin;
+    int             mode_tensix, mode_nvidia, nv_bkhit;
+    int             mode_metal, mode_intel;
+    amd_target_t    amd_target;
+    uint32_t        amd_elfm;
+    const char     *amd_chip;
+    int             snap_mode;
+    intel_target_t  intel_target;
+    const char     *output_file;
+} backend_cfg_t;
+
+static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
+{
+    int rc = BC_OK;
+
+    /* Optimisation passes: same shape regardless of frontend. */
+    if (!cfg->no_mem2reg) bir_mem2reg(bir);
+    if (!cfg->no_cfold)   bir_cfold(bir);
+    if (!cfg->no_dce)     bir_dce(bir);
+
+    if (cfg->mode_ir) {
+        bir_print_module(bir, stdout);
+        printf("\n; %u functions, %u globals, %u instructions\n",
+               bir->num_funcs, bir->num_globals, bir->num_insts);
+    }
+
+    if (cfg->mode_amdgpu || cfg->mode_amdgpu_bin) {
+        amd_module_t *amd = (amd_module_t *)malloc(sizeof(amd_module_t));
+        if (!amd) {
+            fprintf(stderr, "error: failed to allocate AMD module\n");
+            return BC_ERR_IO;
+        }
+        amd->target = cfg->amd_target;
+        amd->elf_mach = cfg->amd_elfm;
+        amd->snap_mode = (uint8_t)cfg->snap_mode;
+        snprintf(amd->chip_name, sizeof(amd->chip_name), "%s", cfg->amd_chip);
+        int arc = amdgpu_compile(bir, amd);
+        if (arc == BC_OK) {
+            vfy_res_t v1 = bc_vfy(amd, VFY_ISEL);
+            if (v1.errs) {
+                fprintf(stderr, "verify: %u error(s) after isel\n", v1.errs);
+                arc = BC_ERR_VERIFY;
+            }
+        }
+        if (arc == BC_OK) {
+            if (!cfg->no_sched) amdgpu_sched(amd);
+            amdgpu_regalloc(amd);
+            vfy_res_t v2 = bc_vfy(amd, VFY_RA);
+            if (v2.errs) {
+                fprintf(stderr, "verify: %u error(s) after regalloc\n", v2.errs);
+                arc = BC_ERR_VERIFY;
+            }
+        }
+        if (arc == BC_OK) {
+            if (cfg->mode_amdgpu_bin)
+                amdgpu_emit_elf(amd,
+                    cfg->output_file ? cfg->output_file : "a.hsaco");
+            else
+                amdgpu_emit_asm(amd, stdout);
+        } else {
+            if (arc != BC_ERR_VERIFY)
+                fprintf(stderr, "error: AMDGPU compilation failed\n");
+            rc = arc;
+        }
+        free(amd);
+    }
+
+    if (cfg->mode_nvidia) {
+        nv_module_t *nvm = (nv_module_t *)malloc(sizeof(nv_module_t));
+        if (!nvm) {
+            fprintf(stderr, "error: failed to allocate NVIDIA module\n");
+            return BC_ERR_IO;
+        }
+        int nrc = nv_compile(bir, nvm);
+        if (nrc == BC_OK) {
+            nvm->bkhit = (uint8_t)cfg->nv_bkhit;
+            nv_emit_ptx(nvm, cfg->output_file ? cfg->output_file : "a.ptx");
+        } else {
+            fprintf(stderr, "error: NVIDIA PTX compilation failed\n");
+            rc = nrc;
+        }
+        free(nvm);
+    }
+
+    if (cfg->mode_metal) {
+        metal_module_t *mm = (metal_module_t *)malloc(sizeof(metal_module_t));
+        if (!mm) {
+            fprintf(stderr, "error: failed to allocate Metal module\n");
+            return BC_ERR_IO;
+        }
+        int mrc = metal_compile(bir, mm);
+        if (mrc == BC_OK) {
+            metal_emit_msl(mm, cfg->output_file ? cfg->output_file : "a.metal");
+        } else {
+            fprintf(stderr, "error: Metal backend compilation failed\n");
+            rc = mrc;
+        }
+        free(mm);
+    }
+
+    if (cfg->mode_intel) {
+        intel_module_t *im = (intel_module_t *)malloc(sizeof(intel_module_t));
+        if (!im) {
+            fprintf(stderr, "error: failed to allocate Intel module\n");
+            return BC_ERR_IO;
+        }
+        int irc = intel_compile(bir, im, cfg->intel_target);
+        if (irc == BC_OK) {
+            intel_emit_spirv(im, cfg->output_file ? cfg->output_file : "a.spv");
+        } else {
+            fprintf(stderr,
+                "error: Intel SPIR-V backend not yet a working compiler\n");
+            rc = irc;
+        }
+        free(im);
+    }
+
+    /* Tensix needs additional reader/writer/host emission besides
+     * the compute kernel, which is why it lives slightly off the
+     * shared shape. */
+    if (cfg->mode_tensix) {
+        tt_module_t *ttm = (tt_module_t *)malloc(sizeof(tt_module_t));
+        if (!ttm) {
+            fprintf(stderr, "error: failed to allocate Tensix module\n");
+            return BC_ERR_IO;
+        }
+        int trc = tensix_compile(bir, ttm);
+        if (trc == BC_OK) {
+            tensix_coarsen(ttm);
+            tensix_regalloc(ttm);
+            const char *compute_path =
+                cfg->output_file ? cfg->output_file : "a_compute.cpp";
+            tensix_analyze_datamov(bir, ttm, &ttm->dmov);
+            tensix_emit_metalium(ttm, compute_path);
+            char host_path[BC_MAX_PATH];
+            char reader_path[BC_MAX_PATH];
+            char writer_path[BC_MAX_PATH];
+            const char *stem = strstr(compute_path, "_compute");
+            int pfx;
+            if (stem) pfx = (int)(stem - compute_path);
+            else {
+                const char *dot = strrchr(compute_path, '.');
+                pfx = dot ? (int)(dot - compute_path)
+                          : (int)strlen(compute_path);
+            }
+            snprintf(host_path,   sizeof(host_path),
+                     "%.*s_host.cpp",   pfx, compute_path);
+            snprintf(reader_path, sizeof(reader_path),
+                     "%.*s_reader.cpp", pfx, compute_path);
+            snprintf(writer_path, sizeof(writer_path),
+                     "%.*s_writer.cpp", pfx, compute_path);
+            tensix_emit_reader(ttm, &ttm->dmov, reader_path);
+            tensix_emit_writer(ttm, &ttm->dmov, writer_path);
+            tensix_emit_host_full(ttm, &ttm->dmov, host_path,
+                                  reader_path, compute_path, writer_path);
+        } else {
+            fprintf(stderr, "error: Tensix compilation failed\n");
+            rc = trc;
+        }
+        free(ttm);
+    }
+
+    return rc;
+}
+
 static int read_file(const char *path, char *buf, uint32_t max, uint32_t *out_len)
 {
     FILE *fp = fopen(path, "rb");
@@ -90,8 +265,8 @@ static void usage(const char *prog)
         "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89)\n"
         "  --hip         HIP frontend mode (predefines __HIPCC__ and platform macros;\n"
         "                auto-on for .hip files; combine with --amdgpu-bin or --nvidia-ptx)\n"
-        "  --triton      Triton frontend mode (parses Python source, --lex dumps tokens;\n"
-        "                lexer-only in this sitting, parser/sema/lower still to come)\n"
+        "  --triton      Triton frontend mode (parses Python source); use --lex to dump\n"
+        "                tokens or --parse to dump the AST; sema/lower still to come\n"
         "  --metal       Compile to Apple Metal Shading Language (stub)\n"
         "  --intel-spirv Compile to SPIR-V for Intel Arc Xe (stub)\n"
         "  --xe-lpg      Target Xe-LPG (Arc / integrated)\n"
@@ -346,11 +521,110 @@ int main(int argc, char *argv[])
                    tn_lex_state.num_tokens, tn_lex_state.num_errors);
             return trc != BC_OK ? 1 : 0;
         }
-        /* Anything beyond --lex is not implemented yet for Triton. */
+        if (mode_parse || mode_sema || mode_ir ||
+            mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
+            mode_nvidia || mode_metal || mode_intel) {
+            tn_parse_t *tnp = (tn_parse_t *)malloc(sizeof(tn_parse_t));
+            if (!tnp) {
+                fprintf(stderr, "error: failed to allocate Triton parser\n");
+                return 1;
+            }
+            tn_parse_init(tnp, &tn_lex_state);
+            int prc = tn_parse(tnp);
+            for (int i = 0; i < tnp->num_errors; i++) {
+                fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
+                        file,
+                        tnp->errors[i].loc.line,
+                        tnp->errors[i].loc.col,
+                        tnp->errors[i].eid,
+                        tnp->errors[i].msg);
+            }
+            int want_backend = mode_amdgpu || mode_amdgpu_bin ||
+                               mode_tensix || mode_nvidia ||
+                               mode_metal || mode_intel;
+            if (mode_sema || mode_ir || want_backend) {
+                tn_sema_t *tns = (tn_sema_t *)malloc(sizeof(tn_sema_t));
+                if (!tns) {
+                    fprintf(stderr, "error: failed to allocate Triton sema\n");
+                    free(tnp);
+                    return 1;
+                }
+                tn_sema_init(tns, tnp);
+                int src_code = tn_sema(tns);
+                for (int i = 0; i < tns->num_errors; i++) {
+                    fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
+                            file,
+                            tns->errors[i].loc.line,
+                            tns->errors[i].loc.col,
+                            tns->errors[i].eid,
+                            tns->errors[i].msg);
+                }
+                if (mode_ir || want_backend) {
+                    tn_lower_t *tnl = (tn_lower_t *)malloc(sizeof(tn_lower_t));
+                    if (!tnl) {
+                        fprintf(stderr, "error: failed to allocate Triton lower\n");
+                        free(tns); free(tnp);
+                        return 1;
+                    }
+                    bir_module = (bir_module_t *)malloc(sizeof(bir_module_t));
+                    if (!bir_module) {
+                        fprintf(stderr, "error: failed to allocate BIR module\n");
+                        free(tnl); free(tns); free(tnp);
+                        return 1;
+                    }
+                    tn_lower_init(tnl, tnp, tns, bir_module);
+                    int lrc = tn_lower(tnl);
+                    for (int i = 0; i < tnl->num_errors; i++) {
+                        fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
+                                file,
+                                tnl->errors[i].loc.line,
+                                tnl->errors[i].loc.col,
+                                tnl->errors[i].eid,
+                                tnl->errors[i].msg);
+                    }
+
+                    int brc = BC_OK;
+                    if (lrc == BC_OK && (mode_ir || want_backend)) {
+                        backend_cfg_t cfg = {0};
+                        cfg.no_mem2reg = no_mem2reg;
+                        cfg.no_cfold   = no_cfold;
+                        cfg.no_dce     = no_dce;
+                        cfg.no_sched   = no_sched;
+                        cfg.mode_ir    = mode_ir;
+                        cfg.mode_amdgpu     = mode_amdgpu;
+                        cfg.mode_amdgpu_bin = mode_amdgpu_bin;
+                        cfg.mode_tensix     = mode_tensix;
+                        cfg.mode_nvidia     = mode_nvidia;
+                        cfg.nv_bkhit        = nv_bkhit;
+                        cfg.mode_metal      = mode_metal;
+                        cfg.mode_intel      = mode_intel;
+                        cfg.amd_target      = amd_target;
+                        cfg.amd_elfm        = amd_elfm;
+                        cfg.amd_chip        = amd_chip;
+                        cfg.snap_mode       = snap_mode;
+                        cfg.intel_target    = intel_target;
+                        cfg.output_file     = output_file;
+                        brc = run_bir_backends(bir_module, &cfg);
+                    }
+
+                    free(tnl); free(tns); free(tnp); free(bir_module);
+                    return (prc != BC_OK || src_code != BC_OK ||
+                            lrc != BC_OK || brc != BC_OK) ? 1 : 0;
+                }
+                tn_sema_dump(tns, stdout);
+                free(tns);
+                free(tnp);
+                return (prc != BC_OK || src_code != BC_OK) ? 1 : 0;
+            }
+            tn_ast_dump(tnp, stdout);
+            free(tnp);
+            return prc != BC_OK ? 1 : 0;
+        }
+        /* Anything beyond the supported modes falls through here. */
         fprintf(stderr,
-            "triton: lexer only in this sitting. Parser, sema, and BIR\n"
-            "        lowering arrive in future sittings. Use --lex to\n"
-            "        dump the token stream for now.\n");
+            "triton: use --lex / --parse / --sema / --ir, or pair\n"
+            "        --triton with a backend (--amdgpu-bin /\n"
+            "        --nvidia-ptx / --tensix / --metal / --intel-spirv).\n");
         return trc != BC_OK ? 1 : 0;
     }
 
@@ -523,173 +797,27 @@ int main(int argc, char *argv[])
                 }
             }
             if (lrc == BC_OK) {
-                if (!no_mem2reg)
-                    bir_mem2reg(bir_module);
-                if (!no_cfold)
-                    bir_cfold(bir_module);
-                if (!no_dce)
-                    bir_dce(bir_module);
-
-                if (mode_ir) {
-                    bir_print_module(bir_module, stdout);
-                    printf("\n; %u functions, %u globals, %u instructions\n",
-                           bir_module->num_funcs, bir_module->num_globals,
-                           bir_module->num_insts);
-                }
-
-                if (mode_amdgpu || mode_amdgpu_bin) {
-                    amd_module_t *amd = (amd_module_t *)malloc(sizeof(amd_module_t));
-                    if (!amd) {
-                        fprintf(stderr, "error: failed to allocate AMD module\n");
-                        free(bir_module);
-                        return 1;
-                    }
-                    amd->target = amd_target;
-                    amd->elf_mach = amd_elfm;
-                    amd->snap_mode = (uint8_t)snap_mode;
-                    snprintf(amd->chip_name, sizeof(amd->chip_name),
-                             "%s", amd_chip);
-                    int arc = amdgpu_compile(bir_module, amd);
-                    if (arc == BC_OK) {
-                        vfy_res_t v1 = bc_vfy(amd, VFY_ISEL);
-                        if (v1.errs) {
-                            fprintf(stderr, "verify: %u error(s) after isel\n",
-                                    v1.errs);
-                            arc = BC_ERR_VERIFY;
-                        }
-                    }
-                    if (arc == BC_OK) {
-                        if (!no_sched)
-                            amdgpu_sched(amd);
-                        amdgpu_regalloc(amd);
-                        vfy_res_t v2 = bc_vfy(amd, VFY_RA);
-                        if (v2.errs) {
-                            fprintf(stderr, "verify: %u error(s) after regalloc\n",
-                                    v2.errs);
-                            arc = BC_ERR_VERIFY;
-                        }
-                    }
-                    if (arc == BC_OK) {
-                        if (mode_amdgpu_bin)
-                            amdgpu_emit_elf(amd,
-                                output_file ? output_file : "a.hsaco");
-                        else
-                            amdgpu_emit_asm(amd, stdout);
-                    } else {
-                        if (arc != BC_ERR_VERIFY)
-                            fprintf(stderr, "error: AMDGPU compilation failed\n");
-                        rc = arc;
-                    }
-                    free(amd);
-                }
-
-                if (mode_tensix) {
-                    tt_module_t *ttm = (tt_module_t *)malloc(sizeof(tt_module_t));
-                    if (!ttm) {
-                        fprintf(stderr, "error: failed to allocate Tensix module\n");
-                        free(bir_module);
-                        return 1;
-                    }
-                    int trc = tensix_compile(bir_module, ttm);
-                    if (trc == BC_OK) {
-                        tensix_coarsen(ttm);
-                        tensix_regalloc(ttm);
-
-                        const char *compute_path =
-                            output_file ? output_file : "a_compute.cpp";
-
-                        tensix_analyze_datamov(bir_module, ttm, &ttm->dmov);
-                        tensix_emit_metalium(ttm, compute_path);
-
-                        char host_path[BC_MAX_PATH];
-                        char reader_path[BC_MAX_PATH];
-                        char writer_path[BC_MAX_PATH];
-                        const char *stem = strstr(compute_path, "_compute");
-                        int pfx;
-                        if (stem) {
-                            pfx = (int)(stem - compute_path);
-                        } else {
-                            const char *dot = strrchr(compute_path, '.');
-                            pfx = dot ? (int)(dot - compute_path)
-                                      : (int)strlen(compute_path);
-                        }
-                        snprintf(host_path,   sizeof(host_path),
-                                 "%.*s_host.cpp",   pfx, compute_path);
-                        snprintf(reader_path, sizeof(reader_path),
-                                 "%.*s_reader.cpp", pfx, compute_path);
-                        snprintf(writer_path, sizeof(writer_path),
-                                 "%.*s_writer.cpp", pfx, compute_path);
-
-                        tensix_emit_reader(ttm, &ttm->dmov, reader_path);
-                        tensix_emit_writer(ttm, &ttm->dmov, writer_path);
-                        tensix_emit_host_full(ttm, &ttm->dmov, host_path,
-                                              reader_path, compute_path,
-                                              writer_path);
-                    } else {
-                        fprintf(stderr, "error: Tensix compilation failed\n");
-                        rc = trc;
-                    }
-                    free(ttm);
-                }
-
-                if (mode_nvidia) {
-                    nv_module_t *nvm = (nv_module_t *)malloc(sizeof(nv_module_t));
-                    if (!nvm) {
-                        fprintf(stderr, "error: failed to allocate NVIDIA module\n");
-                        free(bir_module);
-                        return 1;
-                    }
-                    int nrc = nv_compile(bir_module, nvm);
-                    if (nrc == BC_OK) {
-                        nvm->bkhit = (uint8_t)nv_bkhit;
-                        nv_emit_ptx(nvm,
-                            output_file ? output_file : "a.ptx");
-                    } else {
-                        fprintf(stderr, "error: NVIDIA PTX compilation failed\n");
-                        rc = nrc;
-                    }
-                    free(nvm);
-                }
-
-                if (mode_metal) {
-                    metal_module_t *mm = (metal_module_t *)malloc(sizeof(metal_module_t));
-                    if (!mm) {
-                        fprintf(stderr, "error: failed to allocate Metal module\n");
-                        free(bir_module);
-                        return 1;
-                    }
-                    int mrc = metal_compile(bir_module, mm);
-                    if (mrc == BC_OK) {
-                        metal_emit_msl(mm,
-                            output_file ? output_file : "a.metal");
-                    } else {
-                        fprintf(stderr,
-                            "error: Metal backend compilation failed\n");
-                        rc = mrc;
-                    }
-                    free(mm);
-                }
-
-                if (mode_intel) {
-                    intel_module_t *im = (intel_module_t *)malloc(sizeof(intel_module_t));
-                    if (!im) {
-                        fprintf(stderr, "error: failed to allocate Intel module\n");
-                        free(bir_module);
-                        return 1;
-                    }
-                    int irc = intel_compile(bir_module, im, intel_target);
-                    if (irc == BC_OK) {
-                        intel_emit_spirv(im,
-                            output_file ? output_file : "a.spv");
-                    } else {
-                        fprintf(stderr,
-                            "error: Intel SPIR-V backend is also staked-out "
-                            "territory, also not yet a working compiler. "
-                            "Same disclaimer, different vendor.\n");
-                        rc = irc;
-                    }
-                    free(im);
-                }
+                backend_cfg_t cfg = {0};
+                cfg.no_mem2reg = no_mem2reg;
+                cfg.no_cfold   = no_cfold;
+                cfg.no_dce     = no_dce;
+                cfg.no_sched   = no_sched;
+                cfg.mode_ir    = mode_ir;
+                cfg.mode_amdgpu     = mode_amdgpu;
+                cfg.mode_amdgpu_bin = mode_amdgpu_bin;
+                cfg.mode_tensix     = mode_tensix;
+                cfg.mode_nvidia     = mode_nvidia;
+                cfg.nv_bkhit        = nv_bkhit;
+                cfg.mode_metal      = mode_metal;
+                cfg.mode_intel      = mode_intel;
+                cfg.amd_target      = amd_target;
+                cfg.amd_elfm        = amd_elfm;
+                cfg.amd_chip        = amd_chip;
+                cfg.snap_mode       = snap_mode;
+                cfg.intel_target    = intel_target;
+                cfg.output_file     = output_file;
+                int brc = run_bir_backends(bir_module, &cfg);
+                if (brc != BC_OK) rc = brc;
             }
             free(bir_module);
             if (lrc != BC_OK) rc = lrc;
