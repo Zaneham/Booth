@@ -46,6 +46,17 @@ make
 # Compile to Tenstorrent Metalium C++
 ./barracuda --tensix kernel.cu -o kernel_compute.cpp
 
+# HIP frontend (auto-on for .hip files, predefines __HIPCC__ and platform
+# macros). Pair with any backend.
+./barracuda --hip --amdgpu-bin kernel.hip -o kernel.hsaco
+./barracuda --hip --nvidia-ptx kernel.hip -o kernel.ptx
+
+# Triton frontend (parses @triton.jit Python through to BIR). Pair with
+# any backend, or use --lex / --parse / --sema for inspection.
+./barracuda --triton --amdgpu-bin kernel.py -o kernel.hsaco
+./barracuda --triton --nvidia-ptx kernel.py -o kernel.ptx
+./barracuda --triton --tensix       kernel.py -o kernel_compute.cpp
+
 # Dump the IR (for debugging or curiosity)
 ./barracuda --ir kernel.cu
 
