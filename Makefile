@@ -47,12 +47,13 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/ttriton.c \
           tests/ttdf.c \
           tests/trv_enc.c tests/trv_buf.c tests/trv_elf.c tests/trv_isel.c \
-          tests/tsoft_fp.c
+          tests/tsoft_fp.c \
+          tests/tsysprint.c
 TOBJS   = $(TSRC:.c=.o)
 COBJS   = src/ir/bir.o src/ir/bir_print.o src/ir/bir_lower.o src/ir/bir_mem2reg.o src/ir/bir_cfold.o src/ir/bir_dce.o \
           src/tdf/tdf.o src/tdf/tdf_lower.o src/tdf/tdf_fission.o src/tdf/tdf_place.o src/tdf/tdf_noc.o \
           src/tensix/rv_enc.o src/tensix/rv_buf.o src/tensix/rv_elf.o src/tensix/rv_isel.o \
-          runtime/soft_fp.o \
+          runtime/soft_fp.o runtime/sysprint.o \
           src/amdgpu/amd_rplan.o src/amdgpu/encode.o src/amdgpu/enc_tab.o src/amdgpu/isel.o src/amdgpu/emit.o src/amdgpu/ra_ssa.o src/amdgpu/sched.o src/amdgpu/verify.o \
           src/fe/bc_err.o src/fe/lexer.o src/fe/parser.o src/fe/preproc.o src/fe/sema.o \
           src/runtime/bc_abend.o
