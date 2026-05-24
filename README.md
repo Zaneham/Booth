@@ -1,6 +1,6 @@
 # BarraCUDA
 
-An open-source CUDA C++ compiler written from scratch in C99 that takes `.cu` files and compiles them to AMD GPU machine code, NVIDIA PTX, and Tenstorrent Tensix C++, with more architectures planned. No LLVM, no dependencies, and no permission asked.
+An open-source CUDA C++ compiler written from scratch in C99 that takes `.cu` files and compiles them to AMD GPU machine code, NVIDIA PTX, native RV32IM for Tenstorrent baby cores, and Tenstorrent Metalium C++, with more architectures planned. No LLVM, no dependencies, and no permission asked.
 
 This is what happens when you look at NVIDIA's walled garden and think "how hard can it be?" The answer is: quite hard, actually, but I did it anyway.
 
@@ -9,6 +9,8 @@ See [CHANGELOG.txt](CHANGELOG.txt) for recent updates.
 **update**: HIP is now being supported.
 
 **update 2**: Triton is now being supported as well.
+
+**update 3**: Native RV32IM codegen for Tenstorrent Wormhole baby cores via `--rv-elf`, plus a TDF (Tile DataFlow) IR layer above BIR that models L1 placement and NoC arcs as first-class compiler concepts.
 
 ## What It Does
 
@@ -45,6 +47,12 @@ make
 
 # Compile to Tenstorrent Metalium C++
 ./barracuda --tensix kernel.cu -o kernel_compute.cpp
+
+# Compile to native RV32IM ELF for Tenstorrent baby cores
+./barracuda --rv-elf kernel.cu -o kernel.elf
+
+# Dump the TDF (Tile DataFlow) layout: regions, channels, NoC arcs
+./barracuda --tdf kernel.cu
 
 # HIP frontend (auto-on for .hip files, predefines __HIPCC__ and platform
 # macros). Pair with any backend.
@@ -122,6 +130,9 @@ Requires Linux with ROCm installed. See `examples/launch_saxpy.c` for a complete
 - Multilingual error messages (`--lang <file>`) with language-neutral E-codes
 - Source location tracking in IR dumps
 - Struct pass-by-value
+- Triton tile shape inference: rank-0/1/2 shape annotation on every expression, constexpr default propagation (`BLOCK: tl.constexpr = 256` resolves to `vec[256]`), numpy-style broadcasting, `[:, None]` / `[None, :]` reshape patterns
+- TDF (Tile DataFlow) IR layer above BIR: regions / channels / NoC arcs as first-class compiler concepts, L1 placement, fission pass for multi-core kernels
+- SYSPRINT runtime: class-tagged structured kernel output with pattern-routed sinks. Because the mainframes solved this in 1965 and the GPU world has yet to notice.
 
 ## Example
 
@@ -160,6 +171,8 @@ Being honest about limitations is important. Here's what's missing:
 - Dynamic parallelism (device-side kernel launch)
 - Multiple translation units
 - Host code generation (only device code is compiled)
+- Rank-2 matrix codegen for Triton tiles (MFMA on AMD, mma.sync on NVIDIA). Shape inference recognises rank-2 tiles and refuses cleanly with E099; the codegen path is its own issue. No silent wrong code.
+- Soft-float for the Tenstorrent native RV32IM path. The runtime exists and validates against host FPU; wiring it into `--rv-elf` is a sitting away.
 
 None of these are architectural blockers. They're all "haven't got round to it yet" items.
 
@@ -197,8 +210,11 @@ The generated code works but isn't winning any benchmarks. Done so far: instruct
 The IR (BIR) is target-independent. The backend is cleanly separated. Adding a new target means writing a new `isel` + `emit` pair.
 
 - **NVIDIA PTX** - Done. Compiles CUDA to PTX, validated on RTX 4060 Ti. `--nvidia-ptx`
-- **Tenstorrent Tensix** - Done. Compiles CUDA to TT-Metalium C++ for Blackhole. `--tensix`
-- **Intel Arc** - Xe architecture. Would give BarraCUDA coverage across all four major GPU vendors.
+- **Tenstorrent Tensix Metalium** - Done. Compiles CUDA to TT-Metalium C++ for Blackhole. `--tensix`
+- **Tenstorrent RV32IM** - Done. Native RV32IM ELF for Wormhole baby cores with TDF layer for L1/NoC orchestration. `--rv-elf`
+- **Apple Metal** - Stub backend exists, hardware validation pending. `--metal`
+- **Intel Arc** - Xe architecture, SPIR-V emit stub. Would give BarraCUDA coverage across all four major GPU vendors. `--intel-spirv`
+- **CPU (x86-64 / ARM64)** - On the radar. SIMT-to-loop translation is the interesting part; would unlock "develop Triton on your laptop" workflows nobody currently has.
 - **RISC-V Vector Extension** - For when GPUs are too mainstream and you want to run CUDA on a softcore.
 
 

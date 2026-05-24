@@ -124,17 +124,23 @@ Check `Issues` for current priorities. In general the most impactful areas are:
 
 If you're not sure whether something is worth a PR, open an issue. I also love to, as we say here in New Zealand, spin a few yarns. A quick conversation up front saves everyone time.
 
-## GPU Targets
+## Backends
 
 BarraCUDA currently supports:
 
-- **CDNA 2** (gfx90a, MI250)
-- **CDNA 3** (gfx942, MI300X)
-- **RDNA 2** (gfx1030 family)
-- **RDNA 3** (gfx1100 family, gfx1150 family)
-- **RDNA 4** (gfx1200 family)
+- **AMD CDNA 2** (gfx90a, MI250)
+- **AMD CDNA 3** (gfx942, MI300X)
+- **AMD RDNA 2** (gfx1030 family)
+- **AMD RDNA 3** (gfx1100 family, gfx1150 family)
+- **AMD RDNA 4** (gfx1200 family)
+- **NVIDIA PTX** (sm_60 and above)
+- **Tenstorrent Wormhole**: native RV32IM for baby cores via `--rv-elf`, plus Metalium C++ via `--tensix`
+- **Apple Metal** (stub, hardware validation pending)
+- **Intel Arc / Xe SPIR-V** (stub)
 
-The frontend lowers to BIR (BarraCUDA IR) in SSA form. Each backend is a self-contained target that consumes BIR. Adding a new GPU architecture means writing a new instruction selector and emitter, the rest of the pipeline is shared.
+The frontend lowers to BIR (BarraCUDA IR) in SSA form. Each backend is a self-contained target that consumes BIR. Adding a new architecture means writing a new instruction selector and emitter; the rest of the pipeline is shared.
+
+Tenstorrent additionally sits above BIR through TDF (Tile DataFlow), a small IR that models L1 placement, circular buffers, and NoC arcs as first-class concepts. Adding a new Tenstorrent-shaped target (other tile-based accelerators, RVV-style processors) can reuse TDF and skip writing all of the orchestration from scratch.
 
 ## Building & Testing
 
@@ -142,7 +148,8 @@ The frontend lowers to BIR (BarraCUDA IR) in SSA form. Each backend is a self-co
 # Build
 make
 
-# Run the test suite
+# Run the test suite (currently 274 tests across the frontends,
+# IR, backends, runtime, and SYSPRINT)
 make test
 
 # Run the emulator test suite (RDNA3, requires tinygrad mockgpu in WSL)
@@ -154,6 +161,16 @@ Verify your changes don't introduce encoding regressions:
 llvm-objdump -d --mcpu=gfx1100 output.hsaco
 # Zero decode failures = good
 ```
+
+A note on the Makefile: header dependencies aren't auto-tracked. If you change a `.h` file that other modules include (especially the larger shared structs in `triton.h`, `bir.h`, `tensix.h`), run `make clean && make` rather than incremental rebuild. Stale `.o` files compiled against the old struct layout crash at runtime in interesting ways.
+
+## Branching & Pull Requests
+
+Ongoing work happens on feature branches off `master`. The currently active long-running branch is `triton-apple-mega` (Triton frontend, shape inference, SYSPRINT and adjacent work). Pull requests merge into `master` via **squash merge** so the main branch history stays readable: one squashed commit per landed feature, rather than the full back-and-forth of the development branch.
+
+For external contributors: fork the repo, make a branch off `master`, send a PR. Multiple small PRs are easier to land than one large PR. If you're working on something speculative, mark the PR as a draft and we can discuss the approach before it's review-ready.
+
+Commits before PR merge can have any history shape you like: squash, rebase, merge commits, all fine. The squash at merge time flattens it all down. Write the commit message you want to see in `master`'s log.
 
 ## License
 
