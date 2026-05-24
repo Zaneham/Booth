@@ -15,7 +15,7 @@ typedef struct {
     tfunc_t     func;
 } tcase_t;
 
-#define TH_MAXTS 256
+#define TH_MAXTS 512
 #define TH_BUFSZ 4096
 
 extern tcase_t th_list[];

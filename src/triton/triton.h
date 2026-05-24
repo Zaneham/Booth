@@ -434,23 +434,10 @@ typedef struct {
 #define TN_MAX_SYMBOLS  8192
 #define TN_MAX_SCOPES   128
 
-/* ---- Sema: Tile Shape Annotation ----
- * Triton expressions carry an implicit (rank, dimensions, dtype)
- * triple that decides how each lowered operation broadcasts and
- * which BIR opcode it ends up using. The sema pass infers the
- * triple bottom-up over every expression node and stashes it in
- * a parallel array so the lowering pass can read shapes back in
- * O(1) per node.
- *
- * rank 0 = scalar per thread; rank 1 = vector tile [dims[0]]; rank
- * 2 = matrix tile [dims[0], dims[1]]. A dim of -1 means the size is
- * dynamic (a non-constexpr kernel parameter); a positive dim is the
- * size known at compile time from a constexpr or integer literal.
- *
- * dtype is a tn_intrinsic_t code matching tl.float32 / tl.int32 /
- * etc. Zero (TN_TLI_NONE) means the dtype is not yet inferred,
- * which the lowering treats as i32 by default for compatibility
- * with the sitting-one type policy. */
+/* ---- Sema: Tile Shape ----
+ * rank 0 = scalar, rank 1 = vec[dims[0]], rank 2 = mat[dims[0],
+ * dims[1]]. dim = -1 means dynamic. dtype is a tn_intrinsic_t code
+ * (tl.float32 etc.), or 0 if not yet inferred. */
 
 typedef struct {
     uint8_t  rank;
@@ -460,13 +447,10 @@ typedef struct {
 } tn_shape_t;                                       /* 12 bytes */
 
 /* ---- Sema: Per-Node Annotation ----
- * Parallel arrays sized to the parser node pool. node_sym_kind
- * stores the resolved category and node_sym_aux stores whichever
- * auxiliary value the category implies. For a Name, kind+aux say
- * what it resolved to. For an Attr matching tl.X, kind=INTRINSIC
- * and aux is the tn_intrinsic_t. node_shape carries the inferred
- * tile shape for expression nodes; statement nodes leave it
- * zero-initialised. */
+ * Parallel arrays over the parser node pool. node_sym_kind +
+ * node_sym_aux carry the resolved symbol for Name / Attr. node_shape
+ * carries the inferred tile shape; non-expression nodes leave it
+ * zero. */
 
 typedef struct {
     const tn_parse_t *parser;
@@ -493,9 +477,8 @@ void        tn_sema_dump(const tn_sema_t *S, FILE *out);
 const char *tn_sym_kind_name(int kind);
 const char *tn_intrinsic_name(int id);
 
-/* Format a shape into a human-readable string ("scalar", "vec[32]",
- * "mat[16, 32]", "mat[?, 32]") for sema dumps and diagnostics.
- * Writes at most bufsize-1 chars plus a terminator. */
+/* Format a shape as "scalar", "vec[N]" or "mat[M, N]" with an
+ * optional :dtype suffix. ? appears where a dim is dynamic. */
 int         tn_shape_format(tn_shape_t sh, char *buf, int bufsize);
 
 /* ---- Lowering Context ----

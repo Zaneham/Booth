@@ -1,7 +1,6 @@
-"""Minimal matmul-shaped kernel for shape-inference testing.
-Not a real matmul; we just want the AST to exercise rank-1 tiles
-plus the [:, None] / [None, :] broadcast pattern that produces
-rank-2 tiles. Lowering does not need to succeed; sema does."""
+"""Matmul-shape kernel for shape-inference testing. Exercises
+rank-1 tiles from arange plus [:, None] / [None, :] broadcasts
+into rank-2 tiles. Sema clean; lowering is a later sitting."""
 import triton
 import triton.language as tl
 
@@ -9,6 +8,7 @@ import triton.language as tl
 def mm_shape(a_ptr, c_ptr,
              M, N, K,
              stride_am, stride_ak,
+             stride_cm, stride_cn,
              BLOCK_M: tl.constexpr,
              BLOCK_N: tl.constexpr,
              BLOCK_K: tl.constexpr):
@@ -19,3 +19,5 @@ def mm_shape(a_ptr, c_ptr,
     offs_k = tl.arange(0, BLOCK_K)
     a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
+    tl.store(c_ptrs, acc)
