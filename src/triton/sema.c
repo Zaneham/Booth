@@ -643,7 +643,750 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
     }
 }
 
+/* ---- Tile Shape Inference ----
+ * A second pass over the AST, post-order over expression nodes.
+ * The walk is independent of the sym-resolution walk above because
+ * shape inference needs bottom-up flow and the sym walk does top-
+ * down scoping; trying to fuse them produces a tangle. Two short
+ * walks beats one knotty one.
+ *
+ * The general principle: every expression node gets a shape, where
+ * shape is (rank, dims, dtype). Statements leave the shape at its
+ * zero-initialised default. Unknown / unhandled expressions get a
+ * scalar shape with dtype 0 (TN_TLI_NONE) so downstream code does
+ * not need to worry about uninitialised reads.
+ *
+ * Constexpr value propagation is deferred. Constexpr parameters in
+ * tile-size contexts (tl.arange, tl.zeros) yield dynamic dims (-1)
+ * for now. The rank and rough shape carry through, which is enough
+ * to dispatch lowering between scalar / vector / matrix variants. */
+
+static tn_shape_t s_scalar(int dtype)
+{
+    tn_shape_t sh = {0};
+    sh.rank  = 0;
+    sh.dtype = (uint8_t)dtype;
+    return sh;
+}
+
+static tn_shape_t s_vec(int dim, int dtype)
+{
+    tn_shape_t sh = {0};
+    sh.rank    = 1;
+    sh.dtype   = (uint8_t)dtype;
+    sh.dims[0] = dim;
+    return sh;
+}
+
+static tn_shape_t s_mat(int outer, int inner, int dtype)
+{
+    tn_shape_t sh = {0};
+    sh.rank    = 2;
+    sh.dtype   = (uint8_t)dtype;
+    sh.dims[0] = outer;
+    sh.dims[1] = inner;
+    return sh;
+}
+
+/* Read an integer literal AST node and return its value, or -1 if
+ * the node is not a compile-time integer the sema pass can resolve.
+ * The only forms recognised in sitting one are literal int tokens;
+ * constexpr-parameter propagation is a later concern. */
+
+static int s_const_int(const tn_sema_t *S, uint32_t node_idx)
+{
+    const tn_parse_t *P = S->parser;
+    if (node_idx == 0 || node_idx >= P->num_nodes) return -1;
+    const tn_node_t *n = &P->nodes[node_idx];
+    if (n->kind != TN_NK_LITERAL || n->flags != TN_LIT_INT) return -1;
+    if (n->tok_off >= P->lex->num_tokens) return -1;
+    const tn_tok_t *t = &P->lex->tokens[n->tok_off];
+    const char *s = P->lex->src + t->off;
+    long v = 0;
+    int base = 10;
+    uint32_t p = 0;
+    if (t->len > 2 && s[0] == '0') {
+        if (s[1] == 'x' || s[1] == 'X') { base = 16; p = 2; }
+        else if (s[1] == 'o' || s[1] == 'O') { base = 8;  p = 2; }
+        else if (s[1] == 'b' || s[1] == 'B') { base = 2;  p = 2; }
+    }
+    for (; p < t->len; p++) {
+        char c = s[p];
+        if (c == '_') continue;
+        int d = -1;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = 10 + (c - 'a');
+        else if (c >= 'A' && c <= 'F') d = 10 + (c - 'A');
+        if (d < 0 || d >= base) return -1;
+        v = v * base + d;
+        if (v > 0x7FFFFFFF) return -1;          /* dim overflow guard */
+    }
+    return (int)v;
+}
+
+/* Broadcast a single dimension under numpy rules: if either side is
+ * 1, the result is the other side; otherwise the dims must agree.
+ * A -1 (dynamic) on either side returns -1: the runtime is the
+ * authority and we cannot decide statically. */
+
+static int s_bcast_dim(int a, int b)
+{
+    if (a == b)        return a;
+    if (a == 1)        return b;
+    if (b == 1)        return a;
+    if (a == -1)       return -1;
+    if (b == -1)       return -1;
+    return -1;                                  /* mismatched constants */
+}
+
+static int s_promote_dtype(int a, int b)
+{
+    /* If either side is float, the result is float of the wider
+     * width; otherwise it is the wider integer type. The current
+     * sema has no signed/unsigned rank so we keep this simple. */
+    if (a == 0) return b;
+    if (b == 0) return a;
+    if (a == b) return a;
+    /* Float wins. */
+    int a_float = (a == TN_TLI_FLOAT16 || a == TN_TLI_FLOAT32 ||
+                   a == TN_TLI_FLOAT64 || a == TN_TLI_BFLOAT16);
+    int b_float = (b == TN_TLI_FLOAT16 || b == TN_TLI_FLOAT32 ||
+                   b == TN_TLI_FLOAT64 || b == TN_TLI_BFLOAT16);
+    if (a_float && !b_float) return a;
+    if (b_float && !a_float) return b;
+    /* Same family, pick the higher enum which happens to track the
+     * widening order in the intrinsic enum as written. */
+    return a > b ? a : b;
+}
+
+/* Broadcast two shapes following the numpy rules every Triton
+ * kernel author has internalised: align trailing dims, expand
+ * size-1 dims, mismatches are an error. We do not emit an error
+ * for the mismatch case in sitting one; the lowerer will fail
+ * with a clearer message when it can see the actual operation
+ * being attempted. */
+
+static tn_shape_t s_broadcast(tn_shape_t a, tn_shape_t b)
+{
+    tn_shape_t out = {0};
+    out.dtype = (uint8_t)s_promote_dtype(a.dtype, b.dtype);
+
+    if (a.rank == 0 && b.rank == 0) {
+        out.rank = 0;
+        return out;
+    }
+    if (a.rank == 0) { out = b; out.dtype = (uint8_t)s_promote_dtype(a.dtype, b.dtype); return out; }
+    if (b.rank == 0) { out = a; out.dtype = (uint8_t)s_promote_dtype(a.dtype, b.dtype); return out; }
+
+    /* Both rank >= 1. Align trailing dims; the lower-rank side is
+     * implicitly padded with size-1 leading dims. */
+    int rank = a.rank > b.rank ? a.rank : b.rank;
+    out.rank = (uint8_t)rank;
+    if (rank == 1) {
+        out.dims[0] = s_bcast_dim(a.dims[0], b.dims[0]);
+    } else {
+        /* rank 2: pad the shorter to [1, x]. */
+        int a0 = (a.rank == 2) ? a.dims[0] : 1;
+        int a1 = (a.rank == 2) ? a.dims[1] : a.dims[0];
+        int b0 = (b.rank == 2) ? b.dims[0] : 1;
+        int b1 = (b.rank == 2) ? b.dims[1] : b.dims[0];
+        out.dims[0] = s_bcast_dim(a0, b0);
+        out.dims[1] = s_bcast_dim(a1, b1);
+    }
+    return out;
+}
+
+static int s_intrinsic_dtype(int id)
+{
+    /* Map an intrinsic dtype id back to itself if it is one of the
+     * numeric types; otherwise zero. This is what tl.float32 in a
+     * call site argument resolves to via the Attr lookup. */
+    switch (id) {
+    case TN_TLI_FLOAT16: case TN_TLI_FLOAT32: case TN_TLI_FLOAT64:
+    case TN_TLI_BFLOAT16:
+    case TN_TLI_INT1:    case TN_TLI_INT8:    case TN_TLI_INT16:
+    case TN_TLI_INT32:   case TN_TLI_INT64:
+    case TN_TLI_UINT8:   case TN_TLI_UINT16:  case TN_TLI_UINT32:
+    case TN_TLI_UINT64:
+        return id;
+    default:
+        return 0;
+    }
+}
+
+/* Read a dtype= keyword argument out of a call, returning the
+ * intrinsic dtype id or 0 if unspecified. The dtype= value is an
+ * Attr (tl.float32) whose sema resolved kind == TN_SYM_TYPE. */
+
+static int s_call_dtype_arg(const tn_sema_t *S, uint32_t call_idx)
+{
+    const tn_parse_t *P = S->parser;
+    const tn_node_t *n = &P->nodes[call_idx];
+    uint32_t nk = (n->num_kids == TN_NODE_KIDS_OVERFLOW)
+                  ? n->kids[1] : n->num_kids;
+    for (uint32_t i = 1; i < nk; i++) {
+        uint32_t kid = s_kid(S, call_idx, i);
+        const tn_node_t *kn = &P->nodes[kid];
+        if (kn->kind != TN_NK_KEYWORD) continue;
+        /* The keyword's name is the first IDENT token of the node. */
+        const tn_tok_t *kt = NULL;
+        uint32_t tk = kn->tok_off;
+        while (tk < P->lex->num_tokens &&
+               P->lex->tokens[tk].kind != TN_TOK_IDENT) tk++;
+        if (tk < P->lex->num_tokens) kt = &P->lex->tokens[tk];
+        if (!kt) continue;
+        if (kt->len == 5 &&
+            memcmp(P->lex->src + kt->off, "dtype", 5) == 0) {
+            uint32_t value = s_kid(S, kid, 0);
+            if (value >= P->num_nodes) return 0;
+            if (S->node_sym_kind[value] != TN_SYM_TYPE) return 0;
+            return s_intrinsic_dtype((int)S->node_sym_aux[value]);
+        }
+    }
+    return 0;
+}
+
+/* Read a (size_outer, size_inner) tile-shape tuple argument, e.g.
+ * the first positional of tl.zeros((BLOCK_M, BLOCK_N), ...). Returns
+ * the rank actually present (0, 1, or 2) and writes the dim values
+ * (or -1 dynamic) into out_dims[0..1]. Anything we cannot statically
+ * decode lands as a dynamic dim. */
+
+static int s_call_shape_arg(const tn_sema_t *S, uint32_t call_idx,
+                            int *out_dims)
+{
+    const tn_parse_t *P = S->parser;
+    const tn_node_t *n = &P->nodes[call_idx];
+    if (n->num_kids == 0) return 0;
+    uint32_t arg = s_kid(S, call_idx, 1);
+    if (arg == 0 || arg >= P->num_nodes) return 0;
+    const tn_node_t *an = &P->nodes[arg];
+
+    /* Single-int positional like tl.zeros(N, dtype=...). */
+    if (an->kind == TN_NK_LITERAL && an->flags == TN_LIT_INT) {
+        int v = s_const_int(S, arg);
+        out_dims[0] = v < 0 ? -1 : v;
+        out_dims[1] = 0;
+        return 1;
+    }
+    if (an->kind == TN_NK_NAME) {
+        /* Treat any non-literal name as dynamic. Constexpr propagation
+         * lands in a later sitting. */
+        out_dims[0] = -1;
+        out_dims[1] = 0;
+        return 1;
+    }
+
+    if (an->kind == TN_NK_TUPLE) {
+        uint32_t tnk = (an->num_kids == TN_NODE_KIDS_OVERFLOW)
+                       ? an->kids[1] : an->num_kids;
+        if (tnk == 1) {
+            uint32_t k = s_kid(S, arg, 0);
+            int v = s_const_int(S, k);
+            out_dims[0] = v < 0 ? -1 : v;
+            out_dims[1] = 0;
+            return 1;
+        }
+        if (tnk >= 2) {
+            uint32_t a = s_kid(S, arg, 0);
+            uint32_t b = s_kid(S, arg, 1);
+            int av = s_const_int(S, a);
+            int bv = s_const_int(S, b);
+            out_dims[0] = av < 0 ? -1 : av;
+            out_dims[1] = bv < 0 ? -1 : bv;
+            return 2;
+        }
+    }
+    return 0;
+}
+
+/* Detect the `x[None]` / `x[:, None]` / `x[None, :]` reshape pattern.
+ * Returns the rank of the resulting tile and writes broadcast dims to
+ * out_dims. The base shape is passed in via base.
+ *
+ * Encoding observed in the parser: SUBSCRIPT kids[0] is the base
+ * tile, kids[1..] are the index components. A `:` slice is a
+ * TN_NK_SLICE node with flags = 0 (no lo/hi/step present); a `None`
+ * is a TN_NK_LITERAL with flags = TN_LIT_NONE. */
+
+static int s_subscript_is_bare_slice(const tn_sema_t *S, uint32_t kid)
+{
+    const tn_parse_t *P = S->parser;
+    if (kid >= P->num_nodes) return 0;
+    const tn_node_t *kn = &P->nodes[kid];
+    return kn->kind == TN_NK_SLICE && kn->flags == 0;
+}
+
+static int s_subscript_is_none(const tn_sema_t *S, uint32_t kid)
+{
+    const tn_parse_t *P = S->parser;
+    if (kid >= P->num_nodes) return 0;
+    const tn_node_t *kn = &P->nodes[kid];
+    return kn->kind == TN_NK_LITERAL && kn->flags == TN_LIT_NONE;
+}
+
+static tn_shape_t s_reshape_subscript(const tn_sema_t *S,
+                                      uint32_t node_idx,
+                                      tn_shape_t base)
+{
+    const tn_parse_t *P = S->parser;
+    const tn_node_t *n = &P->nodes[node_idx];
+    uint32_t nk = (n->num_kids == TN_NODE_KIDS_OVERFLOW)
+                  ? n->kids[1] : n->num_kids;
+    /* kids[0] = base, the rest are index components. */
+    if (nk < 2) return base;
+
+    /* Special-case the two patterns that appear in real kernels.
+     * The first kid after the base is `:` or `None`, ditto the
+     * second if present. */
+    int n_idx = (int)nk - 1;
+    uint32_t k0 = s_kid(S, node_idx, 1);
+    uint32_t k1 = (nk > 2) ? s_kid(S, node_idx, 2) : 0;
+
+    if (n_idx == 1) {
+        /* x[None]: rank goes from 1 to 2 with leading 1. */
+        if (s_subscript_is_none(S, k0) && base.rank == 1) {
+            return s_mat(1, base.dims[0], base.dtype);
+        }
+        /* x[i] with a single integer index: drop one dim. */
+        return s_scalar(base.dtype);
+    }
+    if (n_idx == 2 && base.rank == 1) {
+        int k0_none  = s_subscript_is_none(S, k0);
+        int k1_none  = s_subscript_is_none(S, k1);
+        int k0_slice = s_subscript_is_bare_slice(S, k0);
+        int k1_slice = s_subscript_is_bare_slice(S, k1);
+        if (k0_slice && k1_none) return s_mat(base.dims[0], 1, base.dtype);
+        if (k0_none  && k1_slice) return s_mat(1, base.dims[0], base.dtype);
+    }
+    /* Anything else: pass through unchanged, sitting two refines. */
+    return base;
+}
+
+static tn_shape_t s_infer_expr(tn_sema_t *S, uint32_t node_idx);
+
+static void s_set_shape(tn_sema_t *S, uint32_t node_idx, tn_shape_t sh)
+{
+    if (node_idx >= TN_MAX_NODES) return;
+    S->node_shape[node_idx] = sh;
+}
+
+/* Shape rule for an intrinsic Call. Pulled out so the Call handler
+ * stays readable; the dispatch is large but each case is small. */
+
+static tn_shape_t s_call_shape(tn_sema_t *S, uint32_t call_idx, int id)
+{
+    const tn_parse_t *P = S->parser;
+    const tn_node_t *cn = &P->nodes[call_idx];
+    uint32_t nk = (cn->num_kids == TN_NODE_KIDS_OVERFLOW)
+                  ? cn->kids[1] : cn->num_kids;
+
+    switch (id) {
+    case TN_TLI_PROGRAM_ID:
+    case TN_TLI_NUM_PROGRAMS:
+        return s_scalar(TN_TLI_INT32);
+
+    case TN_TLI_ARANGE: {
+        /* tl.arange(start, stop): rank-1 tile of size (stop - start)
+         * when both are integer literals; dynamic otherwise. */
+        int dim = -1;
+        if (nk >= 3) {
+            uint32_t a = s_kid(S, call_idx, 1);
+            uint32_t b = s_kid(S, call_idx, 2);
+            int av = s_const_int(S, a);
+            int bv = s_const_int(S, b);
+            if (av >= 0 && bv >= 0 && bv >= av) dim = bv - av;
+        }
+        return s_vec(dim, TN_TLI_INT32);
+    }
+
+    case TN_TLI_ZEROS:
+    case TN_TLI_FULL: {
+        int dims[2] = {0, 0};
+        int rank = s_call_shape_arg(S, call_idx, dims);
+        int dtype = s_call_dtype_arg(S, call_idx);
+        if (rank == 0) return s_scalar(dtype);
+        if (rank == 1) return s_vec(dims[0], dtype);
+        return s_mat(dims[0], dims[1], dtype);
+    }
+
+    case TN_TLI_ZEROS_LIKE: {
+        if (nk < 2) return s_scalar(0);
+        return s_infer_expr(S, s_kid(S, call_idx, 1));
+    }
+
+    case TN_TLI_BROADCAST_TO: {
+        int dims[2] = {0, 0};
+        int rank = s_call_shape_arg(S, call_idx, dims);
+        int dtype = 0;
+        if (nk >= 2) {
+            tn_shape_t base = s_infer_expr(S, s_kid(S, call_idx, 1));
+            dtype = base.dtype;
+        }
+        if (rank == 1) return s_vec(dims[0], dtype);
+        if (rank == 2) return s_mat(dims[0], dims[1], dtype);
+        return s_scalar(dtype);
+    }
+
+    case TN_TLI_RESHAPE: {
+        int dims[2] = {0, 0};
+        int rank = s_call_shape_arg(S, call_idx, dims);
+        int dtype = 0;
+        if (nk >= 2) {
+            tn_shape_t base = s_infer_expr(S, s_kid(S, call_idx, 1));
+            dtype = base.dtype;
+        }
+        if (rank == 1) return s_vec(dims[0], dtype);
+        if (rank == 2) return s_mat(dims[0], dims[1], dtype);
+        return s_scalar(dtype);
+    }
+
+    case TN_TLI_TRANS: {
+        if (nk < 2) return s_scalar(0);
+        tn_shape_t base = s_infer_expr(S, s_kid(S, call_idx, 1));
+        if (base.rank == 2) {
+            return s_mat(base.dims[1], base.dims[0], base.dtype);
+        }
+        return base;
+    }
+
+    case TN_TLI_DOT: {
+        /* tl.dot(A, B): if A is [M, K] and B is [K, N], result is
+         * [M, N]. We trust the kernel author on K and just take the
+         * outer dims. */
+        if (nk < 3) return s_scalar(0);
+        tn_shape_t a = s_infer_expr(S, s_kid(S, call_idx, 1));
+        tn_shape_t b = s_infer_expr(S, s_kid(S, call_idx, 2));
+        int dtype = s_call_dtype_arg(S, call_idx);
+        if (dtype == 0) dtype = s_promote_dtype(a.dtype, b.dtype);
+        if (a.rank == 2 && b.rank == 2) {
+            return s_mat(a.dims[0], b.dims[1], dtype);
+        }
+        return s_mat(-1, -1, dtype);
+    }
+
+    case TN_TLI_WHERE: {
+        if (nk < 4) return s_scalar(0);
+        tn_shape_t t = s_infer_expr(S, s_kid(S, call_idx, 2));
+        tn_shape_t f = s_infer_expr(S, s_kid(S, call_idx, 3));
+        return s_broadcast(t, f);
+    }
+
+    case TN_TLI_SUM: case TN_TLI_MAX: case TN_TLI_MIN:
+    case TN_TLI_ARGMAX: case TN_TLI_ARGMIN: {
+        /* Reductions drop one axis. Without an axis= keyword we
+         * collapse the whole tile to a scalar; with one we drop
+         * just that axis. Resolving the axis= keyword statically is
+         * a sitting-two refinement. */
+        if (nk < 2) return s_scalar(0);
+        tn_shape_t base = s_infer_expr(S, s_kid(S, call_idx, 1));
+        if (base.rank == 0) return base;
+        if (base.rank == 1) return s_scalar(base.dtype);
+        /* rank 2 with no axis given: collapse to scalar. With an
+         * axis kw the result keeps one dim, dynamic for now. */
+        return s_vec(-1, base.dtype);
+    }
+
+    case TN_TLI_LOAD: {
+        if (nk < 2) return s_scalar(0);
+        /* Shape follows the pointer expression's shape. The dtype
+         * is the pointee, which we cannot recover here without a
+         * type system; default to TN_TLI_FLOAT32 for now. */
+        tn_shape_t base = s_infer_expr(S, s_kid(S, call_idx, 1));
+        if (base.dtype == 0) base.dtype = TN_TLI_FLOAT32;
+        return base;
+    }
+
+    case TN_TLI_STORE:
+        return s_scalar(0);
+
+    case TN_TLI_MAKE_BLOCK_PTR:
+    case TN_TLI_ADVANCE:
+        return s_scalar(0);
+
+    case TN_TLI_EXP: case TN_TLI_EXP2: case TN_TLI_LOG: case TN_TLI_LOG2:
+    case TN_TLI_SIN: case TN_TLI_COS: case TN_TLI_TAN: case TN_TLI_TANH:
+    case TN_TLI_SQRT: case TN_TLI_RSQRT: case TN_TLI_ABS:
+    case TN_TLI_FLOOR: case TN_TLI_CEIL: case TN_TLI_ERF: {
+        if (nk < 2) return s_scalar(0);
+        return s_infer_expr(S, s_kid(S, call_idx, 1));
+    }
+
+    case TN_TLI_MAXIMUM: case TN_TLI_MINIMUM:
+    case TN_TLI_FDIV: {
+        if (nk < 3) return s_scalar(0);
+        tn_shape_t a = s_infer_expr(S, s_kid(S, call_idx, 1));
+        tn_shape_t b = s_infer_expr(S, s_kid(S, call_idx, 2));
+        return s_broadcast(a, b);
+    }
+
+    case TN_TLI_CDIV:
+        return s_scalar(TN_TLI_INT32);
+
+    default:
+        return s_scalar(0);
+    }
+}
+
+static tn_shape_t s_infer_expr(tn_sema_t *S, uint32_t node_idx)
+{
+    const tn_parse_t *P = S->parser;
+    if (node_idx == 0 || node_idx >= P->num_nodes) return s_scalar(0);
+    const tn_node_t *n = &P->nodes[node_idx];
+
+    /* If we have already computed this node's shape, return it. The
+     * walker can reach the same node twice through shape rules that
+     * recurse into their arguments (DOT, WHERE, etc.). */
+    tn_shape_t cached = S->node_shape[node_idx];
+    if (cached.rank != 0 || cached.dtype != 0) return cached;
+
+    tn_shape_t result = s_scalar(0);
+    uint32_t nk = (n->num_kids == TN_NODE_KIDS_OVERFLOW)
+                  ? n->kids[1] : n->num_kids;
+
+    switch (n->kind) {
+    case TN_NK_LITERAL: {
+        int dt = 0;
+        switch (n->flags) {
+        case TN_LIT_INT:   dt = TN_TLI_INT32; break;
+        case TN_LIT_FLOAT: dt = TN_TLI_FLOAT32; break;
+        case TN_LIT_TRUE:  case TN_LIT_FALSE: dt = TN_TLI_INT1; break;
+        default: dt = 0; break;
+        }
+        result = s_scalar(dt);
+        break;
+    }
+
+    case TN_NK_NAME: {
+        int kind = S->node_sym_kind[node_idx];
+        if (kind == TN_SYM_LOCAL || kind == TN_SYM_LOOPVAR) {
+            /* Copy shape from the declaring node, which by virtue of
+             * the post-order walk has already been inferred for any
+             * assignment that appeared earlier in source order. */
+            uint32_t decl = S->node_sym_aux[node_idx];
+            if (decl < TN_MAX_NODES) {
+                tn_shape_t ds = S->node_shape[decl];
+                /* If the declaring node is an Assign, its shape was
+                 * stashed under the Assign itself by s_infer_stmt. */
+                if (ds.rank != 0 || ds.dtype != 0) {
+                    result = ds;
+                    break;
+                }
+            }
+            result = s_scalar(0);
+        } else if (kind == TN_SYM_PARAM) {
+            /* Without type annotations we cannot know the dtype.
+             * Pointer-ending names (..._ptr) get pointer-shaped
+             * treatment downstream; for shape inference itself
+             * they remain scalar with an unspecified dtype. */
+            result = s_scalar(0);
+        } else {
+            result = s_scalar(0);
+        }
+        break;
+    }
+
+    case TN_NK_BINOP: {
+        if (nk < 2) { result = s_scalar(0); break; }
+        tn_shape_t a = s_infer_expr(S, s_kid(S, node_idx, 0));
+        tn_shape_t b = s_infer_expr(S, s_kid(S, node_idx, 1));
+        result = s_broadcast(a, b);
+        break;
+    }
+
+    case TN_NK_UNOP: {
+        if (nk < 1) { result = s_scalar(0); break; }
+        result = s_infer_expr(S, s_kid(S, node_idx, 0));
+        break;
+    }
+
+    case TN_NK_BOOLOP: {
+        if (nk < 2) { result = s_scalar(TN_TLI_INT1); break; }
+        tn_shape_t a = s_infer_expr(S, s_kid(S, node_idx, 0));
+        tn_shape_t b = s_infer_expr(S, s_kid(S, node_idx, 1));
+        result = s_broadcast(a, b);
+        result.dtype = TN_TLI_INT1;
+        break;
+    }
+
+    case TN_NK_COMPARE: {
+        if (nk < 2) { result = s_scalar(TN_TLI_INT1); break; }
+        tn_shape_t a = s_infer_expr(S, s_kid(S, node_idx, 0));
+        tn_shape_t b = s_infer_expr(S, s_kid(S, node_idx, 1));
+        result = s_broadcast(a, b);
+        result.dtype = TN_TLI_INT1;
+        break;
+    }
+
+    case TN_NK_CALL: {
+        if (nk == 0) { result = s_scalar(0); break; }
+        uint32_t callee = s_kid(S, node_idx, 0);
+        int kind = S->node_sym_kind[callee];
+        if (kind == TN_SYM_INTRINSIC) {
+            int id = (int)S->node_sym_aux[callee];
+            result = s_call_shape(S, node_idx, id);
+        } else {
+            /* Non-intrinsic call: walk children so their shapes are
+             * still annotated, then leave the call result scalar. */
+            for (uint32_t i = 1; i < nk; i++) {
+                (void)s_infer_expr(S, s_kid(S, node_idx, i));
+            }
+            result = s_scalar(0);
+        }
+        break;
+    }
+
+    case TN_NK_SUBSCRIPT: {
+        if (nk == 0) { result = s_scalar(0); break; }
+        tn_shape_t base = s_infer_expr(S, s_kid(S, node_idx, 0));
+        result = s_reshape_subscript(S, node_idx, base);
+        break;
+    }
+
+    case TN_NK_IFEXPR: {
+        /* x if cond else y: result is broadcast(x, y). */
+        if (nk < 3) { result = s_scalar(0); break; }
+        tn_shape_t t = s_infer_expr(S, s_kid(S, node_idx, 0));
+        tn_shape_t f = s_infer_expr(S, s_kid(S, node_idx, 2));
+        (void)s_infer_expr(S, s_kid(S, node_idx, 1));    /* condition */
+        result = s_broadcast(t, f);
+        break;
+    }
+
+    case TN_NK_ATTR:
+        /* tl.float32 and friends: the dtype is the aux, but the
+         * Attr itself appears in expression position only as part
+         * of a Call callee. Leave it scalar with the dtype set so
+         * dump output is informative. */
+        if (S->node_sym_kind[node_idx] == TN_SYM_TYPE) {
+            result = s_scalar((int)S->node_sym_aux[node_idx]);
+        } else {
+            result = s_scalar(0);
+        }
+        break;
+
+    case TN_NK_TUPLE:
+    case TN_NK_LIST:
+        /* No tile-shape meaning; walk children for their own shapes
+         * but report scalar/0 for the tuple itself. */
+        for (uint32_t i = 0; i < nk; i++) {
+            (void)s_infer_expr(S, s_kid(S, node_idx, i));
+        }
+        result = s_scalar(0);
+        break;
+
+    default:
+        result = s_scalar(0);
+        break;
+    }
+
+    s_set_shape(S, node_idx, result);
+    return result;
+}
+
+/* Walk statements, inferring shapes for any expression children and
+ * propagating the RHS shape of an Assign onto the Assign node itself
+ * so Name references reading from this binding pick it up. */
+
+static void s_infer_stmt(tn_sema_t *S, uint32_t node_idx)
+{
+    const tn_parse_t *P = S->parser;
+    if (node_idx == 0 || node_idx >= P->num_nodes) return;
+    const tn_node_t *n = &P->nodes[node_idx];
+    uint32_t nk = (n->num_kids == TN_NODE_KIDS_OVERFLOW)
+                  ? n->kids[1] : n->num_kids;
+
+    switch (n->kind) {
+    case TN_NK_MODULE:
+    case TN_NK_BLOCK:
+    case TN_NK_FUNCDEF:
+        for (uint32_t i = 0; i < nk; i++) {
+            s_infer_stmt(S, s_kid(S, node_idx, i));
+        }
+        return;
+
+    case TN_NK_ASSIGN: {
+        /* kids[0]=target, kids[1]=value. Stash the value's shape on
+         * the Assign node so Name resolution can find it via the
+         * sym aux pointer. */
+        if (nk >= 2) {
+            tn_shape_t v = s_infer_expr(S, s_kid(S, node_idx, 1));
+            s_set_shape(S, node_idx, v);
+        }
+        return;
+    }
+
+    case TN_NK_AUG_ASSIGN: {
+        /* a += b: walk both sides for their shapes; the binding's
+         * shape was set when it was first introduced. */
+        for (uint32_t i = 0; i < nk; i++) {
+            (void)s_infer_expr(S, s_kid(S, node_idx, i));
+        }
+        return;
+    }
+
+    case TN_NK_EXPR_STMT:
+    case TN_NK_RETURN:
+        for (uint32_t i = 0; i < nk; i++) {
+            (void)s_infer_expr(S, s_kid(S, node_idx, i));
+        }
+        return;
+
+    case TN_NK_IF:
+    case TN_NK_WHILE:
+    case TN_NK_FOR:
+        /* Conditions and iterators are expressions; suites are
+         * statements. Walk both kinds without inspecting the node
+         * shape further. */
+        for (uint32_t i = 0; i < nk; i++) {
+            uint32_t kid = s_kid(S, node_idx, i);
+            if (kid == 0 || kid >= P->num_nodes) continue;
+            const tn_node_t *kn = &P->nodes[kid];
+            if (kn->kind == TN_NK_BLOCK) {
+                s_infer_stmt(S, kid);
+            } else {
+                (void)s_infer_expr(S, kid);
+            }
+        }
+        return;
+
+    default:
+        return;
+    }
+}
+
 /* ---- Public API ---- */
+
+int tn_shape_format(tn_shape_t sh, char *buf, int bufsize)
+{
+    if (!buf || bufsize <= 0) return 0;
+    if (sh.rank == 0) {
+        if (sh.dtype == 0) return snprintf(buf, (size_t)bufsize, "scalar");
+        return snprintf(buf, (size_t)bufsize, "scalar:%s",
+                        tn_intrinsic_name(sh.dtype));
+    }
+    if (sh.rank == 1) {
+        char d[16];
+        if (sh.dims[0] < 0) snprintf(d, sizeof(d), "?");
+        else                snprintf(d, sizeof(d), "%d", sh.dims[0]);
+        if (sh.dtype == 0)
+            return snprintf(buf, (size_t)bufsize, "vec[%s]", d);
+        return snprintf(buf, (size_t)bufsize, "vec[%s]:%s",
+                        d, tn_intrinsic_name(sh.dtype));
+    }
+    if (sh.rank == 2) {
+        char d0[16], d1[16];
+        if (sh.dims[0] < 0) snprintf(d0, sizeof(d0), "?");
+        else                snprintf(d0, sizeof(d0), "%d", sh.dims[0]);
+        if (sh.dims[1] < 0) snprintf(d1, sizeof(d1), "?");
+        else                snprintf(d1, sizeof(d1), "%d", sh.dims[1]);
+        if (sh.dtype == 0)
+            return snprintf(buf, (size_t)bufsize, "mat[%s, %s]", d0, d1);
+        return snprintf(buf, (size_t)bufsize, "mat[%s, %s]:%s",
+                        d0, d1, tn_intrinsic_name(sh.dtype));
+    }
+    return snprintf(buf, (size_t)bufsize, "?");
+}
 
 void tn_sema_init(tn_sema_t *S, const tn_parse_t *P)
 {
@@ -664,6 +1407,7 @@ int tn_sema(tn_sema_t *S)
 
     if (S->parser->root != 0) {
         s_walk(S, S->parser->root);
+        s_infer_stmt(S, S->parser->root);
     }
 
     s_pop_scope(S);
@@ -730,6 +1474,18 @@ static void s_dump_node(const tn_sema_t *S, uint32_t idx,
             fprintf(out, " -> %s(%s)",
                     tn_sym_kind_name(kind),
                     tn_intrinsic_name((int)S->node_sym_aux[idx]));
+        }
+    }
+
+    /* Append the inferred tile shape for expression nodes. We skip
+     * the rank-0 / dtype-0 default since printing "scalar" on every
+     * statement and structural node would just be noise. */
+    {
+        tn_shape_t sh = S->node_shape[idx];
+        if (sh.rank != 0 || sh.dtype != 0) {
+            char sbuf[64];
+            tn_shape_format(sh, sbuf, sizeof(sbuf));
+            fprintf(out, " : %s", sbuf);
         }
     }
 

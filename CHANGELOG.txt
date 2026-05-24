@@ -1,6 +1,17 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-24 — Triton tile shape inference, sitting one. The sema
+pass now walks every expression bottom-up and annotates a
+(rank, dims, dtype) triple onto each AST node. Scalar, vec[N]
+and mat[M, N] all flow through; arange, zeros, broadcast and
+the canonical [:, None] / [None, :] reshape patterns produce
+the right shapes; numpy-style broadcasting picks up the cases
+real Triton kernels rely on. Constexpr value propagation is the
+next sitting, so block-size dims still print as `?` for now,
+which is fine for getting lowering to dispatch on rank. See
+issue #82.
+
 2026-05-24 — Tenstorrent native RV32IM backend. The baby
 RISC-V cores on Wormhole now have a real codegen path that
 does not go through Metalium SFPI. New --rv-elf flag lands a
