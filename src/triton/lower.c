@@ -221,7 +221,7 @@ static int l_shape_supported(tn_lower_t *L, uint32_t node_idx)
     if (sh.rank < 2) return 1;
     char sbuf[64];
     tn_shape_format(sh, sbuf, sizeof(sbuf));
-    char msg[128];
+    char msg[256];
     snprintf(msg, sizeof(msg),
              "rank-2 tile (%s) needs matrix codegen "
              "(MFMA / mma.sync), not yet lowered", sbuf);
