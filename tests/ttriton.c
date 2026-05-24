@@ -156,6 +156,60 @@ static void tt_sema_ai_slop_still_resolves(void)
 }
 TH_REG("triton", tt_sema_ai_slop_still_resolves)
 
+static void tt_sema_shapes_vector_add(void)
+{
+    /* Sitting one of tile shape inference. The vector add kernel uses
+     * arange to build a rank-1 tile, broadcasts a scalar against it,
+     * and compares it for the mask. We expect the shapes to land as:
+     *   offsets -> vec[?]:int32   (broadcast of scalar + arange)
+     *   mask    -> vec[?]:int1    (vec compared against scalar)
+     * The size is dynamic because BLOCK_SIZE is a constexpr param and
+     * we do not propagate constexpr values in this sitting. */
+    int rc = tt_run("--triton --sema tests/tri_vadd.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "vec[?]:int32") != NULL);
+    CHECK(strstr(obuf, "vec[?]:int1") != NULL);
+    PASS();
+}
+TH_REG("triton", tt_sema_shapes_vector_add)
+
+static void tt_sema_shapes_2d_broadcast(void)
+{
+    /* Rank-2 broadcasting. The matmul-shape kernel exercises both
+     * sides of the canonical [:, None] / [None, :] reshape pattern,
+     * then arithmetic between the resulting rank-2 tiles. Expected
+     * shapes:
+     *   offs_m[:, None] -> mat[?, 1]:int32
+     *   offs_k[None, :] -> mat[1, ?]:int32
+     *   broadcast sum   -> mat[?, ?]:int32
+     *   tl.zeros((M, N), dtype=tl.float32) -> mat[?, ?]:float32
+     * Like the vector test, dims are dynamic because the tile sizes
+     * are constexpr params. */
+    int rc = tt_run("--triton --sema tests/tri_mm.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "mat[?, 1]:int32") != NULL);
+    CHECK(strstr(obuf, "mat[1, ?]:int32") != NULL);
+    CHECK(strstr(obuf, "mat[?, ?]:int32") != NULL);
+    CHECK(strstr(obuf, "mat[?, ?]:float32") != NULL);
+    PASS();
+}
+TH_REG("triton", tt_sema_shapes_2d_broadcast)
+
+static void tt_sema_shapes_scalar_kernel(void)
+{
+    /* The simple all-scalar kernel should have no tile shapes at all;
+     * every expression is rank 0 with dtype int32. We check both that
+     * scalar:int32 appears (positive) and that no vec[ or mat[ shows
+     * up in the output (negative). */
+    int rc = tt_run("--triton --sema tests/tri_simple.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "scalar:int32") != NULL);
+    CHECK(strstr(obuf, "vec[") == NULL);
+    CHECK(strstr(obuf, "mat[") == NULL);
+    PASS();
+}
+TH_REG("triton", tt_sema_shapes_scalar_kernel)
+
 /* ============================================================
  * BIR Lowering
  * ============================================================ */

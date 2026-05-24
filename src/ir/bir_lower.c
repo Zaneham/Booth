@@ -2975,6 +2975,44 @@ static void collect_typedef(lower_t *L, uint32_t node)
     uint32_t name_n = child_at(L, node, 1);
     if (!name_n || ND(L, name_n)->type != AST_IDENT) return;
 
+    /* If this is "typedef struct { ... } name;" the parser stashed
+     * the AST_STRUCT_DEF as child[2] of the var_decl (after type
+     * and name). The struct itself was given a synthetic anonymous
+     * name by the parser, so collect_struct would record a name no
+     * source code ever looks up. Register the struct under the
+     * typedef name before falling through to the typedef record,
+     * so any later "name f; f.field" lookup finds it via L->structs.
+     *
+     * Looking for the AST_STRUCT_DEF among the var_decl's children
+     * rather than as a sibling of name_n because that is where the
+     * parser actually puts it; this is the bug that bit the
+     * soft-float compile and is now under test. */
+    {
+        uint32_t cc = ND(L, node)->first_child;
+        while (cc) {
+            if (ND(L, cc)->type == AST_STRUCT_DEF) {
+                int prev_n = L->nstructs;
+                collect_struct(L, cc);
+                /* Add a second entry under the typedef name that
+                 * shares the underlying bir_type. The synthetic
+                 * anon entry stays so resolve_type for the typedef
+                 * target finds it during its own TYPE_STRUCT walk;
+                 * the typedef-named entry is what later member
+                 * access via "name v; v.field" looks up by name. */
+                if (L->nstructs > prev_n &&
+                    L->nstructs < MAX_STRUCTS) {
+                    struct_def_t *src = &L->structs[prev_n];
+                    struct_def_t *dst = &L->structs[L->nstructs];
+                    *dst = *src;
+                    get_text(L, name_n, dst->name, sizeof(dst->name));
+                    L->nstructs++;
+                }
+                break;
+            }
+            cc = ND(L, cc)->next_sibling;
+        }
+    }
+
     typedef_def_t *td = &L->typedefs[L->ntypedefs++];
     get_text(L, name_n, td->name, sizeof(td->name));
     td->bir_type = resolve_type(L, type_n, ND(L, node)->d.oper.flags, 0);

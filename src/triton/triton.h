@@ -434,12 +434,23 @@ typedef struct {
 #define TN_MAX_SYMBOLS  8192
 #define TN_MAX_SCOPES   128
 
+/* ---- Sema: Tile Shape ----
+ * rank 0 = scalar, rank 1 = vec[dims[0]], rank 2 = mat[dims[0],
+ * dims[1]]. dim = -1 means dynamic. dtype is a tn_intrinsic_t code
+ * (tl.float32 etc.), or 0 if not yet inferred. */
+
+typedef struct {
+    uint8_t  rank;
+    uint8_t  dtype;
+    uint8_t  _pad[2];
+    int32_t  dims[2];
+} tn_shape_t;                                       /* 12 bytes */
+
 /* ---- Sema: Per-Node Annotation ----
- * Two parallel arrays sized to the parser node pool. node_sym_kind
- * stores the resolved category and node_sym_aux stores whichever
- * auxiliary value the category implies. For a Name, kind+aux say
- * what it resolved to. For an Attr matching tl.X, kind=INTRINSIC
- * and aux is the tn_intrinsic_t. */
+ * Parallel arrays over the parser node pool. node_sym_kind +
+ * node_sym_aux carry the resolved symbol for Name / Attr. node_shape
+ * carries the inferred tile shape; non-expression nodes leave it
+ * zero. */
 
 typedef struct {
     const tn_parse_t *parser;
@@ -452,6 +463,7 @@ typedef struct {
 
     uint8_t         node_sym_kind[TN_MAX_NODES];
     uint32_t        node_sym_aux[TN_MAX_NODES];
+    tn_shape_t      node_shape[TN_MAX_NODES];
 
     bc_error_t      errors[BC_MAX_ERRORS];
     int             num_errors;
@@ -464,6 +476,10 @@ int         tn_sema(tn_sema_t *S);
 void        tn_sema_dump(const tn_sema_t *S, FILE *out);
 const char *tn_sym_kind_name(int kind);
 const char *tn_intrinsic_name(int id);
+
+/* Format a shape as "scalar", "vec[N]" or "mat[M, N]" with an
+ * optional :dtype suffix. ? appears where a dim is dynamic. */
+int         tn_shape_format(tn_shape_t sh, char *buf, int bufsize);
 
 /* ---- Lowering Context ----
  * Walks the sema-annotated AST and produces BIR. Heap-allocated to

@@ -6,7 +6,7 @@ CFLAGS  = -std=c99 -Wall -Wextra -pedantic -Werror -O2 \
           -Wconversion -Wold-style-definition \
           -Wdouble-promotion -Wswitch-enum -Wredundant-decls -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -fcf-protection \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime
 LDFLAGS = -pie
 LIBS    = -lm
 # Linux/ELF only: -Wl,-z,relro,-z,now -Wl,-z,noexecstack
@@ -14,8 +14,10 @@ LIBS    = -lm
 SOURCES = src/main.c \
           src/fe/bc_err.c src/fe/preproc.c src/fe/lexer.c src/fe/parser.c src/fe/sema.c \
           src/ir/bir.c src/ir/bir_print.c src/ir/bir_lower.c src/ir/bir_mem2reg.c src/ir/bir_cfold.c src/ir/bir_dce.c \
+          src/tdf/tdf.c src/tdf/tdf_lower.c src/tdf/tdf_fission.c src/tdf/tdf_place.c src/tdf/tdf_noc.c \
           src/amdgpu/amd_rplan.c src/amdgpu/isel.c src/amdgpu/emit.c src/amdgpu/ra_ssa.c src/amdgpu/encode.c src/amdgpu/enc_tab.c src/amdgpu/sched.c src/amdgpu/verify.c \
           src/tensix/isel.c src/tensix/emit.c src/tensix/coarsen.c src/tensix/datamov.c \
+          src/tensix/rv_enc.c src/tensix/rv_buf.c src/tensix/rv_elf.c src/tensix/rv_isel.c \
           src/nvidia/isel.c src/nvidia/emit.c \
           src/metal/emit.c \
           src/intel/emit.c \
@@ -33,7 +35,8 @@ $(TARGET): $(OBJECTS)
 
 # ---- Test Suite ----
 TCFLAGS = -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime \
+          -Iruntime
 TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/ttabs.c tests/ttypes.c tests/terrs.c tests/tphase.c \
           tests/tdce.c \
@@ -41,9 +44,15 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tsched.c \
           tests/tabend.c \
           tests/tregalloc.c \
-          tests/ttriton.c
+          tests/ttriton.c \
+          tests/ttdf.c \
+          tests/trv_enc.c tests/trv_buf.c tests/trv_elf.c tests/trv_isel.c \
+          tests/tsoft_fp.c
 TOBJS   = $(TSRC:.c=.o)
 COBJS   = src/ir/bir.o src/ir/bir_print.o src/ir/bir_lower.o src/ir/bir_mem2reg.o src/ir/bir_cfold.o src/ir/bir_dce.o \
+          src/tdf/tdf.o src/tdf/tdf_lower.o src/tdf/tdf_fission.o src/tdf/tdf_place.o src/tdf/tdf_noc.o \
+          src/tensix/rv_enc.o src/tensix/rv_buf.o src/tensix/rv_elf.o src/tensix/rv_isel.o \
+          runtime/soft_fp.o \
           src/amdgpu/amd_rplan.o src/amdgpu/encode.o src/amdgpu/enc_tab.o src/amdgpu/isel.o src/amdgpu/emit.o src/amdgpu/ra_ssa.o src/amdgpu/sched.o src/amdgpu/verify.o \
           src/fe/bc_err.o src/fe/lexer.o src/fe/parser.o src/fe/preproc.o src/fe/sema.o \
           src/runtime/bc_abend.o
@@ -60,7 +69,13 @@ tests/%.o: tests/%.c
 src/runtime/%.o: src/runtime/%.c
 	$(CC) $(TCFLAGS) -c $< -o $@
 
+# Target-side runtime (soft-float, etc). Built with host gcc here
+# so we can host-test the IEEE math; barracuda will compile the
+# same .c files separately when generating kernel ELFs.
+runtime/%.o: runtime/%.c
+	$(CC) $(TCFLAGS) -c $< -o $@
+
 clean:
-	rm -f $(OBJECTS) $(TARGET) $(TARGET).exe trunner trunner.exe $(TOBJS) src/runtime/*.o
+	rm -f $(OBJECTS) $(TARGET) $(TARGET).exe trunner trunner.exe $(TOBJS) src/runtime/*.o runtime/*.o
 
 .PHONY: all clean test

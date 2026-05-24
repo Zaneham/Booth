@@ -1,6 +1,37 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-24 — Triton tile shape inference, sitting one. The sema
+pass now walks every expression bottom-up and annotates a
+(rank, dims, dtype) triple onto each AST node. Scalar, vec[N]
+and mat[M, N] all flow through; arange, zeros, broadcast and
+the canonical [:, None] / [None, :] reshape patterns produce
+the right shapes; numpy-style broadcasting picks up the cases
+real Triton kernels rely on. Constexpr value propagation is the
+next sitting, so block-size dims still print as `?` for now,
+which is fine for getting lowering to dispatch on rank. See
+issue #82.
+
+2026-05-24 — Tenstorrent native RV32IM backend. The baby
+RISC-V cores on Wormhole now have a real codegen path that
+does not go through Metalium SFPI. New --rv-elf flag lands a
+.elf for a __global__ kernel; 13 of the small CUDA samples
+compile through it cleanly.
+
+Also new: a TDF (Tile DataFlow) layer above BIR that models
+regions, L1 placement, and NoC arcs as one shared description,
+and a soft-float fp32 runtime under runtime/ aimed at the
+forthcoming float lowering pass. The runtime is correct against
+the host FPU (28 corner cases + 1000 random pairs); wiring it
+into --rv-elf is the next sitting.
+
+Compiler fix: typedef struct { ... } name; now registers
+properly, so member access on the typedef name no longer fails
+with E110. Two frontend bugs found along the way are filed as
+#88 (preprocessor expands macros inside /* */ comments) and #89
+(lexer treats apostrophes inside /* */ comments as char-literal
+starts). Test suite 256/256.
+
 2026-05-21 — Triton end-to-end test suite. 16 new tests in
 tests/ttriton.c covering the four frontend stages (lex, parse,
 sema, IR) and the three backends a Triton kernel can land on

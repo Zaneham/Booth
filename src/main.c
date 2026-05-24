@@ -14,6 +14,10 @@
 #include "metal.h"
 #include "intel.h"
 #include "triton.h"
+#include "tdf.h"
+#include "rv_buf.h"
+#include "rv_elf.h"
+#include "rv_isel.h"
 #include <stdlib.h>
 
 static char       source_buf[BC_MAX_SOURCE];
@@ -31,10 +35,10 @@ static bir_module_t *bir_module; /* heap-allocated (~11 MB) */
 
 typedef struct {
     int             no_mem2reg, no_cfold, no_dce, no_sched;
-    int             mode_ir;
+    int             mode_ir, mode_tdf, mode_tdf_fission;
     int             mode_amdgpu, mode_amdgpu_bin;
     int             mode_tensix, mode_nvidia, nv_bkhit;
-    int             mode_metal, mode_intel;
+    int             mode_metal, mode_intel, mode_rv_elf;
     amd_target_t    amd_target;
     uint32_t        amd_elfm;
     const char     *amd_chip;
@@ -42,6 +46,25 @@ typedef struct {
     intel_target_t  intel_target;
     const char     *output_file;
 } backend_cfg_t;
+
+/* TDF module and lowering scratch live in BSS, not on the stack.
+ * The struct is ~20 KB and trips -Wstack-usage hard if you put it
+ * in run_bir_backends, plus the rest of that function is already
+ * doing four large allocations in shared scope. */
+static td_mod_t  g_tdf_mod;
+static td_lout_t g_tdf_out;
+
+static int target_for_cfg(const backend_cfg_t *cfg)
+{
+    /* The first mode that wins picks the TDF target. Lowering is a
+     * passthrough on all targets today, so the choice only matters
+     * for the dump label and for when Tensix fission starts doing
+     * something interesting on its own branch. */
+    if (cfg->mode_tdf_fission) return TD_TGT_TENSIX;
+    if (cfg->mode_tensix) return TD_TGT_TENSIX;
+    if (cfg->mode_nvidia) return TD_TGT_NVIDIA;
+    return TD_TGT_AMD;
+}
 
 static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
 {
@@ -51,6 +74,51 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     if (!cfg->no_mem2reg) bir_mem2reg(bir);
     if (!cfg->no_cfold)   bir_cfold(bir);
     if (!cfg->no_dce)     bir_dce(bir);
+
+    /* Wrap the BIR in a TDF module and lower it. For AMD and NVIDIA
+     * this is a degenerate passthrough, the lowering hands the same
+     * BIR pointer straight back, and the cost is one memset plus
+     * three field assignments. The reason we go through the dance
+     * at all is so the layer stays exercised and the day Tensix
+     * fission lands here is the day it works rather than the day
+     * we go looking for which backend forgot to call it. */
+    int tdrc = td_build_solo_from_bir(&g_tdf_mod, target_for_cfg(cfg), bir);
+    if (tdrc != BC_OK) return tdrc;
+
+    /* Fission preview: run the analysis pass, dump the resulting
+     * three-region graph, and stop. The lowering can't materialise
+     * three baby-core BIR bodies yet, so going past dump would just
+     * trip td_lower into refusing. This is the flag that lets us
+     * stare at what fission produces while the BIR-splitting half
+     * of the pass is still being written. */
+    if (cfg->mode_tdf_fission) {
+        int frc = td_fission_tensix(&g_tdf_mod);
+        if (frc != BC_OK) return frc;
+        /* Place channels into L1 so the dump shows real offsets
+         * rather than zeros. Placement after fission and before
+         * dump is the order multi-region lowering will want too:
+         * the eventual RV32IM emitter reads l1_off from each
+         * channel when materialising the CB descriptor pointers. */
+        int prc = td_place_l1(&g_tdf_mod);
+        if (prc != BC_OK) return prc;
+        /* NoC orchestration fills in noc_id and length on every
+         * RD and WR arc. Runs after placement because the length
+         * computation reads from the channel tag the placer also
+         * uses, and ordering the passes the same way means the
+         * eventual RV32IM emitter sees them in the order it will
+         * consume them. */
+        int nrc = td_noc_orchestrate(&g_tdf_mod);
+        if (nrc != BC_OK) return nrc;
+        td_dump(&g_tdf_mod, stdout);
+        return BC_OK;
+    }
+
+    if (cfg->mode_tdf) {
+        td_dump(&g_tdf_mod, stdout);
+    }
+    tdrc = td_lower(&g_tdf_mod, &g_tdf_out);
+    if (tdrc != BC_OK) return tdrc;
+    bir = g_tdf_out.mods[0];   /* same pointer today, future-proof tomorrow */
 
     if (cfg->mode_ir) {
         bir_print_module(bir, stdout);
@@ -149,6 +217,29 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
         free(im);
     }
 
+    /* Native RV32IM emission for the baby cores. Picks the first
+     * function in the BIR module (which is the first CUDA kernel
+     * defined in the source) and runs it through the bring-up isel
+     * into an ELF that the tt-metal host loader can drop onto a
+     * baby core. Soft-float not yet linked in; integer kernels
+     * only for now. */
+    if (cfg->mode_rv_elf) {
+        static rv_buf_t rv_code;
+        rv_buf_init(&rv_code);
+        if (bir->num_funcs == 0u) {
+            fprintf(stderr, "error: BIR module has no functions\n");
+            return BC_ERR_TDF;
+        }
+        int irc = rv_isel_func(bir, 0u, &rv_code);
+        if (irc != BC_OK) return irc;
+        const char *path = cfg->output_file ? cfg->output_file : "a.elf";
+        int erc = rv_elf_write(&rv_code, path);
+        if (erc != BC_OK) return erc;
+        fprintf(stderr, "wrote %s (%u bytes code, %u instructions)\n",
+                path, rv_buf_pos_bytes(&rv_code),
+                rv_buf_n_words(&rv_code));
+    }
+
     /* Tensix needs additional reader/writer/host emission besides
      * the compute kernel, which is why it lives slightly off the
      * shared shape. */
@@ -243,6 +334,13 @@ static void usage(const char *prog)
         "  --lex         Tokenize and dump token stream\n"
         "  --parse       Parse and dump AST\n"
         "  --ir          Lower to BIR and print IR\n"
+        "  --tdf         Dump the Tile DataFlow graph just before lowering\n"
+        "  --tdf-fission Run the Tensix fission analysis on the BIR and dump\n"
+        "                the three-region (RDR/CMP/WRT) graph it produces.\n"
+        "                Preview mode: does not invoke any backend.\n"
+        "  --rv-elf      Native RV32IM emission for the Tensix baby cores.\n"
+        "                Writes an ELF that tt-metal can load. Integer kernels\n"
+        "                only for now; soft-float runtime not yet linked.\n"
         "  --no-mem2reg  Skip mem2reg optimization pass\n"
         "  --no-cfold    Skip constant folding\n"
         "  --no-dce      Skip dead code elimination\n"
@@ -289,12 +387,15 @@ int main(int argc, char *argv[])
     int mode_parse = 0;
     int mode_sema = 0;
     int mode_ir = 0;
+    int mode_tdf = 0;
+    int mode_tdf_fission = 0;
     int mode_amdgpu = 0;
     int mode_amdgpu_bin = 0;
     int mode_tensix = 0;
     int mode_nvidia = 0;
     int mode_metal = 0;
     int mode_intel = 0;
+    int mode_rv_elf = 0;
     int mode_hip = 0;           /* HIP frontend: see HIP NOTES below */
     int mode_triton = 0;        /* Triton frontend: see TRITON NOTES below */
     intel_target_t intel_target = INTEL_TARGET_XE_HPG;
@@ -324,6 +425,12 @@ int main(int argc, char *argv[])
             mode_sema = 1;
         else if (strcmp(argv[i], "--ir") == 0)
             mode_ir = 1;
+        else if (strcmp(argv[i], "--tdf") == 0)
+            mode_tdf = 1;
+        else if (strcmp(argv[i], "--tdf-fission") == 0)
+            mode_tdf_fission = 1;
+        else if (strcmp(argv[i], "--rv-elf") == 0)
+            mode_rv_elf = 1;
         else if (strcmp(argv[i], "--pp") == 0)
             mode_pp = 1;
         else if (strcmp(argv[i], "--no-pp") == 0)
@@ -449,7 +556,7 @@ int main(int argc, char *argv[])
 
     if (!mode_pp && !mode_lex && !mode_parse && !mode_sema && !mode_ir &&
         !mode_amdgpu && !mode_amdgpu_bin && !mode_tensix && !mode_nvidia &&
-        !mode_metal && !mode_intel)
+        !mode_metal && !mode_intel && !mode_rv_elf)
         mode_parse = 1;
 
     /* ---- HIP NOTES (1 of 2) -------------------------------------------
@@ -591,6 +698,9 @@ int main(int argc, char *argv[])
                         cfg.no_dce     = no_dce;
                         cfg.no_sched   = no_sched;
                         cfg.mode_ir    = mode_ir;
+                        cfg.mode_tdf   = mode_tdf;
+                        cfg.mode_tdf_fission = mode_tdf_fission;
+                        cfg.mode_rv_elf      = mode_rv_elf;
                         cfg.mode_amdgpu     = mode_amdgpu;
                         cfg.mode_amdgpu_bin = mode_amdgpu_bin;
                         cfg.mode_tensix     = mode_tensix;
@@ -724,7 +834,7 @@ int main(int argc, char *argv[])
     }
 
     if (mode_parse || mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-        mode_tensix || mode_nvidia || mode_metal || mode_intel) {
+        mode_tensix || mode_nvidia || mode_metal || mode_intel || mode_rv_elf) {
         parser_t P;
         parser_init(&P, token_buf, L.num_tokens, lex_src,
                     node_buf, BC_MAX_NODES);
@@ -777,7 +887,7 @@ int main(int argc, char *argv[])
         }
 
         if ((mode_ir || mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
-             mode_nvidia || mode_metal || mode_intel) &&
+             mode_nvidia || mode_metal || mode_intel || mode_rv_elf) &&
             P.num_errors == 0) {
             bc_error_t lower_errs[BC_MAX_ERRORS];
             int num_lower_errs = 0;
@@ -803,6 +913,9 @@ int main(int argc, char *argv[])
                 cfg.no_dce     = no_dce;
                 cfg.no_sched   = no_sched;
                 cfg.mode_ir    = mode_ir;
+                cfg.mode_tdf   = mode_tdf;
+                cfg.mode_tdf_fission = mode_tdf_fission;
+                cfg.mode_rv_elf = mode_rv_elf;
                 cfg.mode_amdgpu     = mode_amdgpu;
                 cfg.mode_amdgpu_bin = mode_amdgpu_bin;
                 cfg.mode_tensix     = mode_tensix;
