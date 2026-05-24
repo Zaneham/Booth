@@ -1051,16 +1051,17 @@ static uint32_t p_param(tn_parse_t *P)
     }
     p_advance(P);
 
-    /* Optional type annotation: `: expr`. */
+    /* Optional `: anno` and `= default`. The default goes through the
+     * real expression parser so sema can read a constexpr literal
+     * (BLOCK_M: tl.constexpr = 128) out of it. The annotation stays
+     * an opaque span; sema only cares whether it mentions constexpr. */
     if (p_at(P, TN_TOK_COLON)) {
         p_advance(P);
         p_push_kid(P, p_expr_span(P, 0, 1));
     }
-
-    /* Optional default value: `= expr`. */
     if (p_at(P, TN_TOK_ASSIGN)) {
         p_advance(P);
-        p_push_kid(P, p_expr_span(P, 0, 1));
+        p_push_kid(P, p_expr_no_tuple(P));
     }
 
     p_set_kids(P, node, sb);

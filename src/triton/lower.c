@@ -208,6 +208,27 @@ static double l_parse_float(const char *s, uint32_t len)
 
 static uint32_t l_expr(tn_lower_t *L, uint32_t node_idx);
 
+/* Refuse to lower expressions whose inferred shape is rank-2 or
+ * higher. The shape annotation comes from sema; what's missing is
+ * the matrix-instruction codegen (MFMA on AMD, mma.sync on NVIDIA).
+ * Until those exist, lowering a rank-2 tile would produce silent
+ * wrong code. */
+
+static int l_shape_supported(tn_lower_t *L, uint32_t node_idx)
+{
+    if (node_idx >= TN_MAX_NODES) return 1;
+    tn_shape_t sh = L->sema->node_shape[node_idx];
+    if (sh.rank < 2) return 1;
+    char sbuf[64];
+    tn_shape_format(sh, sbuf, sizeof(sbuf));
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "rank-2 tile (%s) needs matrix codegen "
+             "(MFMA / mma.sync), not yet lowered", sbuf);
+    l_err(L, 99, l_tok(L, node_idx), msg);
+    return 0;
+}
+
 static uint32_t l_lit(tn_lower_t *L, uint32_t node_idx)
 {
     const tn_parse_t *P = L->parser;
@@ -654,6 +675,7 @@ static uint32_t l_call(tn_lower_t *L, uint32_t node_idx)
 static uint32_t l_expr(tn_lower_t *L, uint32_t node_idx)
 {
     if (node_idx == 0 || node_idx >= L->parser->num_nodes) return BIR_VAL_NONE;
+    if (!l_shape_supported(L, node_idx)) return BIR_VAL_NONE;
     const tn_node_t *n = &L->parser->nodes[node_idx];
 
     switch (n->kind) {
