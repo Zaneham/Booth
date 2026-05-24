@@ -2023,10 +2023,98 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
         return BIR_MAKE_CONST(bir_const_int(L->M, t, sz));
     }
 
-    case AST_STRING_LIT:
-        /* String literals in device code are unusual — emit as i64 0 */
-        return BIR_MAKE_CONST(bir_const_int(L->M,
-            bir_type_int(L->M, 64), 0));
+    case AST_STRING_LIT: {
+        /* Decode the source span (with surrounding quotes and C
+         * escape sequences) into raw bytes, intern them in the
+         * strings table, create a __constant__ global whose
+         * initializer is BIR_CONST_BYTES pointing at those bytes,
+         * and return a BIR_GLOBAL_REF to the global. Each backend
+         * is responsible for materialising the bytes in its
+         * binary's read-only region. */
+        const char *src = L->src + ND(L, node)->d.text.offset;
+        uint32_t srclen = ND(L, node)->d.text.len;
+
+        /* Adjacent string literals are merged by the parser into a
+         * single AST_STRING_LIT whose source span covers both. We
+         * walk the span and decode each "..." segment, skipping
+         * whitespace between them. */
+        char bytes[2048];
+        uint32_t blen = 0;
+        uint32_t p = 0;
+        while (p < srclen) {
+            while (p < srclen && (src[p] == ' ' || src[p] == '\t' ||
+                                  src[p] == '\n' || src[p] == '\r')) p++;
+            if (p >= srclen) break;
+            if (src[p] != '"') { p++; continue; }
+            p++;  /* opening quote */
+            while (p < srclen && src[p] != '"' && blen + 1 < sizeof(bytes)) {
+                if (src[p] != '\\') { bytes[blen++] = src[p++]; continue; }
+                p++;
+                if (p >= srclen) break;
+                char c = src[p++];
+                switch (c) {
+                case 'n':  bytes[blen++] = '\n'; break;
+                case 't':  bytes[blen++] = '\t'; break;
+                case 'r':  bytes[blen++] = '\r'; break;
+                case '0':  bytes[blen++] = '\0'; break;
+                case '\\': bytes[blen++] = '\\'; break;
+                case '"':  bytes[blen++] = '"';  break;
+                case '\'': bytes[blen++] = '\''; break;
+                case 'a':  bytes[blen++] = '\a'; break;
+                case 'b':  bytes[blen++] = '\b'; break;
+                case 'f':  bytes[blen++] = '\f'; break;
+                case 'v':  bytes[blen++] = '\v'; break;
+                case 'x': {
+                    /* \xHH hex escape. Read 1-2 hex digits. */
+                    int val = 0, hd = 0;
+                    while (p < srclen && hd < 2) {
+                        char h = src[p];
+                        int d = -1;
+                        if (h >= '0' && h <= '9') d = h - '0';
+                        else if (h >= 'a' && h <= 'f') d = 10 + (h - 'a');
+                        else if (h >= 'A' && h <= 'F') d = 10 + (h - 'A');
+                        if (d < 0) break;
+                        val = val * 16 + d;
+                        p++; hd++;
+                    }
+                    bytes[blen++] = (char)val;
+                    break;
+                }
+                default:   bytes[blen++] = c; break;
+                }
+            }
+            if (p < srclen && src[p] == '"') p++;  /* closing quote */
+        }
+        bytes[blen] = '\0';
+
+        /* Stash the bytes in the strings table and create a global
+         * for them. We never deduplicate; two source-distinct
+         * literals stay distinct, which avoids the pointer-identity
+         * surprise dedup would create. */
+        uint32_t off = bir_add_string(L->M, bytes, blen);
+        uint32_t i8  = bir_type_int(L->M, 8);
+        uint32_t arr = bir_type_array(L->M, i8, blen + 1u);
+        uint32_t ptr = bir_type_ptr(L->M, arr, BIR_AS_CONSTANT);
+
+        if (L->M->num_globals >= BIR_MAX_GLOBALS) {
+            lower_error(L, node, BC_E106);
+            return BIR_VAL_NONE;
+        }
+        uint32_t gi = L->M->num_globals++;
+        bir_global_t *G = &L->M->globals[gi];
+        char gname[24];
+        snprintf(gname, sizeof(gname), ".str.%u", gi);
+        G->name = bir_add_string(L->M, gname, (uint32_t)strlen(gname));
+        G->type = arr;
+        G->initializer = BIR_MAKE_CONST(
+            bir_const_bytes(L->M, arr, off, blen + 1u));
+        G->cuda_flags = CUDA_CONSTANT;
+        G->addrspace = BIR_AS_CONSTANT;
+        G->is_const = 1;
+
+        uint32_t inst = emit(L, BIR_GLOBAL_REF, ptr, 0, (uint8_t)(gi & 0xff));
+        return BIR_MAKE_VAL(inst);
+    }
 
     default:
         lower_error(L, node, BC_E106);

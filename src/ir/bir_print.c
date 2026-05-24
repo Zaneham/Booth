@@ -101,6 +101,8 @@ static void print_val(const bir_module_t *M, uint32_t ref,
         switch (c->kind) {
         case BIR_CONST_INT:   fprintf(out, "%lld", (long long)c->d.ival); break;
         case BIR_CONST_FLOAT: fprintf(out, "%g", c->d.fval); break;
+        case BIR_CONST_BYTES: fprintf(out, "bytes[%u@%u]",
+                                       c->d.bytes.len, c->d.bytes.off); break;
         case BIR_CONST_NULL:  fprintf(out, "null"); break;
         case BIR_CONST_UNDEF: fprintf(out, "undef"); break;
         case BIR_CONST_ZERO:  fprintf(out, "zeroinit"); break;
@@ -518,6 +520,29 @@ void bir_print_module(const bir_module_t *M, FILE *out)
                 case BIR_CONST_FLOAT: fprintf(out, "%g", c->d.fval); break;
                 case BIR_CONST_NULL:  fprintf(out, "null"); break;
                 case BIR_CONST_ZERO:  fprintf(out, "zeroinit"); break;
+                case BIR_CONST_BYTES: {
+                    /* Print as a quoted string with C escapes; the
+                     * lex/parse roundtrip should produce identical
+                     * bytes. */
+                    fprintf(out, "\"");
+                    const char *b = &M->strings[c->d.bytes.off];
+                    uint32_t bn = c->d.bytes.len;
+                    /* Drop the trailing null we appended so the
+                     * printed form matches the source. */
+                    if (bn > 0 && b[bn - 1] == '\0') bn--;
+                    for (uint32_t j = 0; j < bn; j++) {
+                        unsigned char ch = (unsigned char)b[j];
+                        if (ch == '\\')      fprintf(out, "\\\\");
+                        else if (ch == '"')  fprintf(out, "\\\"");
+                        else if (ch == '\n') fprintf(out, "\\n");
+                        else if (ch == '\t') fprintf(out, "\\t");
+                        else if (ch == '\r') fprintf(out, "\\r");
+                        else if (ch >= 32 && ch < 127) fprintf(out, "%c", ch);
+                        else fprintf(out, "\\x%02x", ch);
+                    }
+                    fprintf(out, "\"");
+                    break;
+                }
                 default:              fprintf(out, "const_%u", ci); break;
                 }
             }

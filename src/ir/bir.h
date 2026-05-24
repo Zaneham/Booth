@@ -214,6 +214,7 @@ typedef enum {
     BIR_CONST_NULL,
     BIR_CONST_UNDEF,
     BIR_CONST_ZERO,
+    BIR_CONST_BYTES,            /* d.bytes.off/len index the strings table */
     BIR_CONST_KIND_COUNT
 } bir_const_kind_t;
 
@@ -224,6 +225,7 @@ typedef struct {
     union {
         int64_t     ival;
         double      fval;
+        struct { uint32_t off; uint32_t len; } bytes;
     } d;
 } bir_const_t;  /* 16 bytes */
 
@@ -315,6 +317,14 @@ uint32_t    bir_add_string(bir_module_t *M, const char *s, uint32_t len);
 uint32_t    bir_const_int(bir_module_t *M, uint32_t type, int64_t val);
 uint32_t    bir_const_float(bir_module_t *M, uint32_t type, double val);
 uint32_t    bir_const_null(bir_module_t *M, uint32_t type);
+uint32_t    bir_const_bytes(bir_module_t *M, uint32_t type,
+                            uint32_t off, uint32_t len);
+
+/* True if a global has a BIR_CONST_BYTES initializer (i.e. is a
+ * string literal or other read-only byte array). Backends without
+ * Phase-2 support gate on this and refuse rather than producing
+ * silent wrong output. */
+int         bir_global_is_bytes(const bir_module_t *M, uint32_t gi);
 
 /* Name tables */
 const char *bir_op_name(int op);

@@ -70,6 +70,27 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
 {
     int rc = BC_OK;
 
+    /* String literal globals (BIR_CONST_BYTES initializer) require
+     * backend support that is still being wired in. Phase 1 of the
+     * string-literal work landed the BIR shape and the frontend
+     * lowering; Phase 2 per backend (AMD .rodata, NVIDIA .const,
+     * Tensix C++ static const, Metal/Intel) is open as a set of
+     * GitHub issues. Until those land, refuse cleanly rather than
+     * emit silent wrong code that reads from address zero. */
+    for (uint32_t gi = 0; gi < bir->num_globals; gi++) {
+        if (!bir_global_is_bytes(bir, gi)) continue;
+        const char *gname = (bir->globals[gi].name < bir->string_len)
+                            ? &bir->strings[bir->globals[gi].name]
+                            : "<anon>";
+        fprintf(stderr,
+            "E110: string literal global '%s' requires backend "
+            "codegen support that is not yet wired (see issues "
+            "#93 AMD, #94 NVIDIA, #95 Tensix). String literals "
+            "in device code will not compile until those land.\n",
+            gname);
+        return BC_ERR_VERIFY;
+    }
+
     /* Optimisation passes: same shape regardless of frontend. */
     if (!cfg->no_mem2reg) bir_mem2reg(bir);
     if (!cfg->no_cfold)   bir_cfold(bir);

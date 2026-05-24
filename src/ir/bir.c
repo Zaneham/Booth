@@ -372,6 +372,38 @@ uint32_t bir_const_int(bir_module_t *M, uint32_t type, int64_t val)
     return idx;
 }
 
+/* A constant whose value is a sequence of bytes interned in the
+ * module's strings table. Used for string literals; could be used
+ * for other byte-array constants later. The offset and length name
+ * the slice of M->strings; we do not deduplicate the bytes because
+ * deduplicating literals can be surprising (two source-distinct
+ * literals collapsing into one pointer comparison) and we are not
+ * doing the work to confirm that surprise is welcome. */
+
+uint32_t bir_const_bytes(bir_module_t *M, uint32_t type,
+                         uint32_t off, uint32_t len)
+{
+    if (M->num_consts >= BIR_MAX_CONSTS) return 0;
+    uint32_t idx = M->num_consts++;
+    M->consts[idx].kind = BIR_CONST_BYTES;
+    memset(M->consts[idx].pad, 0, sizeof(M->consts[idx].pad));
+    M->consts[idx].type = type;
+    M->consts[idx].d.bytes.off = off;
+    M->consts[idx].d.bytes.len = len;
+    return idx;
+}
+
+int bir_global_is_bytes(const bir_module_t *M, uint32_t gi)
+{
+    if (gi >= M->num_globals) return 0;
+    uint32_t init = M->globals[gi].initializer;
+    if (init == BIR_VAL_NONE) return 0;
+    if (!BIR_VAL_IS_CONST(init)) return 0;
+    uint32_t ci = BIR_VAL_INDEX(init);
+    if (ci >= M->num_consts) return 0;
+    return M->consts[ci].kind == BIR_CONST_BYTES;
+}
+
 uint32_t bir_const_float(bir_module_t *M, uint32_t type, double val)
 {
     uint32_t guard = M->num_consts;
