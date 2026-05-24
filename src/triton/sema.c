@@ -275,6 +275,7 @@ static void s_annotate(tn_sema_t *S, uint32_t node_idx,
  * (Name, Attr-on-module) call s_lookup or the intrinsic table. */
 
 static void s_walk(tn_sema_t *S, uint32_t node_idx);
+static int  s_const_int(const tn_sema_t *S, uint32_t node_idx);
 
 /* Read a child index regardless of inline/overflow storage. Mirrors
  * the parser's helper of the same shape. */
@@ -506,11 +507,41 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
                            TN_SYM_PARAM, i, kid);
                     s_annotate(S, kid, TN_SYM_PARAM, i);
                 }
-                /* Walk the param's annotation and default for name
-                 * resolution within them. */
                 uint32_t pkn = s_nkids(kn);
                 for (uint32_t j = 0; j < pkn; j++) {
                     s_walk(S, s_kid(S, kid, j));
+                }
+                /* `: tl.constexpr = <int>` -> stash the value on the
+                 * param node so name refs and shape inference can
+                 * pick it up. Constexpr-ness comes from any annotation
+                 * child whose sema resolved to TN_TLI_CONSTEXPR; the
+                 * default is the last child if it's an int literal. */
+                int is_constexpr = 0;
+                int default_val = -1;
+                for (uint32_t j = 0; j < pkn; j++) {
+                    uint32_t pk = s_kid(S, kid, j);
+                    if (pk >= P->num_nodes) continue;
+                    if (S->node_sym_kind[pk] == TN_SYM_TYPE &&
+                        S->node_sym_aux[pk] == TN_TLI_CONSTEXPR) {
+                        is_constexpr = 1;
+                    }
+                    /* Walk the annotation subtree too in case
+                     * tl.constexpr sits inside an Attr node. */
+                    const tn_node_t *pkn_node = &P->nodes[pk];
+                    uint32_t cck = s_nkids(pkn_node);
+                    for (uint32_t cc = 0; cc < cck; cc++) {
+                        uint32_t ckid = s_kid(S, pk, cc);
+                        if (ckid < P->num_nodes &&
+                            S->node_sym_kind[ckid] == TN_SYM_TYPE &&
+                            S->node_sym_aux[ckid] == TN_TLI_CONSTEXPR) {
+                            is_constexpr = 1;
+                        }
+                    }
+                    int lv = s_const_int(S, pk);
+                    if (lv >= 0) default_val = lv;
+                }
+                if (is_constexpr && default_val >= 0) {
+                    S->node_const_val[kid] = default_val;
                 }
             } else {
                 s_walk(S, kid);
@@ -605,6 +636,12 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
                                        tk->off, (uint16_t)tk->len);
         if (sym) {
             s_annotate(S, node_idx, sym->kind, sym->aux);
+            /* Constexpr param default flows through Name references. */
+            if (sym->decl_node < TN_MAX_NODES &&
+                S->node_const_val[sym->decl_node] >= 0) {
+                S->node_const_val[node_idx] =
+                    S->node_const_val[sym->decl_node];
+            }
             return;
         }
         int bkind;
@@ -676,12 +713,15 @@ static tn_shape_t s_mat(int outer, int inner, int dtype)
     return sh;
 }
 
-/* Compile-time integer literal value, or -1 if dynamic. */
+/* Compile-time integer value, or -1 if dynamic. Resolves int
+ * literals directly and follows Name refs to their constexpr param
+ * default when one is recorded. */
 
 static int s_const_int(const tn_sema_t *S, uint32_t node_idx)
 {
     const tn_parse_t *P = S->parser;
     if (node_idx == 0 || node_idx >= P->num_nodes) return -1;
+    if (S->node_const_val[node_idx] >= 0) return S->node_const_val[node_idx];
     const tn_node_t *n = &P->nodes[node_idx];
     if (n->kind != TN_NK_LITERAL || n->flags != TN_LIT_INT) return -1;
     if (n->tok_off >= P->lex->num_tokens) return -1;
@@ -1328,6 +1368,7 @@ void tn_sema_init(tn_sema_t *S, const tn_parse_t *P)
 {
     memset(S, 0, sizeof(*S));
     S->parser = P;
+    for (uint32_t i = 0; i < TN_MAX_NODES; i++) S->node_const_val[i] = -1;
 }
 
 int tn_sema(tn_sema_t *S)

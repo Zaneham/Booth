@@ -464,6 +464,7 @@ typedef struct {
     uint8_t         node_sym_kind[TN_MAX_NODES];
     uint32_t        node_sym_aux[TN_MAX_NODES];
     tn_shape_t      node_shape[TN_MAX_NODES];
+    int32_t         node_const_val[TN_MAX_NODES];   /* >=0 = known; -1 = dynamic */
 
     bc_error_t      errors[BC_MAX_ERRORS];
     int             num_errors;

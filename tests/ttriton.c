@@ -210,6 +210,31 @@ static void tt_sema_shapes_scalar_kernel(void)
 }
 TH_REG("triton", tt_sema_shapes_scalar_kernel)
 
+static void tt_sema_constexpr_resolves_dim(void)
+{
+    /* BLOCK: tl.constexpr = 256 should propagate so arange and the
+     * downstream broadcast get vec[256] rather than vec[?]. */
+    int rc = tt_run("--triton --sema tests/tri_const.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "vec[256]:int32") != NULL);
+    CHECK(strstr(obuf, "vec[?]") == NULL);
+    PASS();
+}
+TH_REG("triton", tt_sema_constexpr_resolves_dim)
+
+static void tt_lower_refuses_rank2(void)
+{
+    /* Rank-2 tiles need matrix codegen (MFMA / mma.sync). Until that
+     * lands, lowering must refuse cleanly with E099 rather than
+     * emitting silent wrong codegen. */
+    int rc = tt_run("--triton --ir tests/tri_mm.py");
+    CHNE(rc, 0);
+    CHECK(strstr(obuf, "E099") != NULL);
+    CHECK(strstr(obuf, "rank-2") != NULL);
+    PASS();
+}
+TH_REG("triton", tt_lower_refuses_rank2)
+
 /* ============================================================
  * BIR Lowering
  * ============================================================ */
