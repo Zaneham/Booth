@@ -88,25 +88,10 @@ When I was a kid learning Lua on Roblox, I would actually copy and paste scripts
 - **Wholly synthetic undeclared code** is something we'll have to send back or rework together. If you've used an LLM, just say so — declared LLM-assisted code that you understand and can defend is absolutely fine. The copyright picture is genuinely unsettled though, so occasionally I might ask you to rewrite a section from scratch. Here's why there's caution:
   - **Licence contamination** — LLM training data can include proprietary or incompatibly-licensed code. If it leaks into a PR, it poisons the Apache 2.0 licence for the whole project.
   - **Copyright** — the wonderful folks in that small outfit known as "The United States Federal Government" have ruled that a human has to substantially author or alter code for it to be copyrightable. Unaltered LLM output may not be copyrightable at all, which means it can't actually be licensed under Apache 2.0. Now I'm not in the US, I'm in New Zealand, and our laws are actually more reasonable, but US lawyers aren't exactly well known for their geography knowledge.
-  - **Quality** — this is a compiler that emits GPU machine code. One wrong bit is silent data corruption. You need to understand what you're shipping.
+  - **Quality** — this is a compiler that emits GPU machine code. One wrong bit is silent data corruption. You need to understand what you're shipping or know when you don't know.
 
-  The short version: declare your tools, understand your code, and if I ask you to rewrite something it's not personal — it's just the reality of shipping code in a world where the law hasn't caught up yet. Treat LLM output like a snippet from Stack Overflow — make sure you can explain it. And if you're struggling, that's okay. Mark a PR as a draft, raise a discussion, and I'll help when I can.
 - **Architecture** - As above please don't make architectural decisions using a chatbot. Even then if you're making a big change in the code anyway feel free to contact me, I'm always happy to chat and open to new ideas.
 
-## On the Mighty Emdash
-You'll notice emdashes everywhere — in comments, in commit messages, in this document. I've been drawing hyphens a bit too long since primary school. I have my old books from when I was seven, and there they are — emdashes. Or hyphens. Or maybe I just didn't know what I was writing. 7-year-old me didn't leave a comment.
-
-The point is: use them. They're better than parentheses for asides, better than semicolons for joining related thoughts, and they look good in monospaced fonts. If your PR has emdashes, you'll fit right in.
-
-The hate for emdashes is superficial and weird. I understand its because of LLM's. But I'm not going to let some Robot dictate how I share my own thoughts in my own language. 
-
-## Indigenous and Endangered Languages 
-
-The first non-English language in BarraCUDA's error messages was te reo Māori. Not because it was strategic, but because I live here, these are my neighbours, and this is one of the three official languages of Aotearoa New Zealand. You can run `barracuda --lang lang/mi.txt` right now and get your errors in te reo. Kia ora, GPU.
-
-There are roughly 7,000 languages spoken on Earth. About 40% of them are endangered. When those languages disappear from technology — when every error message, every man page, every compiler diagnostic is English-only — it sends a quiet message: this isn't for you. That matters more than most developers realise. If your tools don't speak your language, you're not just reading code, you're translating core infrastructure. The research on cognitive load is absolutely clear: that translation costs time, costs accuracy, and costs people who would have been brilliant engineers. When you're reading one of my glorious Abend dumps because you decided it would be a great idea to chuck your MEGAGPT10 onto your RDNA 2 stick you should at least be able to read the consequences of your bad decisions in your own tongue. 
-
-Indigenous and endangered languages are especially welcome here. Te reo Māori, Welsh, Hawaiian, Navajo, Scots Gaelic, Samoan, any of the hundreds of languages that technology has quietly decided don't matter — if you want to see your language in a compiler diagnostic, this is that project. The translation format is dead simple and needs zero compiler knowledge, which also makes it a neat entry point into compiler development too! See the Where to Help section below for how.
 
 ## Where to Help
 
