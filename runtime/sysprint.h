@@ -38,14 +38,19 @@ typedef struct {
 
 /* ---- Buffer ----
  * Linear append. When full, subsequent emits are silently dropped,
- * as is proper for telemetry that may or may not have a reader. */
+ * as is proper for telemetry that may or may not have a reader.
+ * The same layout is repeated in sysprint_device.h for kernels;
+ * the include guard below stops them treading on each other. */
 
+#ifndef BC_SP_BUF_T_DEFINED
+#define BC_SP_BUF_T_DEFINED
 typedef struct {
     uint8_t  *data;
     uint32_t  size;
     uint32_t  head;
     uint32_t  dropped;
 } bc_sp_buf_t;
+#endif
 
 /* ---- Sink ----
  * Called once per record matching the sink's pattern. The runtime

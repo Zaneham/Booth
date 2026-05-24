@@ -95,6 +95,34 @@ gcc -std=c99 -O2 -I src/runtime \
 
 Requires Linux with ROCm installed. See `examples/launch_saxpy.c` for a complete example.
 
+## SYSPRINT
+
+Structured kernel output, routed by class. The mainframes solved this in 1965 (every job emits records to named SYSPRINT classes, sinks dispatch them); GPUs have been re-inventing it badly ever since. BarraCUDA brings the pattern back: kernels emit class-tagged records into a host-visible buffer, the host registers sinks by pattern (`STEP1.*`, `*.ERROR`, `*`), and `bc_sp_drain` walks the buffer once the kernel completes.
+
+Workflow:
+
+```c
+/* kernel.cu */
+#include "sysprint_device.h"
+#include "sysprint_classes.h"  /* your CLS_ constants */
+
+__global__ void k(bc_sp_buf_t *sp, ...) {
+    if (threadIdx.x == 0) {
+        BC_SYSPRINT(sp, CLS_RESULT, "kernel done", 11);
+    }
+}
+```
+
+```c
+/* host.c */
+bc_sp_intern("DEMO.RESULT");                       /* gets id 1 */
+bc_sp_register_sink("DEMO.RESULT", my_sink, NULL);
+/* allocate buffer, dispatch kernel passing buffer pointer */
+bc_sp_drain(&buf);                                 /* sinks fire */
+```
+
+See `examples/sysprint_kernel.cu` + `examples/launch_sysprint.c` for a full end-to-end demo. The kernel compiles cleanly on the NVIDIA PTX and Tensix backends; the AMD backend currently hits a regalloc bug on the byte-copy loop ([open issue](https://github.com/Zaneham/BarraCUDA/issues)) which will get its own follow-up.
+
 ## What Works
 
  The following CUDA features compile to working GFX9/GFX10/GFX11/GFX12 machine code, NVIDIA PTX, and Tensix Metalium C++:
@@ -132,7 +160,7 @@ Requires Linux with ROCm installed. See `examples/launch_saxpy.c` for a complete
 - Struct pass-by-value
 - Triton tile shape inference: rank-0/1/2 shape annotation on every expression, constexpr default propagation (`BLOCK: tl.constexpr = 256` resolves to `vec[256]`), numpy-style broadcasting, `[:, None]` / `[None, :]` reshape patterns
 - TDF (Tile DataFlow) IR layer above BIR: regions / channels / NoC arcs as first-class compiler concepts, L1 placement, fission pass for multi-core kernels
-- SYSPRINT runtime: class-tagged structured kernel output with pattern-routed sinks. Because the mainframes solved this in 1965 and the GPU world has yet to notice.
+- SYSPRINT: class-tagged structured kernel output, pattern-routed sinks on the host. See the SYSPRINT section below for the kernel/host workflow.
 
 ## Example
 
