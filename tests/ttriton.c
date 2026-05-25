@@ -306,6 +306,27 @@ static void tt_lower_arithmetic(void)
 }
 TH_REG("triton", tt_lower_arithmetic)
 
+static void tt_lower_math_intrinsics(void)
+{
+    int rc = tt_run("--triton --ir tests/tri_math.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "exp2 ") != NULL);
+    CHECK(strstr(obuf, "log2 ") != NULL);
+    CHECK(strstr(obuf, "sin ") != NULL);
+    CHECK(strstr(obuf, "cos ") != NULL);
+    CHECK(strstr(obuf, "sqrt ") != NULL);
+    CHECK(strstr(obuf, "rsq ") != NULL);
+    CHECK(strstr(obuf, "fabs ") != NULL);
+    CHECK(strstr(obuf, "floor ") != NULL);
+    CHECK(strstr(obuf, "ceil ") != NULL);
+    CHECK(strstr(obuf, "fmax ") != NULL);
+    CHECK(strstr(obuf, "fmin ") != NULL);
+    CHECK(strstr(obuf, "fdiv f32") != NULL);
+    CHECK(strstr(obuf, "E095") == NULL);
+    PASS();
+}
+TH_REG("triton", tt_lower_math_intrinsics)
+
 /* ============================================================
  * Backend: AMD GFX11
  * ============================================================ */

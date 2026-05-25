@@ -486,9 +486,140 @@ static uint32_t l_unop(tn_lower_t *L, uint32_t node_idx)
     }
 }
 
+static uint32_t l_pos_arg(tn_lower_t *L, uint32_t call_idx, int want)
+{
+    const tn_node_t *n = &L->parser->nodes[call_idx];
+    uint32_t nk = l_nkids(n);
+    int pos = 0;
+
+    for (uint32_t i = 1; i < nk; i++) {
+        uint32_t kid = l_kid(L, call_idx, i);
+        if (L->parser->nodes[kid].kind == TN_NK_KEYWORD)
+            continue;
+        if (pos == want)
+            return kid;
+        pos++;
+    }
+    return 0;
+}
+
+static uint32_t l_math_type(tn_lower_t *L, uint32_t v)
+{
+    uint32_t ty = l_val_type(L, v);
+    return l_type_kind(L, ty) == BIR_TYPE_FLOAT ? ty : L->t_f32;
+}
+
+static uint32_t l_math1(tn_lower_t *L, uint32_t call_idx, int op)
+{
+    uint32_t an = l_pos_arg(L, call_idx, 0);
+    if (an == 0) return BIR_VAL_NONE;
+    uint32_t v = l_expr(L, an);
+    if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    uint32_t r = l_emit(L, op, l_math_type(L, v), 0);
+    l_op(L, r, v);
+    return r;
+}
+
+static uint32_t l_math2(tn_lower_t *L, uint32_t call_idx, int op)
+{
+    uint32_t a0n = l_pos_arg(L, call_idx, 0);
+    uint32_t a1n = l_pos_arg(L, call_idx, 1);
+    if (a0n == 0 || a1n == 0) return BIR_VAL_NONE;
+    uint32_t a0 = l_expr(L, a0n);
+    uint32_t a1 = l_expr(L, a1n);
+    if (a0 == BIR_VAL_NONE || a1 == BIR_VAL_NONE) return BIR_VAL_NONE;
+    uint32_t r = l_emit(L, op, l_math_type(L, a0), 0);
+    l_op(L, r, a0);
+    l_op(L, r, a1);
+    return r;
+}
+
+static uint32_t l_fmul_k(tn_lower_t *L, uint32_t v, double k)
+{
+    uint32_t c = BIR_MAKE_CONST(bir_const_float(L->bir, L->t_f32, k));
+    uint32_t r = l_emit(L, BIR_FMUL, L->t_f32, 0);
+    l_op(L, r, v);
+    l_op(L, r, c);
+    return r;
+}
+
+static uint32_t l_exp_nat(tn_lower_t *L, uint32_t call_idx)
+{
+    uint32_t an = l_pos_arg(L, call_idx, 0);
+    if (an == 0) return BIR_VAL_NONE;
+    uint32_t v = l_expr(L, an);
+    if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    uint32_t x = l_fmul_k(L, v, 1.4426950408889634);
+    uint32_t r = l_emit(L, BIR_EXP2, L->t_f32, 0);
+    l_op(L, r, x);
+    return r;
+}
+
+static uint32_t l_log_nat(tn_lower_t *L, uint32_t call_idx)
+{
+    uint32_t an = l_pos_arg(L, call_idx, 0);
+    if (an == 0) return BIR_VAL_NONE;
+    uint32_t v = l_expr(L, an);
+    if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    uint32_t lg = l_emit(L, BIR_LOG2, L->t_f32, 0);
+    l_op(L, lg, v);
+    return l_fmul_k(L, lg, 0.6931471805599453);
+}
+
+static uint32_t l_sincos(tn_lower_t *L, uint32_t call_idx, int op)
+{
+    uint32_t an = l_pos_arg(L, call_idx, 0);
+    if (an == 0) return BIR_VAL_NONE;
+    uint32_t v = l_expr(L, an);
+    if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    uint32_t t = l_fmul_k(L, v, 0.15915494309189535);
+    uint32_t r = l_emit(L, op, L->t_f32, 0);
+    l_op(L, r, t);
+    return r;
+}
+
+static uint32_t l_tan(tn_lower_t *L, uint32_t call_idx)
+{
+    uint32_t an = l_pos_arg(L, call_idx, 0);
+    if (an == 0) return BIR_VAL_NONE;
+    uint32_t v = l_expr(L, an);
+    if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    uint32_t t = l_fmul_k(L, v, 0.15915494309189535);
+    uint32_t s = l_emit(L, BIR_SIN, L->t_f32, 0);
+    l_op(L, s, t);
+    uint32_t c = l_emit(L, BIR_COS, L->t_f32, 0);
+    l_op(L, c, t);
+    uint32_t r = l_emit(L, BIR_FDIV, L->t_f32, 0);
+    l_op(L, r, s);
+    l_op(L, r, c);
+    return r;
+}
+
+static uint32_t l_tanh(tn_lower_t *L, uint32_t call_idx)
+{
+    uint32_t an = l_pos_arg(L, call_idx, 0);
+    if (an == 0) return BIR_VAL_NONE;
+    uint32_t v = l_expr(L, an);
+    if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    uint32_t x = l_fmul_k(L, v, 2.8853900817779268);
+    uint32_t e2 = l_emit(L, BIR_EXP2, L->t_f32, 0);
+    l_op(L, e2, x);
+    uint32_t one = BIR_MAKE_CONST(bir_const_float(L->bir, L->t_f32, 1.0));
+    uint32_t nm = l_emit(L, BIR_FSUB, L->t_f32, 0);
+    l_op(L, nm, e2);
+    l_op(L, nm, one);
+    uint32_t dn = l_emit(L, BIR_FADD, L->t_f32, 0);
+    l_op(L, dn, e2);
+    l_op(L, dn, one);
+    uint32_t r = l_emit(L, BIR_FDIV, L->t_f32, 0);
+    l_op(L, r, nm);
+    l_op(L, r, dn);
+    return r;
+}
+
 /* Lower a Call where the callee is an Attr that sema resolved to a
- * tl.* intrinsic. Sitting one recognises the scalar thread-model
- * intrinsics and stops there; the others get a polite diagnostic. */
+ * tl.* intrinsic. Scalar math lands here; rank-2 tile calls take the
+ * materialised tile path below. */
 
 static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
                                  int intrinsic_id)
@@ -627,6 +758,23 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
         l_op(L, div, sum); l_op(L, div, b);
         return div;
     }
+
+    case TN_TLI_EXP:     return l_exp_nat(L, call_idx);
+    case TN_TLI_EXP2:    return l_math1(L, call_idx, BIR_EXP2);
+    case TN_TLI_LOG:     return l_log_nat(L, call_idx);
+    case TN_TLI_LOG2:    return l_math1(L, call_idx, BIR_LOG2);
+    case TN_TLI_SIN:     return l_sincos(L, call_idx, BIR_SIN);
+    case TN_TLI_COS:     return l_sincos(L, call_idx, BIR_COS);
+    case TN_TLI_TAN:     return l_tan(L, call_idx);
+    case TN_TLI_TANH:    return l_tanh(L, call_idx);
+    case TN_TLI_SQRT:    return l_math1(L, call_idx, BIR_SQRT);
+    case TN_TLI_RSQRT:   return l_math1(L, call_idx, BIR_RSQ);
+    case TN_TLI_ABS:     return l_math1(L, call_idx, BIR_FABS);
+    case TN_TLI_FLOOR:   return l_math1(L, call_idx, BIR_FLOOR);
+    case TN_TLI_CEIL:    return l_math1(L, call_idx, BIR_CEIL);
+    case TN_TLI_MAXIMUM: return l_math2(L, call_idx, BIR_FMAX);
+    case TN_TLI_MINIMUM: return l_math2(L, call_idx, BIR_FMIN);
+    case TN_TLI_FDIV:    return l_math2(L, call_idx, BIR_FDIV);
 
     default: {
         /* Everything else waits its turn. The diagnostic includes
