@@ -40,6 +40,7 @@
 
 #define CPU_CODE_MAX  (256 * 1024)
 #define CPU_FIX_MAX   8192
+#define CPU_ALLOCA_MAX 4096
 
 typedef struct {
     const bir_module_t *M;
@@ -49,6 +50,11 @@ typedef struct {
 
     int32_t   slots[BIR_MAX_INSTS];     /* inst -> RBP offset, 0 = none */
     uint32_t  blk_off[BIR_MAX_BLOCKS];  /* block -> code offset */
+
+    /* per-alloca backing-store RBP offsets, in inst-walk order: the
+     * pre-pass that sizes the frame fills these, the body reads them
+     * back in the same order. */
+    int32_t   alloca_off[CPU_ALLOCA_MAX];
 
     struct { uint32_t off; uint32_t blk; } fix[CPU_FIX_MAX];
     int       n_fix;

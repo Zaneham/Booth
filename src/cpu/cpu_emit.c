@@ -51,6 +51,21 @@ static int pointee_sz(cpu_mod_t *X,uint32_t ty){
     return 4;
 }
 
+/* size in bytes of a type. Naive aggregate layout (no padding) —
+ * tiles are arrays of a uniform scalar, so it is exact for them. */
+static int type_size(const cpu_mod_t *X,uint32_t ty){
+    if (ty>=X->M->num_types) return 8;
+    const bir_type_t *t=&X->M->types[ty];
+    switch (t->kind){
+    case BIR_TYPE_INT: case BIR_TYPE_FLOAT: case BIR_TYPE_BFLOAT: return t->width?(int)(t->width/8):4;
+    case BIR_TYPE_PTR: return 8;
+    case BIR_TYPE_ARRAY: return (int)t->count*type_size(X,t->inner);
+    case BIR_TYPE_VECTOR: return (int)t->width*type_size(X,t->inner);
+    case BIR_TYPE_STRUCT: { int s=0; for(uint16_t i=0;i<t->num_fields;i++) s+=type_size(X,X->M->type_fields[t->count+i]); return s; }
+    default: return 8;
+    }
+}
+
 /* type index of a value (const or inst result); 0 if unknown. */
 static uint32_t val_type(const cpu_mod_t *X,uint32_t v){
     uint32_t i=BIR_VAL_INDEX(v);
@@ -112,17 +127,35 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
     /* One slot per BIR value index, spanning params and every block
      * inst. Params are signature insts 0..num_params-1; block insts
      * follow. Single pass so nothing aliases. */
-    int32_t off=-8;
-    for (uint16_t p=0;p<F->num_params;p++) X->slots[p]=off,off-=8;
-    for (uint16_t b=0;b<F->num_blocks;b++){ const bir_block_t*B=&X->M->blocks[F->first_block+b]; for(uint32_t i=0;i<B->num_insts;i++) X->slots[B->first_inst+i]=off,off-=8; }
+    /* Frame allocator: decrement-then-assign, so every allocation claims
+     * [new_off, old_off) and nothing overlaps. An 8-byte value slot per
+     * inst; alloca/shared-alloc also reserve a backing region sized from
+     * the pointee type. The body loop walks insts in this same order, so a
+     * running counter pairs each alloca with its region offset. */
+    int32_t off=0;
+    for (uint16_t p=0;p<F->num_params;p++){ off-=8; X->slots[p]=off; }
+    int na=0;
+    for (uint16_t b=0;b<F->num_blocks;b++){
+        const bir_block_t*B=&X->M->blocks[F->first_block+b];
+        for(uint32_t i=0;i<B->num_insts;i++){
+            uint32_t ix=B->first_inst+i; off-=8; X->slots[ix]=off;
+            const bir_inst_t*I=&X->M->insts[ix];
+            if ((I->op==BIR_ALLOCA||I->op==BIR_SHARED_ALLOC) && na<CPU_ALLOCA_MAX){
+                uint32_t pte=(I->type<X->M->num_types)?X->M->types[I->type].inner:0;
+                int sz=(type_size(X,pte)+7)&~7; if(sz<8)sz=8;
+                off-=sz; X->alloca_off[na++]=off;
+            }
+        }
+    }
+    int na_emit=0;
     /* SIMT-on-CPU: __global__ kernels run their body once per thread_id in
      * a wrapping loop. tid is the induction var; ntid (thread count) arrives
      * as a hidden trailing arg in the SysV register after the user params.
      * block_id=0, grid_dim=1, block_dim=ntid — one block per call for now;
      * the host sweeps the grid. tid/ntid get their own frame slots. */
     int is_kernel=(F->cuda_flags&CUDA_GLOBAL)!=0;
-    int32_t tid_off=off; off-=8;
-    int32_t ntid_off=off; off-=8;
+    off-=8; int32_t tid_off=off;
+    off-=8; int32_t ntid_off=off;
     uint32_t retfix[CPU_RET_MAX]; int n_ret=0;
     eb(X,0x55); rexw(X,X_RBP,X_RSP);eb(X,0x89);modrm(X,3,X_RSP,X_RBP);
     int32_t frame=((-off+15)&~15)+8;
@@ -141,6 +174,9 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         for (uint32_t i=0;i<B->num_insts;i++){ uint32_t ix=B->first_inst+i; const bir_inst_t*I=&X->M->insts[ix]; int32_t s=slot(X,ix);
         switch(I->op){
         case BIR_PARAM: break; /* materialized once in the prologue (ld_arg), outside the thread loop */
+        case BIR_ALLOCA: case BIR_SHARED_ALLOC: /* value = pointer to the reserved frame region */
+            if (na_emit<CPU_ALLOCA_MAX){ rexw(X,X_RAX,X_RBP);eb(X,0x8D);modrm(X,2,X_RAX,X_RBP);ei32(X,X->alloca_off[na_emit++]); st_slot(X,X_RAX,s); }
+            break;
         case BIR_THREAD_ID: if(is_kernel){ ld_slot(X,X_RAX,tid_off); } else mov_imm(X,X_RAX,0); st_slot(X,X_RAX,s); break;
         case BIR_BLOCK_ID: mov_imm(X,X_RAX,0); st_slot(X,X_RAX,s); break;
         case BIR_BLOCK_DIM: if(is_kernel){ ld_slot(X,X_RAX,ntid_off); } else mov_imm(X,X_RAX,1); st_slot(X,X_RAX,s); break;
