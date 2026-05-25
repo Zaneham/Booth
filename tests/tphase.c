@@ -16,6 +16,25 @@ static void pha_pp(void)
 }
 TH_REG("phase", pha_pp)
 
+static void pha_pp_comment_opaque(void)
+{
+    int rc = th_run(BC_BIN " --pp tests/comment_macro_skip.cu", obuf, TH_BUFSZ);
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "COMMENT_MACRO should remain literal") != NULL);
+    CHECK(strstr(obuf, "23 should remain literal") == NULL);
+    PASS();
+}
+TH_REG("phase", pha_pp_comment_opaque)
+
+static void pha_lex_comment_quotes(void)
+{
+    int rc = th_run(BC_BIN " --lex tests/comment_quotes.cu", obuf, TH_BUFSZ);
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "0 error(s)") != NULL);
+    PASS();
+}
+TH_REG("phase", pha_lex_comment_quotes)
+
 /* ---- phase: parser (AST dump) ---- */
 
 static void pha_ast(void)
