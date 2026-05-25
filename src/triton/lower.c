@@ -745,12 +745,22 @@ static int l_tile(tn_lower_t *L, uint32_t node, int *out){
             *out=ti; return 0;
         }
         if (id==TN_TLI_ZEROS || id==TN_TLI_ZEROS_LIKE){
+            /* Accumulators are scratch-backed so they survive a K-loop:
+             * alloca the buffer, store the element addresses, init to 0. */
             int ti=l_tile_alloc(L); if(ti<0)return -1; tn_tile_t*t=&L->tile_pool[ti];
-            t->rank=2; t->d0=rows; t->d1=cols;
+            t->rank=2; t->d0=rows; t->d1=cols; t->mem=1;
             int isf=l_tile_is_float(L,node);
+            uint32_t et=isf?L->t_f32:L->t_i32, ept=isf?L->t_ptr_f32:L->t_ptr_i32;
+            uint32_t arr=bir_type_array(L->bir, et, (uint32_t)(rows*cols));
+            uint32_t apt=bir_type_ptr(L->bir, arr, 0);
+            uint32_t base=l_emit(L,BIR_ALLOCA,apt,0);
             uint32_t z = isf ? BIR_MAKE_CONST(bir_const_float(L->bir,L->t_f32,0.0))
                              : l_const_i32(L,0);
-            for (int i=0;i<rows*cols;i++) t->elem[i]=z;
+            for (int i=0;i<rows*cols;i++){
+                uint32_t gep=l_emit(L,BIR_GEP,ept,0); l_op(L,gep,base); l_op(L,gep,l_const_i32(L,i));
+                uint32_t st=l_emit(L,BIR_STORE,L->t_void,0); l_op(L,st,z); l_op(L,st,gep);
+                t->elem[i]=gep;
+            }
             *out=ti; return 0;
         }
         if (id==TN_TLI_LOAD){
@@ -815,8 +825,14 @@ static void l_store_tile(tn_lower_t *L, uint32_t call_node){
     tn_tile_t *A=&L->tile_pool[ai], *V=&L->tile_pool[vi];
     int ne=l_tile_elems(A);
     for (int i=0;i<ne;i++){
+        uint32_t vval=V->elem[i];
+        if (V->mem){ /* scratch accumulator: read the element first */
+            uint32_t pty=l_val_type(L,vval);
+            uint32_t dty=(l_type_kind(L,pty)==BIR_TYPE_PTR)?L->bir->types[pty].inner:L->t_f32;
+            uint32_t ld=l_emit(L,BIR_LOAD,dty,0); l_op(L,ld,vval); vval=ld;
+        }
         uint32_t st=l_emit(L,BIR_STORE,L->t_void,0);
-        l_op(L,st,V->elem[i]); l_op(L,st,A->elem[i]);
+        l_op(L,st,vval); l_op(L,st,A->elem[i]);
     }
 }
 
@@ -916,6 +932,51 @@ static void l_block(tn_lower_t *L, uint32_t node_idx)
     }
 }
 
+/* Lower `for k in range(start, stop, step):` as a counted loop. The
+ * induction variable lives in an alloca (mem2reg promotes it to a phi,
+ * and the backends already handle phi + back-edges, see the CUDA loop
+ * path). Bodies are assumed straight-line for now (no nested control
+ * flow), which covers the matmul K-loop. */
+static void l_for(tn_lower_t *L, uint32_t node_idx)
+{
+    uint32_t nk = l_nkids(&L->parser->nodes[node_idx]);
+    if (nk < 3) { l_err(L,99,l_tok(L,node_idx),"malformed for"); return; }
+    uint32_t iter = l_kid(L, node_idx, 1);
+    uint32_t body = l_kid(L, node_idx, 2);
+    const tn_node_t *it = &L->parser->nodes[iter];
+    if (it->kind != TN_NK_CALL){ l_err(L,99,l_tok(L,iter),"for iterable must be range()"); return; }
+    int nargs = (int)l_nkids(it) - 1;   /* kid 0 is the 'range' callee */
+    uint32_t start, stop, step;
+    if (nargs <= 1){ start=l_const_i32(L,0); stop=(nargs==1)?l_expr(L,l_kid(L,iter,1)):l_const_i32(L,0); step=l_const_i32(L,1); }
+    else if (nargs == 2){ start=l_expr(L,l_kid(L,iter,1)); stop=l_expr(L,l_kid(L,iter,2)); step=l_const_i32(L,1); }
+    else { start=l_expr(L,l_kid(L,iter,1)); stop=l_expr(L,l_kid(L,iter,2)); step=l_expr(L,l_kid(L,iter,3)); }
+    if (start==BIR_VAL_NONE||stop==BIR_VAL_NONE||step==BIR_VAL_NONE) return;
+
+    /* Counter is a real phi (no alloca), so mem2reg can't fold it; the
+     * backend's phi edge-copies carry start in on the preheader edge and
+     * the increment in on the back-edge. */
+    uint32_t pre = L->cur_block;
+    uint32_t br0 = l_emit(L, BIR_BR, L->t_void, 0);                 /* preheader -> head */
+
+    uint32_t head = l_new_block(L); l_op(L, br0, head);
+    L->cur_block = head;
+    uint32_t kphi = l_emit(L, BIR_PHI, L->t_i32, 0);
+    l_op(L, kphi, pre); l_op(L, kphi, start);                       /* [preheader: start] */
+    uint32_t cond = l_emit(L, BIR_ICMP, L->t_i32, BIR_ICMP_SLT); l_op(L,cond,kphi); l_op(L,cond,stop);
+    uint32_t brc = l_emit(L, BIR_BR_COND, L->t_void, 0); l_op(L,brc,cond);  /* [0]=cond */
+
+    uint32_t bodyb = l_new_block(L); l_op(L, brc, bodyb);                   /* [1]=true */
+    L->cur_block = bodyb;
+    L->node_val[node_idx] = kphi;          /* bind the loop variable k */
+    l_block(L, body);
+    uint32_t kn = l_emit(L, BIR_ADD, L->t_i32, 0); l_op(L,kn,kphi); l_op(L,kn,step);
+    l_op(L, kphi, bodyb); l_op(L, kphi, kn);   /* phi back-edge pair [body: k+step] */
+    uint32_t brh = l_emit(L, BIR_BR, L->t_void, 0); l_op(L,brh,head);       /* back-edge */
+
+    uint32_t exitb = l_new_block(L); l_op(L, brc, exitb);                   /* [2]=false */
+    L->cur_block = exitb;
+}
+
 static void l_stmt(tn_lower_t *L, uint32_t node_idx)
 {
     if (node_idx == 0 || node_idx >= L->parser->num_nodes) return;
@@ -974,6 +1035,29 @@ static void l_stmt(tn_lower_t *L, uint32_t node_idx)
             break;
         }
 
+        /* Tile accumulator: acc += <tile>. acc is scratch-backed, so this
+         * is a read-add-write per element and persists across the loop. */
+        if (L->tile_mode && n->flags == TN_AUG_ADD){
+            int tk=L->sema->node_sym_kind[target_idx];
+            uint32_t aux=L->sema->node_sym_aux[target_idx];
+            if ((tk==TN_SYM_LOCAL||tk==TN_SYM_LOOPVAR) && aux<TN_MAX_NODES &&
+                L->node_tile[aux]>=0 && L->tile_pool[L->node_tile[aux]].mem){
+                int ri; if (l_tile(L, rhs_idx, &ri)==0){
+                    tn_tile_t *ACC=&L->tile_pool[L->node_tile[aux]], *R=&L->tile_pool[ri];
+                    int ne=l_tile_elems(ACC);
+                    for (int i=0;i<ne;i++){
+                        uint32_t pty=l_val_type(L,ACC->elem[i]);
+                        uint32_t dty=(l_type_kind(L,pty)==BIR_TYPE_PTR)?L->bir->types[pty].inner:L->t_f32;
+                        int isf=(l_type_kind(L,dty)==BIR_TYPE_FLOAT);
+                        uint32_t cur=l_emit(L,BIR_LOAD,dty,0); l_op(L,cur,ACC->elem[i]);
+                        uint32_t add=l_emit(L, isf?BIR_FADD:BIR_ADD, dty,0); l_op(L,add,cur); l_op(L,add,R->elem[i]);
+                        uint32_t st=l_emit(L,BIR_STORE,L->t_void,0); l_op(L,st,add); l_op(L,st,ACC->elem[i]);
+                    }
+                }
+                break;
+            }
+        }
+
         uint32_t old_val = l_expr(L, target_idx);
         uint32_t rhs_val = l_expr(L, rhs_idx);
         if (old_val == BIR_VAL_NONE || rhs_val == BIR_VAL_NONE) break;
@@ -1030,9 +1114,11 @@ static void l_stmt(tn_lower_t *L, uint32_t node_idx)
     }
     case TN_NK_IF:
     case TN_NK_FOR:
+        l_for(L, node_idx);
+        break;
     case TN_NK_WHILE:
         l_err(L, 99, l_tok(L, node_idx),
-              "control-flow statement waits for sitting three");
+              "while loops not yet lowered");
         break;
     default:
         break;
@@ -1153,7 +1239,13 @@ static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
         (void)l_emit(L, BIR_RET, L->t_void, 0);
     }
 
-    F->total_insts = B->num_insts;
+    /* Sum every block, not just the last one: a kernel with control flow
+     * (e.g. a matmul K-loop) spans several blocks, and cfold/dce walk
+     * [first_inst, first_inst + total_insts), so an undercount truncates
+     * the range and corrupts the loop. */
+    F->total_insts = 0;
+    for (uint16_t bi = 0; bi < F->num_blocks; bi++)
+        F->total_insts += M->blocks[F->first_block + bi].num_insts;
 }
 
 /* Look at the decorators that precede a FuncDef in the AST and

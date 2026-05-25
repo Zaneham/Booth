@@ -498,6 +498,9 @@ int         tn_shape_format(tn_shape_t sh, char *buf, int bufsize);
 typedef struct {
     int      rank;
     int      d0, d1;
+    int      mem;               /* 1 = elem[] holds element ADDRESSES (a
+                                 * scratch-backed accumulator that persists
+                                 * across a loop); 0 = elem[] holds values. */
     uint32_t elem[TN_TILE_MAX];
 } tn_tile_t;
 

@@ -236,6 +236,20 @@ static void tt_lower_matmul(void)
 }
 TH_REG("triton", tt_lower_matmul)
 
+static void tt_lower_matmul_kloop(void)
+{
+    /* Matmul with a runtime K-loop lowers to a counted loop: the
+     * accumulator is scratch-backed and the loop counter is a phi, so
+     * the BIR has a phi and a conditional branch and no E099. */
+    int rc = tt_run("--triton --ir tests/tri_matmul_k.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "phi i32") != NULL);
+    CHECK(strstr(obuf, "br_cond") != NULL);
+    CHECK(strstr(obuf, "E099") == NULL);
+    PASS();
+}
+TH_REG("triton", tt_lower_matmul_kloop)
+
 /* ============================================================
  * BIR Lowering
  * ============================================================ */

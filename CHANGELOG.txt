@@ -1,6 +1,20 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-26 — Triton matmul K-loop, so big matrices work. The
+Triton lowerer now lowers `for k in range(...)` as a real counted
+loop, which lets a matmul sweep an arbitrary contraction dimension
+K a BLOCK_K tile at a time instead of unrolling the whole thing.
+The loop counter is a phi (not an alloca, because mem2reg folds an
+alloca counter to a constant here and spins forever), and the
+accumulator is scratch-backed so it survives across iterations
+(read-add-write per element). Verified end to end for K up to 512.
+One real bug fixed on the way: the lowerer was setting a function's
+total_insts to the last block's count rather than the sum over all
+blocks, so cfold and dce walked a truncated instruction range and
+quietly corrupted any kernel with control flow. Single output tile
+still; multi-block grids and tl.load mask= remain the next sitting.
+
 2026-05-25 — Triton matmul on the CPU. tl.dot now lowers for the
 x86-64 backend, so a real Triton matmul kernel (load two tiles,
 tl.dot, store) compiles from Python and runs natively. Rank-2
