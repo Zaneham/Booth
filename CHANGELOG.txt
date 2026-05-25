@@ -1,6 +1,21 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-25 — Triton matmul on the CPU. tl.dot now lowers for the
+x86-64 backend, so a real Triton matmul kernel (load two tiles,
+tl.dot, store) compiles from Python and runs natively. Rank-2
+tiles take a new path in the Triton lowerer: because block sizes
+are constexpr, the whole tile is materialized and fully unrolled
+into scalar BIR (arange becomes literal indices, [:,None] /
+[None,:] reshape, elementwise ops fan out with broadcasting, and
+tl.dot becomes an unrolled sum of products). A kernel with any
+rank-2 tile takes this path for its whole body and launches one
+thread; elementwise rank-1 kernels keep the lane-collapse path.
+Backed by BIR_ALLOCA scratch buffers in the CPU emitter. Verified
+4x4, 8x8 and non-square 2x3@3x4 against a host reference. Still a
+single output tile, no K-loop tiling or masking, capped at 32x32;
+those are the next sitting.
+
 2026-05-25 — x86-64 CPU backend. A new --cpu flag turns a
 __global__ kernel into a host-runnable x86-64 ELF object, so
 CUDA and Triton kernels can be developed on a laptop with no

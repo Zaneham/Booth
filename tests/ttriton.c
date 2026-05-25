@@ -222,18 +222,19 @@ static void tt_sema_constexpr_resolves_dim(void)
 }
 TH_REG("triton", tt_sema_constexpr_resolves_dim)
 
-static void tt_lower_refuses_rank2(void)
+static void tt_lower_matmul(void)
 {
-    /* Rank-2 tiles need matrix codegen (MFMA / mma.sync). Until that
-     * lands, lowering must refuse cleanly with E099 rather than
-     * emitting silent wrong codegen. */
-    int rc = tt_run("--triton --ir tests/tri_mm.py");
-    CHNE(rc, 0);
-    CHECK(strstr(obuf, "E099") != NULL);
-    CHECK(strstr(obuf, "rank-2") != NULL);
+    /* Rank-2 tiles with tl.dot now lower for the CPU path: the tile is
+     * materialized and fully unrolled (block sizes are constexpr), so a
+     * 4x4 matmul produces float multiplies and adds and no E099. */
+    int rc = tt_run("--triton --ir tests/tri_matmul.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "fmul f32") != NULL);
+    CHECK(strstr(obuf, "fadd f32") != NULL);
+    CHECK(strstr(obuf, "E099") == NULL);
     PASS();
 }
-TH_REG("triton", tt_lower_refuses_rank2)
+TH_REG("triton", tt_lower_matmul)
 
 /* ============================================================
  * BIR Lowering

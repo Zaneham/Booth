@@ -490,6 +490,17 @@ int         tn_shape_format(tn_shape_t sh, char *buf, int bufsize);
  * for constants). Subsequent references through that node can read
  * the value back in one lookup. */
 
+/* A materialized tile: per-element BIR value refs, row-major. vec[N]
+ * is stored as rank 1, d0=N, d1=1. Capped at 32x32 for the first cut. */
+#define TN_TILE_MAX  1024
+#define TN_TILE_POOL 128
+
+typedef struct {
+    int      rank;
+    int      d0, d1;
+    uint32_t elem[TN_TILE_MAX];
+} tn_tile_t;
+
 typedef struct {
     const tn_parse_t *parser;
     const tn_sema_t  *sema;
@@ -503,6 +514,17 @@ typedef struct {
      * if not yet produced. Used to resolve Name references back to
      * the value their declaring node generated. */
     uint32_t        node_val[TN_MAX_NODES];
+
+    /* Rank-2 (and rank-1) tiles in a kernel that uses tl.dot are
+     * materialized and fully unrolled: each tile is an array of
+     * per-element BIR scalar values. tile_mode turns the whole kernel
+     * onto this path (arange becomes constants, not thread_id, and the
+     * launch runs one thread). node_tile maps a binding node (Assign)
+     * to its pool slot. */
+    int             tile_mode;
+    int             n_tiles;
+    tn_tile_t       tile_pool[TN_TILE_POOL];
+    int32_t         node_tile[TN_MAX_NODES];
 
     /* Common types, looked up once per module so we are not building
      * the same type entry over and over. */
