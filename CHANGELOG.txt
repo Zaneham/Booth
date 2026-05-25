@@ -1,6 +1,30 @@
 BarraCUDA — Changelog
 =====================
 
+2026-05-25 — x86-64 CPU backend. A new --cpu flag turns a
+__global__ kernel into a host-runnable x86-64 ELF object, so
+CUDA and Triton kernels can be developed on a laptop with no
+GPU. Triton's canonical vector_add runs end to end (Python ->
+BIR -> x86-64 -> native execution) and computes a full block.
+Stack-everything codegen, no register allocator. Correct
+first, fast later. SIMT on CPU: the kernel body runs in a loop
+over thread_id in [0, nthreads), with nthreads passed as a
+hidden trailing arg, so one call covers a whole block; a return
+ends one thread. Full op set lands: add/sub/mul, gep, width-
+aware load/store (i8/i16/i32/i64, f32), fadd/fsub/fmul, icmp
+(all predicates), branches with both edges explicit, phi via
+predecessor edge-copies, and SysV stack arguments for the
+seventh parameter onward. See examples/cpu_launch_vadd.c for
+the calling convention. Multi-block grids and tl.load mask=
+are the next sitting; rank-2 tiles (matmul) still refuse with
+E099 pending matrix codegen.
+
+I took the x86-64 emit machinery (the code buffer, REX/ModRM
+helpers, the RBP slot map and branch fixups) straight from my
+other compilers, Skyhawk (JOVIAL J73) and Karearea (Fortran
+77). No point rewriting a perfectly good instruction encoder
+twice.
+
 2026-05-24 — Triton tile shape inference, sitting one. The sema
 pass now walks every expression bottom-up and annotates a
 (rank, dims, dtype) triple onto each AST node. Scalar, vec[N]

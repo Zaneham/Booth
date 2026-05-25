@@ -1,8 +1,8 @@
 # BarraCUDA
 
-An open-source CUDA C++ compiler written from scratch in C99 that takes `.cu` files and compiles them to AMD GPU machine code, NVIDIA PTX, native RV32IM for Tenstorrent baby cores, and Tenstorrent Metalium C++, with more architectures planned. No LLVM, no dependencies, and no permission asked.
+BarraCUDA is a multi architecture, multi language compiler with the intended goal of allowing for cross platform development on GPU's and CPU's. This is also, from what I've seen, a series of 'firsts'. BarraCUDA is the first attempt to apply mainframe operational discipline to GPU computing and it's the first attempt to allow users to run GPU-based-languages on CPU's on the same compiler (for some languages like Triton, this is a first). You can see the mainframe influence throughout in the abend dumps, MVS Snap, SYSPRINT and Tile Dataflow for dataflow based gpu's which is based of CICS transactions. If you've ever read about or worked with z/OS you'll feel right at home, if you're asking "whats z/OS?" give yourself an uppercut (jokes!). 
 
-This is what happens when you look at NVIDIA's walled garden and think "how hard can it be?" The answer is: quite hard, actually, but I did it anyway.
+This project originally started because I wanted to run CUDA on my laptop and I found ROCm and all that very confusing. So, nau mai haere mai (welcome) to me looking at Nvidias walled garden and going "oh it couldn't be that hard" and realising that yes, actually it is. But I did it anyway. 
 
 See [CHANGELOG.txt](CHANGELOG.txt) for recent updates.
 

@@ -6,7 +6,7 @@ CFLAGS  = -std=c99 -Wall -Wextra -pedantic -Werror -O2 \
           -Wconversion -Wold-style-definition \
           -Wdouble-promotion -Wswitch-enum -Wredundant-decls -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -fcf-protection \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/runtime
 LDFLAGS = -pie
 LIBS    = -lm
 # Linux/ELF only: -Wl,-z,relro,-z,now -Wl,-z,noexecstack
@@ -17,7 +17,7 @@ SOURCES = src/main.c \
           src/tdf/tdf.c src/tdf/tdf_lower.c src/tdf/tdf_fission.c src/tdf/tdf_place.c src/tdf/tdf_noc.c \
           src/amdgpu/amd_rplan.c src/amdgpu/isel.c src/amdgpu/emit.c src/amdgpu/ra_ssa.c src/amdgpu/encode.c src/amdgpu/enc_tab.c src/amdgpu/sched.c src/amdgpu/verify.c \
           src/tensix/isel.c src/tensix/emit.c src/tensix/coarsen.c src/tensix/datamov.c \
-          src/tensix/rv_enc.c src/tensix/rv_buf.c src/tensix/rv_elf.c src/tensix/rv_isel.c \
+          src/tensix/rv_enc.c src/tensix/rv_buf.c src/tensix/rv_elf.c src/tensix/rv_isel.c src/cpu/cpu_emit.c src/cpu/cpu_elf.c \
           src/nvidia/isel.c src/nvidia/emit.c \
           src/metal/emit.c \
           src/intel/emit.c \
@@ -35,7 +35,7 @@ $(TARGET): $(OBJECTS)
 
 # ---- Test Suite ----
 TCFLAGS = -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/runtime \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/runtime \
           -Iruntime
 TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/ttabs.c tests/ttypes.c tests/terrs.c tests/tphase.c \
