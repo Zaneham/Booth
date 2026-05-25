@@ -1,10 +1,9 @@
-/* cpu_launch_vadd.c — Run a BarraCUDA --cpu kernel natively, no GPU.
+/* cpu_launch_vadd.c -- run a BarraCUDA --cpu kernel natively, no GPU.
  *
- * Demonstrates the CPU backend's SIMT-on-CPU calling convention: the
- * kernel's own parameters come first, then a hidden trailing `nthreads`
- * argument. The kernel body runs once per thread_id in [0, nthreads),
- * with block_id=0, so a single call covers a full 1-D launch when
- * nthreads == element count.
+ * The whole trick to calling one of these kernels: pass its own params
+ * first, then one extra arg on the end, nthreads. The kernel runs its
+ * body once per thread_id from 0 up to nthreads, so for a 1-D launch you
+ * just hand it the element count and a single call does the lot.
  *
  * Build (Triton source):
  *   ./barracuda --triton --cpu -o vadd.o tests/tri_vadd.py

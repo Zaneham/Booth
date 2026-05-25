@@ -1,35 +1,34 @@
-/* Triton frontend BIR lowering, sitting one.
+/* Triton frontend BIR lowering.
  *
- * Walks the sema-annotated AST and produces BIR, the same target
- * the CUDA frontend lowers into. The point is that once a Triton
- * kernel reaches BIR, every backend (AMD, NVIDIA, Tensix, Metal,
- * Intel) consumes it without caring which Python decorator was
- * sitting at the top of the source file.
+ * Walks the sema-annotated AST and produces BIR, the same target the
+ * CUDA frontend lowers into. The whole point: once a Triton kernel
+ * reaches BIR, every backend (AMD, NVIDIA, Tensix, Metal, Intel, and
+ * now plain x86 CPU) eats it without caring which Python decorator was
+ * sitting at the top of the file.
  *
- * Scope of this sitting:
- *   - Module skeleton: pull each @triton.jit FuncDef into the
- *     module, mark it __global__, generate BIR_PARAM instructions
- *     for each parameter, terminate the entry block with BIR_RET.
- *   - Statements: Assign (lower RHS, remember the BIR value through
- *     the AST node map), ExprStmt (lower expression for its side
- *     effect), Return.
- *   - Expressions: integer and float literals, Name references to
- *     parameters and locals, BinOp arithmetic (add, sub, mul,
- *     integer div, mod), unary negation, Call sites for the small
- *     set of scalar intrinsics this sitting recognises
- *     (tl.program_id, tl.num_programs).
- *   - Unsupported constructs get a polite diagnostic and the
- *     pass continues. For loops, conditionals, subscripts, slices,
- *     masked load/store, tile shapes, reductions, matmul, and the
- *     full intrinsic catalogue all wait their turn for sitting two
- *     and onwards.
+ * This started life as a humble "sitting one" that could barely add two
+ * scalars together. It has since grown teeth. What works now:
+ *   - Module skeleton: each @triton.jit FuncDef becomes a __global__
+ *     function with one BIR_PARAM per parameter and a tidy BIR_RET.
+ *   - Statements: Assign, ExprStmt, Return, AugAssign, and the big one,
+ *     `for k in range(...)` as a real counted loop.
+ *   - Scalar expressions: int/float literals, params and locals, the
+ *     usual BinOp arithmetic, unary negation, comparisons, and the
+ *     scalar intrinsics (program_id, num_programs, arange, cdiv).
+ *   - Tiles: 2-D shapes from [:,None]/[None,:] broadcasts, tl.load,
+ *     tl.store, tl.zeros, and tl.dot. A kernel with rank-2 tiles
+ *     materialises and unrolls them, and a K-loop sweeps an arbitrary
+ *     contraction. Which is to say: a Triton matmul compiles and runs
+ *     on a laptop CPU with no GPU and no LLVM in sight. Woop woop.
  *
- * Type policy for this sitting: pointer parameters are typed as
- * i32* in the global address space, everything else is i32 unless
- * the source is a float literal in which case it is f32. The
- * crude policy is a deliberate sitting-one shortcut; sitting two
- * adds real type inference based on use sites and intrinsic
- * signatures. */
+ * Still on the bench: multi-block grids (one block per call for now),
+ * tl.load mask=, while loops, if/else, and rank-2 reductions. They will
+ * get their turn.
+ *
+ * Type policy is still cheerfully crude: a param whose name ends in
+ * _ptr is f32*, a tl.constexpr param is i32, everything else is i32,
+ * and float literals are f32. Real use-site type inference is a job for
+ * another day. */
 
 #include "triton.h"
 
@@ -643,15 +642,16 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
     }
 }
 
-/* ---- Rank-2 / tile materialization (tl.dot kernels) ----
+/* ---- Rank-2 / tile materialisation (the tl.dot path) ----
  *
- * Kernels that use rank-2 tiles abandon the scalar lane-collapse model
- * and fully unroll: every tile becomes an array of per-element BIR
- * scalar values (block sizes are compile-time constants). arange yields
- * literal indices, [:,None]/[None,:] reshape, elementwise ops fan out
- * with broadcasting, and tl.dot becomes an unrolled sum of products.
- * The launch runs one thread (the body is thread-id independent). Each
- * tile is capped at TN_TILE_MAX elements. */
+ * The moment a kernel touches a 2-D tile we stop pretending each lane is
+ * a thread and just unroll the lot. Block sizes are compile-time
+ * constants, so a tile is nothing fancier than an array of per-element
+ * BIR values: arange hands back literal indices, [:,None]/[None,:]
+ * reshape, the usual ops fan out with broadcasting, and tl.dot is a flat
+ * sum of products. It all runs on one thread, since nothing in here ever
+ * asks what thread_id is. Tiles are capped at TN_TILE_MAX elements;
+ * past that we bail rather than emit a wall of instructions. */
 
 static int l_tile(tn_lower_t *L, uint32_t node, int *out);
 
@@ -932,11 +932,16 @@ static void l_block(tn_lower_t *L, uint32_t node_idx)
     }
 }
 
-/* Lower `for k in range(start, stop, step):` as a counted loop. The
- * induction variable lives in an alloca (mem2reg promotes it to a phi,
- * and the backends already handle phi + back-edges, see the CUDA loop
- * path). Bodies are assumed straight-line for now (no nested control
- * flow), which covers the matmul K-loop. */
+/* Lower `for k in range(start, stop, step)` as a counted loop.
+ *
+ * The counter is a phi, built by hand, not an alloca. The tidy move
+ * would be to stash k in an alloca and let mem2reg lift it to a phi,
+ * the way the CUDA loops do it. But mem2reg takes one look at this loop,
+ * decides the counter never changes, folds it to its start value, and
+ * the loop runs forever. Emitting the phi ourselves dodges that, and the
+ * backends already know how to copy a phi's value in along each edge.
+ * Bodies are straight-line only for now, which is all the matmul K-loop
+ * asks for. */
 static void l_for(tn_lower_t *L, uint32_t node_idx)
 {
     uint32_t nk = l_nkids(&L->parser->nodes[node_idx]);

@@ -1,11 +1,10 @@
 /* cpu.h -- x86-64 CPU backend for BarraCUDA.
  *
- * Compiles a kernel to a host-runnable x86-64 function so Triton
- * and CUDA kernels can be developed on a laptop with no GPU. The
- * SIMT model is one logical thread per call for now; the
- * thread-to-loop transform that lets one call cover a whole block
- * lands in a later sitting. Stack-everything codegen, no register
- * allocator: correct first, fast later. */
+ * Turns a kernel into a host-runnable x86-64 function, so you can hack
+ * on Triton and CUDA kernels on a laptop with no GPU in it. Codegen is
+ * stack-everything, no register allocator: correct first, fast later.
+ * How one call ends up running a whole block of threads is cpu_emit.c's
+ * story to tell. */
 
 #ifndef BARRACUDA_CPU_H
 #define BARRACUDA_CPU_H
@@ -51,9 +50,10 @@ typedef struct {
     int32_t   slots[BIR_MAX_INSTS];     /* inst -> RBP offset, 0 = none */
     uint32_t  blk_off[BIR_MAX_BLOCKS];  /* block -> code offset */
 
-    /* per-alloca backing-store RBP offsets, in inst-walk order: the
-     * pre-pass that sizes the frame fills these, the body reads them
-     * back in the same order. */
+    /* An alloca needs somewhere to actually live, past the slot that
+     * just holds its pointer. The frame-sizing pre-pass parks each
+     * one's offset here and the body reads them back in the same walk
+     * order, so the two never have to talk to each other directly. */
     int32_t   alloca_off[CPU_ALLOCA_MAX];
 
     struct { uint32_t off; uint32_t blk; } fix[CPU_FIX_MAX];

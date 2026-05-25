@@ -1,23 +1,27 @@
-/* cpu_emit.c -- BIR to x86-64, stack-everything model.
+/* cpu_emit.c -- BIR to x86-64, the stack-everything way.
  *
- * Every value lives at an RBP slot. Operands load to RAX/RCX,
- * op, store back. SysV: the kernel's own params come first in
- * RDI/RSI/RDX/RCX/R8/R9, then on the caller's stack at [rbp+16+...]
- * for the seventh onward.
+ * No register allocator, and that's deliberate. Every value gets its
+ * own slot on the stack; every op loads its operands into RAX/RCX, does
+ * the work, writes the answer back. Not fast. Correct, though, and
+ * correct is the only thing worth being first at. Speed can wait.
  *
- * SIMT on CPU: a __global__ kernel's body runs inside a loop over
- * thread_id in [0, nthreads). nthreads is a hidden trailing arg the
- * host passes in the SysV register right after the user params, so a
- * single call covers a whole block. block_id=0, grid_dim=1,
- * block_dim=nthreads (one block per call; the host sweeps the grid by
- * setting nthreads to the element count for 1-D launches). A `return`
- * inside the kernel ends one thread — it jumps to the loop's continue
- * point, not out of the function. Plain (non-__global__) functions are
- * emitted without the wrapper and return normally.
+ * Calling convention is plain SysV: the kernel's params ride in
+ * RDI/RSI/RDX/RCX/R8/R9, and the seventh onward spill to the caller's
+ * stack at [rbp+16+...].
  *
- * Limits: single block per call (block_id=0), so multi-block grids and
- * masks (tl.load mask=) aren't here yet — for 1-D launches set nthreads
- * to the element count and there is no tail to mask. */
+ * The cheeky part is doing SIMT on a chip with no warps. A __global__
+ * kernel has no hardware threads to fan out across, so we wrap its body
+ * in a loop and run the threads one after the other. How many is
+ * nthreads, a hidden arg the host tacks on after the real params, so
+ * one call covers a whole block (block_id=0, grid_dim=1,
+ * block_dim=nthreads). For a 1-D launch, set nthreads to the element
+ * count and you're sorted. A `return` only finishes its own thread, so
+ * it hops to the loop tail rather than leaving the function. Ordinary
+ * non-__global__ functions skip the whole circus and return normally.
+ *
+ * Still on the list: more than one block per call, and obeying tl.load
+ * masks. Until then, nthreads == element count and there's no ragged
+ * tail to worry about. */
 
 #include "cpu.h"
 #include <string.h>
@@ -51,8 +55,9 @@ static int pointee_sz(cpu_mod_t *X,uint32_t ty){
     return 4;
 }
 
-/* size in bytes of a type. Naive aggregate layout (no padding) —
- * tiles are arrays of a uniform scalar, so it is exact for them. */
+/* size in bytes of a type. Aggregate layout is naive (no padding),
+ * which is fine here: the only aggregates we size are tiles, and a tile
+ * is a run of one uniform scalar, so the plain sum lands exactly right. */
 static int type_size(const cpu_mod_t *X,uint32_t ty){
     if (ty>=X->M->num_types) return 8;
     const bir_type_t *t=&X->M->types[ty];
@@ -148,11 +153,10 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         }
     }
     int na_emit=0;
-    /* SIMT-on-CPU: __global__ kernels run their body once per thread_id in
-     * a wrapping loop. tid is the induction var; ntid (thread count) arrives
-     * as a hidden trailing arg in the SysV register after the user params.
-     * block_id=0, grid_dim=1, block_dim=ntid — one block per call for now;
-     * the host sweeps the grid. tid/ntid get their own frame slots. */
+    /* The thread loop lives here. A kernel runs its body once per
+     * thread_id, counting up to ntid (the hidden trailing arg). block_id
+     * and grid_dim stay 0 and 1 because one call is one block for now.
+     * tid and ntid get their own frame slots, tucked below the values. */
     int is_kernel=(F->cuda_flags&CUDA_GLOBAL)!=0;
     off-=8; int32_t tid_off=off;
     off-=8; int32_t ntid_off=off;
@@ -189,9 +193,11 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
             const bir_type_t *t=(I->type<X->M->num_types)?&X->M->types[I->type]:0;
             int isflt=t&&(t->kind==BIR_TYPE_FLOAT||t->kind==BIR_TYPE_BFLOAT);
             int w=t?(int)t->width:32;
-            /* Integers are signed (C default): sign-extend to 64 bits so 64-bit
-             * signed compares/arith see the right value. Floats keep a 32-bit
-             * zero-extend — the bits flow on to movss, which reads the low 32. */
+            /* C integers are signed, so sign-extend to 64 bits. Skip this
+             * and a negative int reads back as a giant positive one, and
+             * every 64-bit compare downstream quietly lies. Floats stay a
+             * 32-bit zero-extend: the bits only flow on to movss, which
+             * reads the low 32 and ignores the rest. */
             if (isflt)        { eb(X,0x8B);modrm(X,0,X_RAX,X_RAX); }                       /* mov eax,[rax] */
             else if (w==64)   { rexw(X,X_RAX,X_RAX);eb(X,0x8B);modrm(X,0,X_RAX,X_RAX); }   /* mov rax,[rax] */
             else if (w==16)   { rexw(X,X_RAX,X_RAX);eb(X,0x0F);eb(X,0xBF);modrm(X,0,X_RAX,X_RAX); } /* movsx rax,word[rax] */
