@@ -21,7 +21,9 @@ int rv64_elf(const rv64_mod_t *V, const char *path)
     char strt[64]={0}; uint32_t st=1, s_k=st; size_t kl=strlen(kn); memcpy(strt+st,kn,kl+1); st+=(uint32_t)kl+1;
     uint64_t eh=64, text=eh, ss=text+V->codelen, sy=ss+(uint32_t)sh, st2=sy+48, shoff=st2+(uint32_t)st;
     p32(f,0x464c457f);fputc(2,f);fputc(1,f);fputc(1,f);fputc(0,f);for(int i=0;i<8;i++)fputc(0,f);
-    p16(f,1);p16(f,243);p32(f,1);p64(f,0);p64(f,0);p64(f,shoff);p32(f,0);p16(f,64);p16(f,0);p16(f,0);p16(f,64);p16(f,5);p16(f,2);
+    /* e_flags = 0x4 (EF_RISCV_FLOAT_ABI_DOUBLE): we pass floats in fa regs,
+     * so the object declares the hard-float (lp64d) ABI to link with one. */
+    p16(f,1);p16(f,243);p32(f,1);p64(f,0);p64(f,0);p64(f,shoff);p32(f,4);p16(f,64);p16(f,0);p16(f,0);p16(f,64);p16(f,5);p16(f,2);
     fwrite(V->code,1,V->codelen,f); fwrite(shstr,1,(size_t)sh,f);
     p32(f,0);p32(f,0);p64(f,0);p64(f,0); p32(f,s_k);fputc(0x12,f);fputc(0,f);p16(f,1);p64(f,0);p64(f,V->codelen); /* sym1: kernel */
     fwrite(strt,1,(size_t)st,f);
