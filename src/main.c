@@ -19,6 +19,7 @@
 #include "rv_elf.h"
 #include "rv_isel.h"
 #include "cpu.h"
+#include "rv64.h"
 #include <stdlib.h>
 
 static char       source_buf[BC_MAX_SOURCE];
@@ -39,7 +40,7 @@ typedef struct {
     int             mode_ir, mode_tdf, mode_tdf_fission;
     int             mode_amdgpu, mode_amdgpu_bin;
     int             mode_tensix, mode_nvidia, nv_bkhit;
-    int             mode_metal, mode_intel, mode_rv_elf, mode_cpu;
+    int             mode_metal, mode_intel, mode_rv_elf, mode_cpu, mode_rv64;
     amd_target_t    amd_target;
     uint32_t        amd_elfm;
     const char     *amd_chip;
@@ -255,6 +256,16 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
         fprintf(stderr, "wrote %s (%u bytes x86-64)\n", path, cm.codelen);
     }
 
+    if (cfg->mode_rv64) {
+        static rv64_mod_t vm;
+        if (bir->num_funcs == 0u) { fprintf(stderr,"error: no functions\n"); return BC_ERR_TDF; }
+        rv64_init(&vm, bir);
+        rv64_emit(&vm);
+        const char *path = cfg->output_file ? cfg->output_file : "a.o";
+        if (rv64_elf(&vm, path) != 0) { fprintf(stderr,"rv64: elf write failed\n"); return BC_ERR_IO; }
+        fprintf(stderr, "wrote %s (%u bytes RV64)\n", path, vm.codelen);
+    }
+
     if (cfg->mode_rv_elf) {
         static rv_buf_t rv_code;
         rv_buf_init(&rv_code);
@@ -424,6 +435,7 @@ int main(int argc, char *argv[])
     int mode_amdgpu = 0;
     int mode_amdgpu_bin = 0;
     int mode_cpu = 0;
+    int mode_rv64 = 0;
     int mode_tensix = 0;
     int mode_nvidia = 0;
     int mode_metal = 0;
@@ -466,6 +478,8 @@ int main(int argc, char *argv[])
             mode_rv_elf = 1;
         else if (strcmp(argv[i], "--cpu") == 0)
             mode_cpu = 1;
+        else if (strcmp(argv[i], "--rv64") == 0)
+            mode_rv64 = 1;
         else if (strcmp(argv[i], "--pp") == 0)
             mode_pp = 1;
         else if (strcmp(argv[i], "--no-pp") == 0)
@@ -683,7 +697,7 @@ int main(int argc, char *argv[])
             }
             int want_backend = mode_amdgpu || mode_amdgpu_bin ||
                                mode_tensix || mode_nvidia ||
-                               mode_metal || mode_intel || mode_cpu;
+                               mode_metal || mode_intel || mode_cpu || mode_rv64;
             if (mode_sema || mode_ir || want_backend) {
                 tn_sema_t *tns = (tn_sema_t *)malloc(sizeof(tn_sema_t));
                 if (!tns) {
@@ -735,7 +749,7 @@ int main(int argc, char *argv[])
                         cfg.mode_ir    = mode_ir;
                         cfg.mode_tdf   = mode_tdf;
                         cfg.mode_tdf_fission = mode_tdf_fission;
-                        cfg.mode_rv_elf      = mode_rv_elf; cfg.mode_cpu = mode_cpu;
+                        cfg.mode_rv_elf      = mode_rv_elf; cfg.mode_cpu = mode_cpu; cfg.mode_rv64 = mode_rv64;
                         cfg.mode_amdgpu     = mode_amdgpu;
                         cfg.mode_amdgpu_bin = mode_amdgpu_bin;
                         cfg.mode_tensix     = mode_tensix;
@@ -869,7 +883,7 @@ int main(int argc, char *argv[])
     }
 
     if (mode_parse || mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-        mode_tensix || mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu) {
+        mode_tensix || mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64) {
         parser_t P;
         parser_init(&P, token_buf, L.num_tokens, lex_src,
                     node_buf, BC_MAX_NODES);
@@ -922,7 +936,7 @@ int main(int argc, char *argv[])
         }
 
         if ((mode_ir || mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
-             mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu) &&
+             mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64) &&
             P.num_errors == 0) {
             bc_error_t lower_errs[BC_MAX_ERRORS];
             int num_lower_errs = 0;
@@ -950,7 +964,7 @@ int main(int argc, char *argv[])
                 cfg.mode_ir    = mode_ir;
                 cfg.mode_tdf   = mode_tdf;
                 cfg.mode_tdf_fission = mode_tdf_fission;
-                cfg.mode_rv_elf = mode_rv_elf; cfg.mode_cpu = mode_cpu;
+                cfg.mode_rv_elf = mode_rv_elf; cfg.mode_cpu = mode_cpu; cfg.mode_rv64 = mode_rv64;
                 cfg.mode_amdgpu     = mode_amdgpu;
                 cfg.mode_amdgpu_bin = mode_amdgpu_bin;
                 cfg.mode_tensix     = mode_tensix;
