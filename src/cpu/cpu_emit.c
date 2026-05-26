@@ -88,12 +88,29 @@ static int pointee_bits(const cpu_mod_t *X,uint32_t v){
     return 32;
 }
 
-/* materialize incoming SysV arg p into reg: first six in registers, the
- * rest on the caller's stack at [rbp+16 + 8*(p-6)]. */
-static void ld_arg(cpu_mod_t *X,int reg,uint16_t p){
-    static const int areg[6]={X_RDI,X_RSI,X_RDX,X_RCX,8,9};
-    if (p<6){ rexw(X,areg[p],reg);eb(X,0x89);modrm(X,3,areg[p],reg); }      /* mov reg, areg[p] */
-    else { int32_t o=16+(int32_t)(p-6)*8; rexw(X,reg,X_RBP);eb(X,0x8B);modrm(X,2,reg,X_RBP);ei32(X,o); } /* mov reg,[rbp+o] */
+/* SysV hands float/double scalars in XMM0..7 and everything else (ints,
+ * pointers) in RDI.. , each class counted on its own. So we have to know
+ * which class a param is, or a float scalar like saxpy's alpha reads out
+ * of the wrong register and the kernel quietly does nothing. */
+static int param_is_float(const cpu_mod_t *X,const bir_func_t *F,uint16_t p){
+    if (F->type>=X->M->num_types) return 0;
+    const bir_type_t *t=&X->M->types[F->type];
+    if (t->kind!=BIR_TYPE_FUNC || p>=t->num_fields) return 0;
+    uint32_t pt=X->M->type_fields[t->count+p];
+    if (pt>=X->M->num_types) return 0;
+    int k=X->M->types[pt].kind;
+    return k==BIR_TYPE_FLOAT || k==BIR_TYPE_BFLOAT;
+}
+static int param_is_f64(const cpu_mod_t *X,const bir_func_t *F,uint16_t p){
+    if (F->type>=X->M->num_types) return 0;
+    const bir_type_t *t=&X->M->types[F->type];
+    if (t->kind!=BIR_TYPE_FUNC || p>=t->num_fields) return 0;
+    uint32_t pt=X->M->type_fields[t->count+p];
+    return pt<X->M->num_types && X->M->types[pt].width==64;
+}
+/* store an incoming XMM arg straight into its frame slot (movss/movsd). */
+static void st_xmm_slot(cpu_mod_t *X,int n,int32_t o,int is64){
+    eb(X,is64?0xF2:0xF3);eb(X,0x0F);eb(X,0x11);modrm(X,2,n,X_RBP);ei32(X,o);
 }
 
 /* incoming value of a phi for a given predecessor block (abs index). */
@@ -164,10 +181,29 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
     eb(X,0x55); rexw(X,X_RBP,X_RSP);eb(X,0x89);modrm(X,3,X_RSP,X_RBP);
     int32_t frame=((-off+15)&~15)+8;
     rexw(X,0,X_RSP);eb(X,0x81);modrm(X,3,5,X_RSP);ei32(X,frame);
-    for (uint16_t p=0;p<F->num_params;p++){ ld_arg(X,X_RAX,p); st_slot(X,X_RAX,X->slots[p]); }
+    /* Walk the args in order, splitting by SysV class: ints/pointers come
+     * out of the GPRs, floats out of XMM, each on its own counter, and
+     * anything past the registers spills to the caller's stack in arg
+     * order. The hidden nthreads (kernels only) rides along as one more
+     * integer arg on the end. */
+    {
+        static const int areg[6]={X_RDI,X_RSI,X_RDX,X_RCX,8,9};
+        int gi=0, xi=0; int32_t stk=16;
+        uint16_t total=(uint16_t)(F->num_params + (is_kernel?1:0));
+        for (uint16_t p=0;p<total;p++){
+            int isf=(p<F->num_params) && param_is_float(X,F,p);
+            int32_t dest=(p<F->num_params)?X->slots[p]:ntid_off;
+            if (isf){
+                if (xi<8) st_xmm_slot(X,xi++,dest,param_is_f64(X,F,p));
+                else { rexw(X,X_RAX,X_RBP);eb(X,0x8B);modrm(X,2,X_RAX,X_RBP);ei32(X,stk); st_slot(X,X_RAX,dest); stk+=8; }
+            } else {
+                if (gi<6) st_slot(X,areg[gi++],dest);
+                else { rexw(X,X_RAX,X_RBP);eb(X,0x8B);modrm(X,2,X_RAX,X_RBP);ei32(X,stk); st_slot(X,X_RAX,dest); stk+=8; gi++; }
+            }
+        }
+    }
     uint32_t loop_head=0,jge_fix=0;
     if (is_kernel){
-        ld_arg(X,X_RAX,F->num_params); st_slot(X,X_RAX,ntid_off);     /* hidden ntid arg (after user params) */
         mov_imm(X,X_RAX,0); st_slot(X,X_RAX,tid_off);                 /* tid = 0 */
         loop_head=X->codelen;
         ld_slot(X,X_RAX,tid_off); rexw(X,X_RAX,X_RBP);eb(X,0x3B);modrm(X,2,X_RAX,X_RBP);ei32(X,ntid_off); /* cmp tid,[ntid] */

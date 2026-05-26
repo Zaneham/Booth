@@ -12,9 +12,13 @@ See [CHANGELOG.txt](CHANGELOG.txt) for recent updates.
 
 **update 3**: Native RV32IM codegen for Tenstorrent Wormhole baby cores via `--rv-elf`, plus a TDF (Tile DataFlow) IR layer above BIR that models L1 placement and NoC arcs as first-class compiler concepts.
 
+**update 4**: there's a CPU backend now (`--cpu`). CUDA and Triton kernels compile to a normal x86 object and just run, no GPU needed. Triton matmul goes the whole way through, `tl.dot` and a K-loop and the lot, so you can mess about with Triton on a laptop.
+
 ## What It Does
 
-Takes CUDA C and HIP source code, the same `.cu` or `.hip`  files you'd feed to `nvcc` or `ROCm`, and compiles them to AMD RDNA 2/3/4 binaries, NVIDIA PTX, or Tenstorrent Tensix Metalium C++.
+Takes CUDA C, HIP, or Triton source (the same files you'd hand to `nvcc`, `ROCm`, or Triton's JIT) and turns them into AMD RDNA 2/3/4 binaries, NVIDIA PTX, Tenstorrent Metalium C++ or native RV32IM, or just plain x86-64 you can run on a laptop with no GPU in it.
+
+That last one still surprises me a bit. You can write a Triton kernel, matmul and all, and run it on a machine that's never seen a GPU. I haven't come across anyone else doing Triton like this (from scratch, no LLVM, straight to native), but I'd happily be proven wrong, so give me a yell if you've seen it somewhere.
 
 ## Building
 
@@ -65,6 +69,14 @@ make
 ./barracuda --triton --nvidia-ptx kernel.py -o kernel.ptx
 ./barracuda --triton --tensix       kernel.py -o kernel_compute.cpp
 
+# CPU backend: compile a kernel to a host-runnable x86-64 object, no GPU
+# needed. Link it with a host driver and run it like any other function.
+./barracuda --cpu kernel.cu -o kernel.o
+./barracuda --triton --cpu tests/tri_vadd.py -o vadd.o
+# Calling convention: pass the kernel's own params, then one extra arg on
+# the end, nthreads. The body runs once per thread_id up to nthreads, so a
+# 1-D launch just hands it the element count. See examples/cpu_launch_vadd.c.
+
 # Dump the IR (for debugging or curiosity)
 ./barracuda --ir kernel.cu
 
@@ -80,7 +92,7 @@ make
 
 ## Runtime Launcher
 
-BarraCUDA includes a minimal HSA runtime (`src/runtime/`) for dispatching compiled kernels on real AMD hardware. Zero compile-time dependency on ROCm — loads `libhsa-runtime64.so` at runtime via `dlopen`.
+BarraCUDA includes a minimal HSA runtime (`src/runtime/`) for dispatching compiled kernels on real AMD hardware. Zero compile-time dependency on ROCm. It loads `libhsa-runtime64.so` at runtime via `dlopen`.
 
 ```bash
 # Compile the runtime and example together
@@ -95,11 +107,21 @@ gcc -std=c99 -O2 -I src/runtime \
 
 Requires Linux with ROCm installed. See `examples/launch_saxpy.c` for a complete example.
 
-## SYSPRINT
+## Mainframe Curios
 
-Structured kernel output, routed by class. The mainframes solved this in 1965 (every job emits records to named SYSPRINT classes, sinks dispatch them); GPUs have been re-inventing it badly ever since. BarraCUDA brings the pattern back: kernels emit class-tagged records into a host-visible buffer, the host registers sinks by pattern (`STEP1.*`, `*.ERROR`, `*`), and `bc_sp_drain` walks the buffer once the kernel completes.
+This is the bit where I admit I read a pile of z/OS manuals and got a little obsessed. The mainframe folks sorted out crash diagnostics and structured job output decades ago, and honestly a lot of it is nicer than what I had while squinting at broken GPU kernels. So I borrowed the ideas. I'm sure I'm doing them more clumsily than the people who invented them, and I'm still learning this stuff, but they're not a gimmick to me, they're the things that actually helped me find bugs.
 
-Workflow:
+### ABEND dumps
+
+When a kernel faults you get a real dump, not a shrug. `src/runtime/bc_abend.*` gives GPU faults proper IBM-style completion codes (G0Cx, the GPU cousins of S0Cx), correlates the faulting address against tracked allocations, and prints a dispatch snapshot. It's wired into the HSA runtime and fires automatically off the system event callback, so a memory aperture violation tells you which buffer and which dispatch went wrong instead of just dying quietly. Live on the AMD/HSA path.
+
+### SNAP (`--snap`)
+
+A parameter dump, basically. The mainframe crowd had this in the 70s and I kept wishing for it while debugging. With `--snap` the AMD backend writes each kernel parameter's register value into a host-visible buffer on entry, so when things go sideways you can read the evidence instead of staring at disassembly like it owes you money. AMD only for now.
+
+### SYSPRINT
+
+Structured kernel output, routed by class, the way every mainframe job has emitted records to named SYSPRINT classes since 1965. Kernels emit class-tagged records into a host-visible buffer, the host registers sinks by pattern (`STEP1.*`, `*.ERROR`, `*`), and `bc_sp_drain` walks the buffer once the kernel finishes.
 
 ```c
 /* kernel.cu */
@@ -121,7 +143,11 @@ bc_sp_register_sink("DEMO.RESULT", my_sink, NULL);
 bc_sp_drain(&buf);                                 /* sinks fire */
 ```
 
-See `examples/sysprint_kernel.cu` + `examples/launch_sysprint.c` for a full end-to-end demo. The kernel compiles cleanly on the NVIDIA PTX and Tensix backends; the AMD backend currently hits a regalloc bug on the byte-copy loop ([open issue](https://github.com/Zaneham/BarraCUDA/issues)) which will get its own follow-up.
+See `examples/sysprint_kernel.cu` + `examples/launch_sysprint.c` for a full end-to-end demo. Works on the NVIDIA PTX and Tensix backends; the AMD path currently trips a regalloc bug on the byte-copy loop ([open issue](https://github.com/Zaneham/BarraCUDA/issues)), which gets its own follow-up.
+
+### TDF (Tile DataFlow)
+
+For the dataflow GPUs (Tenstorrent), the layer above BIR is modelled on CICS transactions: regions, channels, and NoC arcs as first-class compiler concepts, with L1 placement and a fission pass for multi-core kernels. Dump it with `--tdf`.
 
 ## What Works
 
@@ -159,8 +185,10 @@ See `examples/sysprint_kernel.cu` + `examples/launch_sysprint.c` for a full end-
 - Source location tracking in IR dumps
 - Struct pass-by-value
 - Triton tile shape inference: rank-0/1/2 shape annotation on every expression, constexpr default propagation (`BLOCK: tl.constexpr = 256` resolves to `vec[256]`), numpy-style broadcasting, `[:, None]` / `[None, :]` reshape patterns
+- Triton matmul on the CPU: `tl.dot` lowers and runs via `--cpu`, with a runtime K-loop so the contraction can be any size. Rank-2 tiles materialise and unroll
+- x86-64 CPU backend (`--cpu`): CUDA and Triton kernels compile to a host object and run with no GPU. SIMT becomes a thread loop. Stack-everything codegen, no register allocator yet
 - TDF (Tile DataFlow) IR layer above BIR: regions / channels / NoC arcs as first-class compiler concepts, L1 placement, fission pass for multi-core kernels
-- SYSPRINT: class-tagged structured kernel output, pattern-routed sinks on the host. See the SYSPRINT section below for the kernel/host workflow.
+- SYSPRINT: class-tagged structured kernel output, pattern-routed sinks on the host. See the Mainframe Curios section above for the kernel/host workflow.
 
 ## Example
 
@@ -185,10 +213,10 @@ No LLVM required :-)
 
 BarraCUDA-compiled kernels have been tested and produce correct results on real silicon:
 
-- **AMD MI300X (CDNA3, GFX942)** — 8/8 test kernels passing. Monte Carlo neutron transport producing correct physics (k_eff = 0.995, matching reference).
-- **AMD RDNA3 (GFX1100)** — Full test suite passing via RDNA3 emulator CI.
-- **NVIDIA RTX 4060 Ti** — PTX backend, loaded via CUDA Driver API, JIT-compiled by NVIDIA driver. Monte Carlo neutron transport benchmark produces correct results with 3.8x speedup over single-thread CPU. No NVCC involved anywhere in the pipeline.
-- **Tenstorrent Blackhole** — Compiles to valid Metalium C++. Hardware validation pending dev kit access.
+- **AMD MI300X (CDNA3, GFX942)**: 8/8 test kernels passing. Monte Carlo neutron transport producing correct physics (k_eff = 0.995, matching reference).
+- **AMD RDNA3 (GFX1100)**: Full test suite passing via RDNA3 emulator CI.
+- **NVIDIA RTX 4060 Ti**: PTX backend, loaded via CUDA Driver API, JIT-compiled by NVIDIA driver. Monte Carlo neutron transport benchmark produces correct results with 3.8x speedup over single-thread CPU. No NVCC involved anywhere in the pipeline.
+- **Tenstorrent Blackhole**: Compiles to valid Metalium C++. Hardware validation pending dev kit access.
 
 ## What Doesn't Work (Yet)
 
@@ -199,7 +227,8 @@ Being honest about limitations is important. Here's what's missing:
 - Dynamic parallelism (device-side kernel launch)
 - Multiple translation units
 - Host code generation (only device code is compiled)
-- Rank-2 matrix codegen for Triton tiles (MFMA on AMD, mma.sync on NVIDIA). Shape inference recognises rank-2 tiles and refuses cleanly with E099; the codegen path is its own issue. No silent wrong code.
+- Rank-2 matrix codegen on the GPU backends (MFMA on AMD, mma.sync on NVIDIA). Triton `tl.dot` already runs on the CPU backend, materialised and unrolled with a K-loop, but the GPU matrix-instruction path is a separate job. On GPU targets rank-2 tiles still refuse cleanly with E099, no silent wrong code.
+- CPU backend is correct-first: stack-everything codegen, no register allocator yet, single block per call, and `tl.load` masks aren't honoured (so keep the launch's nthreads equal to the element count). It runs; it isn't fast.
 - Soft-float for the Tenstorrent native RV32IM path. The runtime exists and validates against host FPU; wiring it into `--rv-elf` is a sitting away.
 
 None of these are architectural blockers. They're all "haven't got round to it yet" items.
@@ -242,13 +271,13 @@ The IR (BIR) is target-independent. The backend is cleanly separated. Adding a n
 - **Tenstorrent RV32IM** - Done. Native RV32IM ELF for Wormhole baby cores with TDF layer for L1/NoC orchestration. `--rv-elf`
 - **Apple Metal** - Stub backend exists, hardware validation pending. `--metal`
 - **Intel Arc** - Xe architecture, SPIR-V emit stub. Would give BarraCUDA coverage across all four major GPU vendors. `--intel-spirv`
-- **CPU (x86-64 / ARM64)** - On the radar. SIMT-to-loop translation is the interesting part; would unlock "develop Triton on your laptop" workflows nobody currently has.
+- **CPU (x86-64)** - Done via `--cpu`. CUDA and Triton kernels compile to a host object and run with no GPU, Triton matmul (`tl.dot` + K-loop) included. The SIMT-to-loop trick wraps the kernel body in a thread loop. Stack-everything codegen for now, no register allocator (correct first, fast later). ARM64 is still on the radar.
 - **RISC-V Vector Extension** - For when GPUs are too mainstream and you want to run CUDA on a softcore.
 
 
 ## Contributing
 
-**Issues and PRs in any language are welcome** — just include an English translation alongside. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide on style, naming, and where to help.
+**Issues and PRs in any language are welcome**, just include an English translation alongside. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide on style, naming, and where to help.
 
 The HLASM-style short identifiers (`ra_gc`, `mk_hash`, `enc_vop3`) are culturally neutral by accident, there's nothing English about a 5-character label. If you've found a bug or have an idea, write it up in whatever language you think in.
 
@@ -269,7 +298,7 @@ Apache 2.0. Do whatever you want. If this compiler somehow ends up in production
 ## Acknowledgements
 
 - **Fernando Magno Quintão Pereira** and the **Compilers Lab at UFMG** (Universidade Federal de Minas Gerais). Fernando reached out after seeing the project, pointed me to the divergence analysis papers, and offered guidance. The SSA register allocator exists because of that conversation.
-- **The academic community** — Cooper, Harvey & Kennedy for dominators; Braun & Hack for SSA spilling; Sampaio, Souza, Collange & Pereira for divergence analysis. I'm just a hobbyist who reads papers and writes C. The actual hard work was done by the researchers.
+- **The academic community**: Cooper, Harvey & Kennedy for dominators; Braun & Hack for SSA spilling; Sampaio, Souza, Collange & Pereira for divergence analysis. I'm just a hobbyist who reads papers and writes C. The actual hard work was done by the researchers.
 - **Steven Muchnick** for *Advanced Compiler Design and Implementation*. If this compiler does anything right, that book is why.
 - **Low Level** for the Zero to Hero C course and the YouTube channel. That's where I learnt C.
 - **Abe Kornelis** for being an amazing teacher. His work on the [z390 Portable Mainframe Assembler](https://github.com/z390development/z390) project is well worth your time.
