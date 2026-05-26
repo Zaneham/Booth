@@ -230,13 +230,13 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         }
     }
 
-    uint32_t loop_head=0;
+    uint32_t loop_head=0, bail_off=0;
     if (is_kernel){
         e_li(V,V_T0,0); st_slot(V,V_T0,tid_off);                    /* tid = 0 */
         loop_head=V->codelen;
         ld_slot(V,V_T0,tid_off); ld_slot(V,V_T1,ntid_off);
-        e_blt(V,V_T0,V_T1,8);                                       /* tid<ntid? skip the bail-out jal */
-        jal_block(V,F->first_block+F->num_blocks);                  /* sentinel: "loop end", patched below */
+        e_blt(V,V_T0,V_T1,8);                                       /* tid<ntid? skip the next jal */
+        bail_off=V->codelen; e_jal(V,V_ZERO,0);                     /* tid>=ntid: bail to loop end (patched) */
     }
 
     uint32_t retfix[RV_RET_MAX]; int n_ret=0;
@@ -297,12 +297,15 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         }}
     }
 
-    uint32_t loop_end_blk = F->first_block+F->num_blocks;   /* sentinel index for "past the last block" */
     if (is_kernel){
+        /* loop continue: bump tid and go again. Every RET landed here, and
+         * so does the bail branch once tid runs out. */
         uint32_t loop_cont=V->codelen;
         ld_slot(V,V_T0,tid_off); e_addi(V,V_T0,V_T0,1); st_slot(V,V_T0,tid_off);
         e_jal(V,V_ZERO,(int32_t)loop_head-(int32_t)V->codelen);
-        V->blk_off[loop_end_blk]=V->codelen;                 /* loop end lands here */
+        uint32_t loop_end=V->codelen;
+        { uint32_t w=mk_J(0x6F,V_ZERO,(int32_t)loop_end-(int32_t)bail_off);      /* patch the bail jal */
+          V->code[bail_off]=(uint8_t)w;V->code[bail_off+1]=(uint8_t)(w>>8);V->code[bail_off+2]=(uint8_t)(w>>16);V->code[bail_off+3]=(uint8_t)(w>>24); }
         for (int k=0;k<n_ret;k++){ uint32_t o=retfix[k]; uint32_t w=mk_J(0x6F,V_ZERO,(int32_t)loop_cont-(int32_t)o);
           V->code[o]=(uint8_t)w;V->code[o+1]=(uint8_t)(w>>8);V->code[o+2]=(uint8_t)(w>>16);V->code[o+3]=(uint8_t)(w>>24); }
     }
