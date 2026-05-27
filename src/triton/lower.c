@@ -549,6 +549,7 @@ static uint32_t l_exp_nat(tn_lower_t *L, uint32_t call_idx)
     if (an == 0) return BIR_VAL_NONE;
     uint32_t v = l_expr(L, an);
     if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    /* log2(e): implement exp(x) through BIR_EXP2. */
     uint32_t x = l_fmul_k(L, v, 1.4426950408889634);
     uint32_t r = l_emit(L, BIR_EXP2, L->t_f32, 0);
     l_op(L, r, x);
@@ -563,6 +564,7 @@ static uint32_t l_log_nat(tn_lower_t *L, uint32_t call_idx)
     if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
     uint32_t lg = l_emit(L, BIR_LOG2, L->t_f32, 0);
     l_op(L, lg, v);
+    /* ln(2): convert BIR_LOG2 output back to natural log. */
     return l_fmul_k(L, lg, 0.6931471805599453);
 }
 
@@ -572,6 +574,7 @@ static uint32_t l_sincos(tn_lower_t *L, uint32_t call_idx, int op)
     if (an == 0) return BIR_VAL_NONE;
     uint32_t v = l_expr(L, an);
     if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    /* 1/(2*pi): convert radians to turns for BIR_SIN/BIR_COS. */
     uint32_t t = l_fmul_k(L, v, 0.15915494309189535);
     uint32_t r = l_emit(L, op, L->t_f32, 0);
     l_op(L, r, t);
@@ -584,6 +587,7 @@ static uint32_t l_tan(tn_lower_t *L, uint32_t call_idx)
     if (an == 0) return BIR_VAL_NONE;
     uint32_t v = l_expr(L, an);
     if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    /* 1/(2*pi): convert radians to turns for BIR_SIN/BIR_COS. */
     uint32_t t = l_fmul_k(L, v, 0.15915494309189535);
     uint32_t s = l_emit(L, BIR_SIN, L->t_f32, 0);
     l_op(L, s, t);
@@ -601,6 +605,7 @@ static uint32_t l_tanh(tn_lower_t *L, uint32_t call_idx)
     if (an == 0) return BIR_VAL_NONE;
     uint32_t v = l_expr(L, an);
     if (v == BIR_VAL_NONE) return BIR_VAL_NONE;
+    /* 2*log2(e): scale for tanh(x) = (exp(2x) - 1) / (exp(2x) + 1). */
     uint32_t x = l_fmul_k(L, v, 2.8853900817779268);
     uint32_t e2 = l_emit(L, BIR_EXP2, L->t_f32, 0);
     l_op(L, e2, x);
