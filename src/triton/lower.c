@@ -266,8 +266,15 @@ static uint32_t l_name(tn_lower_t *L, uint32_t node_idx)
     case TN_SYM_PARAM: {
         /* The parameter's BIR value was emitted when we lowered the
          * function header. Look it up by its position relative to
-         * cur_param_base. */
-        return BIR_MAKE_VAL(L->cur_param_base + aux);
+         * cur_param_base. Constexpr params with a default folded into
+         * a literal during the header (no BIR_PARAM was emitted), so
+         * we hand back the constant directly. */
+        if (aux < 32 && L->param_remap[aux] == 0xFF) {
+            return BIR_MAKE_CONST(bir_const_int(L->bir, L->t_i32,
+                                                L->param_const[aux]));
+        }
+        uint32_t bir_idx = (aux < 32) ? L->param_remap[aux] : (uint8_t)aux;
+        return BIR_MAKE_VAL(L->cur_param_base + bir_idx);
     }
     case TN_SYM_LOCAL:
     case TN_SYM_LOOPVAR: {
@@ -1305,13 +1312,20 @@ static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
         F->name = bir_add_string(M, P->lex->src + t->off, t->len);
     }
 
-    /* Collect parameters: each PARAM child becomes a BIR_PARAM.
-     * Build a function type with i32* pointee for each param so
-     * the backends have something to work with. */
+    /* Collect parameters: each PARAM child becomes a BIR_PARAM unless
+     * it is a constexpr-with-default, in which case it gets folded to a
+     * literal at lower time and dropped from the runtime signature.
+     * param_remap maps source-position to BIR-position; the source-
+     * position matches the kid index because params come before the
+     * body, so sema's TN_SYM_PARAM aux lands in the same slot. */
     uint32_t nk = l_nkids(n);
     uint32_t param_types[32];
     int num_params = 0;
-    for (uint32_t i = 0; i < nk && num_params < 32; i++) {
+    for (int j = 0; j < 32; j++) {
+        L->param_remap[j] = 0xFF;
+        L->param_const[j] = -1;
+    }
+    for (uint32_t i = 0; i < nk && i < 32 && num_params < 32; i++) {
         uint32_t kid = l_kid(L, node_idx, i);
         if (P->nodes[kid].kind == TN_NK_PARAM) {
             /* Sitting two default: a parameter whose name ends in
@@ -1348,13 +1362,24 @@ static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
                     break;
                 }
             }
-            if (is_constexpr) {
+            int has_default = (L->sema->node_const_val[kid] >= 0);
+            if (is_constexpr && has_default) {
+                /* Fold the value, drop the param from the BIR signature.
+                 * 0xFF in the remap tells l_name to return a literal. */
+                L->param_remap[i] = 0xFF;
+                L->param_const[i] = L->sema->node_const_val[kid];
+            } else if (is_constexpr) {
+                /* Constexpr without a default keeps a runtime slot, so
+                 * existing fixtures (vadd's BLOCK_SIZE) still work. */
+                L->param_remap[i] = (uint8_t)num_params;
                 param_types[num_params++] = L->t_i32;
             } else if (is_ptr) {
+                L->param_remap[i] = (uint8_t)num_params;
                 param_types[num_params++] = L->t_ptr_f32;
             } else {
                 /* Default: assume i32 scalar for things like
                  * n_elements that look like sizes. */
+                L->param_remap[i] = (uint8_t)num_params;
                 param_types[num_params++] = L->t_i32;
             }
         }

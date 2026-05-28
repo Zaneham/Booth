@@ -5,10 +5,9 @@
  * natively against a host reference. No GPU, no LLVM anywhere.
  *
  * The kernel is one 4x4 output tile (BLOCK_M = BLOCK_N = BLOCK_K = 4).
- * The constexpr values fold into the body during lowering (the tile is
- * materialised at compile time), but the params themselves stay in the
- * runtime signature, so they have to be passed even though the kernel
- * does not read them. The rank-2 tile path runs as a single logical
+ * The constexpr values fold into the body during lowering, and the
+ * lowerer drops them from the runtime signature too, so the host does
+ * not need to pass them. The rank-2 tile path runs as a single logical
  * thread, so nthreads = 1.
  *
  * Build (Linux / WSL):
@@ -18,13 +17,12 @@
  */
 #include <stdio.h>
 
-/* a, b, c, six strides, the three (unused at runtime) constexpr block
- * sizes, then the hidden nthreads. */
+/* a, b, c, six strides, then the hidden nthreads. The three constexpr
+ * block sizes were folded out of the signature at lower time. */
 extern void matmul(float *a, float *b, float *c,
                    int stride_am, int stride_ak,
                    int stride_bk, int stride_bn,
                    int stride_cm, int stride_cn,
-                   int block_m, int block_n, int block_k,
                    int nthreads);
 
 #define M 4
@@ -41,9 +39,9 @@ int main(void)
     for (int i = 0; i < K * N; i++) b[i] = (float)((i * 5) % 13) * 0.5f  - 2.0f;
     for (int i = 0; i < M * N; i++) c[i] = -123.0f;
 
-    /* Row-major strides for all three matrices. Block sizes echo the
-     * constexpr defaults; nthreads = 1 because the tile is materialised. */
-    matmul(a, b, c, K, 1, N, 1, N, 1, M, N, K, /* nthreads */ 1);
+    /* Row-major strides for all three matrices. nthreads = 1 because
+     * the tile is materialised at compile time. */
+    matmul(a, b, c, K, 1, N, 1, N, 1, /* nthreads */ 1);
 
     /* Host reference: plain triple loop. */
     for (int m = 0; m < M; m++) {
