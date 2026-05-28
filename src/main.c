@@ -613,7 +613,7 @@ int main(int argc, char *argv[])
 
     if (!mode_pp && !mode_lex && !mode_parse && !mode_sema && !mode_ir &&
         !mode_amdgpu && !mode_amdgpu_bin && !mode_tensix && !mode_nvidia &&
-        !mode_metal && !mode_intel && !mode_rv_elf)
+        !mode_metal && !mode_intel && !mode_rv_elf && !mode_cpu && !mode_rv64)
         mode_parse = 1;
 
     /* ---- HIP NOTES (1 of 2) -------------------------------------------
@@ -914,7 +914,8 @@ int main(int argc, char *argv[])
         /* Semantic analysis */
         sema_ctx_t *sema_ctx = NULL;
         if ((mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-             mode_tensix || mode_nvidia || mode_metal || mode_intel) &&
+             mode_tensix || mode_nvidia || mode_metal || mode_intel ||
+             mode_cpu || mode_rv64 || mode_rv_elf) &&
             P.num_errors == 0)
         {
             sema_ctx = (sema_ctx_t *)malloc(sizeof(sema_ctx_t));
