@@ -406,8 +406,10 @@ static void usage(const char *prog)
         "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89)\n"
         "  --hip         HIP frontend mode (predefines __HIPCC__ and platform macros;\n"
         "                auto-on for .hip files; combine with --amdgpu-bin or --nvidia-ptx)\n"
-        "  --triton      Triton frontend mode (parses Python source); use --lex to dump\n"
-        "                tokens or --parse to dump the AST; sema/lower still to come\n"
+        "  --triton      Triton frontend mode (parses Python source). Pair with a target\n"
+        "                backend (--cpu, --amdgpu-bin, --nvidia-ptx). tl.dot matmul runs.\n"
+        "  --cpu         x86-64 host backend; emits a normal object you can link and run\n"
+        "  --rv64        RV64IMFD backend; emits a Linux ELF object (run under qemu-riscv64)\n"
         "  --metal       Compile to Apple Metal Shading Language (stub)\n"
         "  --intel-spirv Compile to SPIR-V for Intel Arc Xe (stub)\n"
         "  --xe-lpg      Target Xe-LPG (Arc / integrated)\n"
@@ -416,6 +418,7 @@ static void usage(const char *prog)
         "  --xe2         Target Xe2 (Lunar Lake, next-gen Arc)\n"
         "  -o <file>     Output file (for --amdgpu-bin, --tensix, --nvidia-ptx, --metal, --intel-spirv)\n"
         "  --lang <file> Load translated error messages\n"
+        "  --version     Print version and exit\n"
         "  --help        Show this message\n"
         "\n", prog);
 }
@@ -462,7 +465,12 @@ int main(int argc, char *argv[])
     int num_defines = 0;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--lex") == 0)
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("BarraCUDA %s\n", BC_VERSION_STRING);
+            printf("From-scratch CUDA/HIP/Triton compiler. Zero LLVM.\n");
+            return 0;
+        }
+        else if (strcmp(argv[i], "--lex") == 0)
             mode_lex = 1;
         else if (strcmp(argv[i], "--parse") == 0)
             mode_parse = 1;
