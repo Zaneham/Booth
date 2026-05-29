@@ -1,7 +1,7 @@
 BarraCUDA — Changelog
 =====================
 
-2026-05-28 — 0.5 release. The headline is that you can write a
+2026-05-29 — 0.5 release. The headline is that you can write a
 Triton kernel, matmul and all, and run it on a CPU with no GPU and
 no LLVM. The CPU backend (`--cpu`) lowers BIR straight to x86-64
 with the SIMT model collapsed into a thread loop, and the rank-2
@@ -14,7 +14,14 @@ oracle, every case runs `--inject` so a green result actually
 means something (see tests/diff). Triton picks up scalar math
 intrinsics (exp/log/sin/cos/tan/tanh/sqrt/rsqrt/abs/floor/ceil/
 maximum/minimum/fdiv) thanks to @shivam2931120, who got the
-radians-to-turns convention right first time. Adds `--version`.
+radians-to-turns convention right first time. Triton constexpr
+params with a default value now fold to literals at lower time
+and drop out of the runtime signature too, so the matmul example
+loses three unused args. Two small CUDA fixes for `--cpu` and
+`--rv64` on their own: sema actually runs (the lowerer needs
+it), and the parse-dump fallback no longer fires by accident, so
+typedef-struct kernels compile through `--cpu` and `--parse` no
+longer segfaults on the synthetic anon name. Adds `--version`.
 
 2026-05-26 — Triton matmul K-loop, so big matrices work. The
 Triton lowerer now lowers `for k in range(...)` as a real counted
