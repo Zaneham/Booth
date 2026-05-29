@@ -77,6 +77,17 @@ make
 # the end, nthreads. The body runs once per thread_id up to nthreads, so a
 # 1-D launch just hands it the element count. See examples/cpu_launch_vadd.c.
 
+# RISC-V backend: same idea, RV64IMFD object you run under qemu-riscv64.
+./barracuda --rv64 kernel.cu -o kernel_rv.o
+# These are System V ELF objects, so link and run them on Linux (or WSL),
+# not under MinGW (wrong ABI). The rv64 host has to be freestanding, see
+# tests/diff for a worked runner.
+
+# Differential testing: run the same kernel on two backends and diff the
+# results. The CPU backend is the oracle, so a disagreement points at the
+# other backend's codegen. Genuine cross-backend (x86 vs RISC-V), no GPU.
+bash tests/diff/run_diff.sh
+
 # Dump the IR (for debugging or curiosity)
 ./barracuda --ir kernel.cu
 

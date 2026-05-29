@@ -513,6 +513,15 @@ typedef struct {
     uint32_t        cur_block;      /* BIR block index in flight */
     uint32_t        cur_param_base; /* index of first BIR_PARAM in current func */
 
+    /* Constexpr ABI compaction. A tl.constexpr param with a default
+     * value is folded into literals at lowering time and dropped from
+     * the runtime signature (so the host does not have to pass it). For
+     * each source-position param, param_remap[i] is its compacted BIR
+     * param index, or 0xFF if the param was dropped. param_const[i]
+     * carries the folded value when param_remap[i] == 0xFF. */
+    uint8_t         param_remap[32];
+    int32_t         param_const[32];
+
     /* Map from AST node index to BIR value reference, BIR_VAL_NONE
      * if not yet produced. Used to resolve Name references back to
      * the value their declaring node generated. */

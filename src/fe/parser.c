@@ -1563,7 +1563,14 @@ static void dump_node_data(const parser_t *P, const ast_node_t *n)
     {
         int len = (int)n->d.text.len;
         if (len > 120) len = 120;
-        memcpy(text, P->src + n->d.text.offset, (size_t)len);
+        /* Synthetic anon names live in P->anon_buf, not P->src. Offsets
+         * at or above BC_ANON_BASE are sentinels into the anon buffer;
+         * blindly reading P->src + huge_offset segfaults, which the
+         * typedef-struct dump tripped hard. */
+        const char *base = (n->d.text.offset >= BC_ANON_BASE)
+            ? P->anon_buf + (n->d.text.offset - BC_ANON_BASE)
+            : P->src + n->d.text.offset;
+        memcpy(text, base, (size_t)len);
         text[len] = '\0';
         printf(" %s", text);
         break;
@@ -1633,6 +1640,7 @@ void ast_dump(const parser_t *P, uint32_t idx, int depth)
         uint32_t ni = stack[top].node;
         int d = stack[top].depth;
         int phase = stack[top].phase;
+        if (ni >= P->num_nodes) return;
         const ast_node_t *n = &P->nodes[ni];
 
         if (phase == 0) {
@@ -1649,7 +1657,7 @@ void ast_dump(const parser_t *P, uint32_t idx, int depth)
                 int nc = 0;
                 uint32_t c = n->first_child;
                 uint32_t guard = P->max_nodes;
-                while (c && nc < BC_MAX_DEPTH && --guard) {
+                while (c && c < P->num_nodes && nc < BC_MAX_DEPTH && --guard) {
                     children[nc++] = c;
                     c = P->nodes[c].next_sibling;
                 }
