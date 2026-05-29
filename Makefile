@@ -1,11 +1,12 @@
 CC      = gcc
+CF_PROT := $(shell echo 'int main(void){return 0;}' | $(CC) -x c - -fcf-protection -c -o /dev/null >/dev/null 2>&1 && echo -fcf-protection)
 CFLAGS  = -std=c99 -Wall -Wextra -pedantic -Werror -O2 \
           -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
           -Wformat=2 -Wundef -Wcast-align -Wnull-dereference \
           -Wstack-usage=4096 -Wno-error=stack-usage= \
           -Wconversion -Wold-style-definition \
           -Wdouble-promotion -Wswitch-enum -Wredundant-decls -Wwrite-strings \
-          -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -fcf-protection \
+          -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE $(CF_PROT) \
           -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/runtime
 LDFLAGS = -pie
 LIBS    = -lm
