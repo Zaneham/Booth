@@ -2,8 +2,8 @@ BarraCUDA — Changelog
 =====================
 
 2026-05-29 — 0.5 release. The headline is that you can write a
-Triton kernel, matmul and all, and run it on a CPU with no GPU and
-no LLVM. The CPU backend (`--cpu`) lowers BIR straight to x86-64
+Triton kernel, matmul and all, and run it on a CPU with no GPU.
+The CPU backend (`--cpu`) lowers BIR straight to x86-64
 with the SIMT model collapsed into a thread loop, and the rank-2
 tile path materialises and unrolls so `tl.dot` plus a K-loop
 sweeps an arbitrary contraction. A RISC-V backend (`--rv64`) lands

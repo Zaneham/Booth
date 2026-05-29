@@ -467,7 +467,7 @@ int main(int argc, char *argv[])
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0) {
             printf("BarraCUDA %s\n", BC_VERSION_STRING);
-            printf("From-scratch CUDA/HIP/Triton compiler. Zero LLVM.\n");
+            printf("From-scratch CUDA/HIP/Triton compiler.\n");
             return 0;
         }
         else if (strcmp(argv[i], "--lex") == 0)
