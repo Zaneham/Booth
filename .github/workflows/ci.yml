@@ -31,3 +31,27 @@ jobs:
         run: make
       - name: Test
         run: make test
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Test
+        run: make test
+      # The headline: GitHub's macOS runners ship the Metal toolchain, so
+      # CI can compile the MSL the Metal backend emits and prove it is
+      # real Metal, not just plausible-looking text.
+      - name: Validate emitted Metal compiles with xcrun
+        run: |
+          printf '%s\n' \
+            '__global__ void vadd(float* a, float* b, float* out, int n) {' \
+            '    int i = blockIdx.x * blockDim.x + threadIdx.x;' \
+            '    if (i < n) out[i] = a[i] + b[i];' \
+            '}' > vadd.cu
+          ./barracuda --metal vadd.cu -o vadd.metal
+          echo '--- emitted MSL ---'
+          cat vadd.metal
+          xcrun -sdk macosx metal -c vadd.metal -o vadd.air
+          echo 'METAL TOOLCHAIN ACCEPTED THE EMITTED MSL'
