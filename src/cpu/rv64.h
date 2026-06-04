@@ -29,6 +29,7 @@
 /* ---- FPR indices (f0-f31, ABI names) ---- */
 #define V_FT0   0     /* float scratch */
 #define V_FT1   1
+#define V_FT2   2
 #define V_FA0  10     /* float arg registers fa0..fa7 */
 
 #define RV_CODE_MAX   (256 * 1024)

@@ -58,6 +58,7 @@
 #define BST_MAX_KIDS    (1 << 14)   /* SEQ child-list pool */
 #define BST_MAX_COPIES  (1 << 13)   /* phi-destruction copy pool */
 #define BST_MAX_LOOPS   256         /* how deep the loop-nesting is allowed to burrow */
+#define BST_MAX_RDEPTH  1024        /* recursion cap on if-nesting, so the C stack stays on the table */
 
 #define BST_NONE        0xFFFFFFFFu
 

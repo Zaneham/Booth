@@ -24,6 +24,7 @@
 /* ---- XMM ---- */
 #define X_XMM0 0
 #define X_XMM1 1
+#define X_XMM2 2
 
 /* ---- Condition codes (Jcc / SETcc low nibble) ---- */
 #define XCC_E  0x04

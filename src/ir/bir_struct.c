@@ -55,6 +55,7 @@ typedef struct {
     uint32_t ls_header[BST_MAX_LOOPS];
     uint32_t ls_follow[BST_MAX_LOOPS];
 
+    uint32_t rdepth;            /* live recursion depth of build_region, capped */
     int bailed;                 /* tripped the moment something cannot be structured */
     const char *bail_reason;
 } bst_ctx_t;
@@ -631,6 +632,17 @@ static uint32_t build_region(bst_ctx_t *S, uint32_t start, uint32_t stop, int de
     int nk = 0;
     uint32_t cur = start;
     uint32_t prev = BST_NONE;
+    int guard = (int)S->nb + 8;     /* the chain visits each block at most once */
+
+    /* Cap the recursion. Loop nesting is already bounded by the loop stack,
+     * but if-nesting recurses through here without touching it, and a frame
+     * carries a 2KB child buffer, so an absurdly nested function could walk
+     * the C stack off the edge. Refuse long before that. */
+    if (++S->rdepth > BST_MAX_RDEPTH) {
+        bail(S, "control flow nested past the structuriser's depth cap");
+        S->rdepth--;
+        return mk_node(S, BST_SEQ);
+    }
 
     #define PUSH(node) do { \
         if (nk < KIDBUF) kids[nk++] = (node); \
@@ -638,6 +650,7 @@ static uint32_t build_region(bst_ctx_t *S, uint32_t start, uint32_t stop, int de
     } while (0)
 
     while (cur != stop && cur != BST_NONE && !S->bailed) {
+        if (guard-- <= 0) { bail(S, "region walk did not converge"); break; }
 
         /* Arriving at a block by an edge (prev set) might mean we have
          * walked onto an enclosing loop's follow, set there as the merge
@@ -763,6 +776,7 @@ static uint32_t build_region(bst_ctx_t *S, uint32_t start, uint32_t stop, int de
     }
 
     #undef PUSH
+    S->rdepth--;
     return wrap_kids(S, kids, nk);
 }
 

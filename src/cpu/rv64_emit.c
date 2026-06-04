@@ -62,6 +62,29 @@ static void e_jalr(rv64_mod_t*V,int d,int a,int i){ ew(V,mk_I(0x67,d,0,a,i&0xFFF
 static void e_beq (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,0,a,b,o)); }
 static void e_blt (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,4,a,b,o)); }
 
+/* ---- Integer ALU. RISC-V keeps it tidy: bitwise and the full-width
+ * shifts on opcode 0x33, and the narrow *W cousins on 0x3B, which chew on
+ * the low 32 bits and sign-extend the answer back to 64, exactly the canon
+ * a sign-extended slot wants. Divide and remainder ride the M extension
+ * (funct7 = 0x01). ---- */
+static void e_and (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,7,a,b,0x00)); }
+static void e_or  (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,6,a,b,0x00)); }
+static void e_xor (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,4,a,b,0x00)); }
+static void e_sll (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,1,a,b,0x00)); }
+static void e_srl (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,5,a,b,0x00)); }
+static void e_sra (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,5,a,b,0x20)); }
+static void e_sllw(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x3B,d,1,a,b,0x00)); }
+static void e_srlw(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x3B,d,5,a,b,0x00)); }
+static void e_sraw(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x3B,d,5,a,b,0x20)); }
+static void e_div (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,4,a,b,0x01)); }
+static void e_divu(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,5,a,b,0x01)); }
+static void e_rem (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,6,a,b,0x01)); }
+static void e_remu(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,7,a,b,0x01)); }
+static void e_divw (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x3B,d,4,a,b,0x01)); }
+static void e_divuw(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x3B,d,5,a,b,0x01)); }
+static void e_remw (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x3B,d,6,a,b,0x01)); }
+static void e_remuw(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x3B,d,7,a,b,0x01)); }
+
 /* ---- single-precision float ops (the F extension; D is there too but BIR
  * floats are f32, so we live in .S land) ---- */
 static void e_flw  (rv64_mod_t*V,int fd,int a,int o){ ew(V,mk_I(0x07,fd,2,a,o&0xFFF)); }
@@ -70,6 +93,42 @@ static void e_fadds(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x53,d,0,a,b,0x00
 static void e_fsubs(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x53,d,0,a,b,0x04)); }
 static void e_fmuls(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x53,d,0,a,b,0x08)); }
 static void e_fmvwx(rv64_mod_t*V,int fd,int rs){ ew(V,mk_R(0x53,fd,0,rs,0,0x78)); }   /* GPR bits -> f32 reg */
+/* Float: divide, min/max, the three compares (result lands in a GPR,
+ * 0 or 1), and the two fcvts the remainder and the casts both lean on. */
+static void e_fdivs(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x53,d,0,a,b,0x0C)); }
+static void e_fmins(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x53,d,0,a,b,0x14)); }
+static void e_fmaxs(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x53,d,1,a,b,0x14)); }
+static void e_feqs (rv64_mod_t*V,int rd,int a,int b){ ew(V,mk_R(0x53,rd,2,a,b,0x50)); }
+static void e_flts (rv64_mod_t*V,int rd,int a,int b){ ew(V,mk_R(0x53,rd,1,a,b,0x50)); }
+static void e_fles (rv64_mod_t*V,int rd,int a,int b){ ew(V,mk_R(0x53,rd,0,a,b,0x50)); }
+static void e_fcvtws(rv64_mod_t*V,int rd,int fs){ ew(V,mk_R(0x53,rd,1,fs,0,0x60)); }  /* float -> i32, round-to-zero */
+static void e_fcvtsw(rv64_mod_t*V,int fd,int rs){ ew(V,mk_R(0x53,fd,0,rs,0,0x68)); }  /* i32 -> float */
+/* Conversion kit: 64-bit fcvts (the slot holds the canonical
+ * sign-extended value, so the .l forms take any int width), the bit-move,
+ * and the shift/mask primitives the width changes are built from. */
+static void e_fcvtsl (rv64_mod_t*V,int fd,int rs){ ew(V,mk_R(0x53,fd,0,rs,2,0x68)); } /* i64 -> float */
+static void e_fcvtls (rv64_mod_t*V,int rd,int fs){ ew(V,mk_R(0x53,rd,1,fs,2,0x60)); } /* float -> i64, RTZ */
+static void e_fcvtslu(rv64_mod_t*V,int fd,int rs){ ew(V,mk_R(0x53,fd,0,rs,3,0x68)); } /* u64 -> float */
+static void e_fcvtlus(rv64_mod_t*V,int rd,int fs){ ew(V,mk_R(0x53,rd,1,fs,3,0x60)); } /* float -> u64, RTZ */
+static void e_slli (rv64_mod_t*V,int d,int a,int sh){ ew(V,mk_I(0x13,d,1,a,sh&0x3F)); }
+static void e_srli (rv64_mod_t*V,int d,int a,int sh){ ew(V,mk_I(0x13,d,5,a,sh&0x3F)); }
+static void e_srai (rv64_mod_t*V,int d,int a,int sh){ ew(V,mk_I(0x13,d,5,a,(sh&0x3F)|0x400)); }
+static void e_sextw(rv64_mod_t*V,int d,int a){ ew(V,mk_I(0x1B,d,0,a,0)); }            /* addiw d,a,0 */
+static void e_andi (rv64_mod_t*V,int d,int a,int i){ ew(V,mk_I(0x13,d,7,a,i&0xFFF)); }
+
+/* Canonicalise reg `r` by sign- or zero-extending up from a w-bit value. */
+static void rv_sext_to(rv64_mod_t*V,int r,int w){
+    if (w>=64) return;
+    if (w==1){ e_andi(V,r,r,1); return; }
+    if (w==32){ e_sextw(V,r,r); return; }
+    int sh=64-w; e_slli(V,r,r,sh); e_srai(V,r,r,sh);
+}
+static void rv_zext_to(rv64_mod_t*V,int r,int w){
+    if (w>=64) return;
+    if (w==1){ e_andi(V,r,r,1); return; }
+    if (w==8){ e_andi(V,r,r,0xFF); return; }
+    int sh=64-w; e_slli(V,r,r,sh); e_srli(V,r,r,sh);
+}
 
 /* load a 32-bit signed immediate. Small ones fit in an addi; larger ones
  * need the lui/addi two-step, because asking for a 32-bit constant in one
@@ -124,6 +183,25 @@ static void fst_slot(rv64_mod_t*V,int fr,int32_t o){
     else { e_li(V,V_T2,o); e_add(V,V_T2,V_S0,V_T2); e_fsw(V,V_T2,fr,0); }
 }
 
+/* The raw 32 bits of a float value, in a GPR (zero-extended via lwu), and
+ * the way back. SELECT blends floats by their bits so it never has to touch
+ * a float register. */
+static void ld_fbits(rv64_mod_t*V,int r,uint32_t v){
+    if (BIR_VAL_IS_CONST(v)){
+        uint32_t c=BIR_VAL_INDEX(v); uint32_t bits=0;
+        if (c<V->M->num_consts){ float fv=(float)V->M->consts[c].d.fval; memcpy(&bits,&fv,4); }
+        e_li(V,r,(int32_t)bits);
+    } else {
+        int32_t o=slot(V,BIR_VAL_INDEX(v));
+        if (fits12(o)){ ew(V,mk_I(0x03,r,6,V_S0,o&0xFFF)); }                 /* lwu r, o(s0) */
+        else { e_li(V,V_T2,o); e_add(V,V_T2,V_S0,V_T2); ew(V,mk_I(0x03,r,6,V_T2,0)); }
+    }
+}
+static void st_fbits(rv64_mod_t*V,int r,int32_t o){
+    if (fits12(o)){ e_sw(V,V_S0,r,o); }
+    else { e_li(V,V_T2,o); e_add(V,V_T2,V_S0,V_T2); e_sw(V,V_T2,r,0); }
+}
+
 /* element size in bytes of a pointer's pointee (drives GEP stride) */
 static int pointee_sz(rv64_mod_t*V,uint32_t ty){
     if (ty<V->M->num_types && V->M->types[ty].kind==BIR_TYPE_PTR){
@@ -134,6 +212,19 @@ static int pointee_sz(rv64_mod_t*V,uint32_t ty){
         }
     }
     return 4;
+}
+/* 64 for an i64, 32 for anything narrower; the shifts and the divider use
+ * it to pick the *W word ops so a 32-bit value shifts like a 32-bit value. */
+static int int_w(const rv64_mod_t*V,uint32_t ty){
+    if (ty<V->M->num_types && V->M->types[ty].kind==BIR_TYPE_INT)
+        return V->M->types[ty].width>=64?64:32;
+    return 64;
+}
+/* exact bit width of a type, for the conversions */
+static int tw(const rv64_mod_t*V,uint32_t ty){
+    if (ty<V->M->num_types){ uint16_t w=V->M->types[ty].width; if(w)return(int)w;
+        if(V->M->types[ty].kind==BIR_TYPE_PTR)return 64; }
+    return 32;
 }
 static uint32_t val_type(const rv64_mod_t*V,uint32_t v){
     uint32_t i=BIR_VAL_INDEX(v);
@@ -255,9 +346,92 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         case BIR_ADD: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_add(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
         case BIR_SUB: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_sub(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
         case BIR_MUL: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_mul(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
+
+        /* ---- integer bitwise + width-aware shift/divide ---- */
+        case BIR_AND: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_and(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
+        case BIR_OR:  load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_or (V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
+        case BIR_XOR: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_xor(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
+        case BIR_SHL: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]); if(int_w(V,I->type)==64)e_sll(V,V_T0,V_T0,V_T1);else e_sllw(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break;
+        case BIR_LSHR:load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]); if(int_w(V,I->type)==64)e_srl(V,V_T0,V_T0,V_T1);else e_srlw(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break;
+        case BIR_ASHR:load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]); if(int_w(V,I->type)==64)e_sra(V,V_T0,V_T0,V_T1);else e_sraw(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break;
+        case BIR_SDIV:load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]); if(int_w(V,I->type)==64)e_div (V,V_T0,V_T0,V_T1);else e_divw (V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break;
+        case BIR_UDIV:load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]); if(int_w(V,I->type)==64)e_divu(V,V_T0,V_T0,V_T1);else e_divuw(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break;
+        case BIR_SREM:load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]); if(int_w(V,I->type)==64)e_rem (V,V_T0,V_T0,V_T1);else e_remw (V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break;
+        case BIR_UREM:load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]); if(int_w(V,I->type)==64)e_remu(V,V_T0,V_T0,V_T1);else e_remuw(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break;
         case BIR_FADD: load_fval(V,V_FT0,I->operands[0]);load_fval(V,V_FT1,I->operands[1]);e_fadds(V,V_FT0,V_FT0,V_FT1);fst_slot(V,V_FT0,s); break;
         case BIR_FSUB: load_fval(V,V_FT0,I->operands[0]);load_fval(V,V_FT1,I->operands[1]);e_fsubs(V,V_FT0,V_FT0,V_FT1);fst_slot(V,V_FT0,s); break;
         case BIR_FMUL: load_fval(V,V_FT0,I->operands[0]);load_fval(V,V_FT1,I->operands[1]);e_fmuls(V,V_FT0,V_FT0,V_FT1);fst_slot(V,V_FT0,s); break;
+
+        /* ---- float divide, min/max ---- */
+        case BIR_FDIV: load_fval(V,V_FT0,I->operands[0]);load_fval(V,V_FT1,I->operands[1]);e_fdivs(V,V_FT0,V_FT0,V_FT1);fst_slot(V,V_FT0,s); break;
+        case BIR_FMAX: load_fval(V,V_FT0,I->operands[0]);load_fval(V,V_FT1,I->operands[1]);e_fmaxs(V,V_FT0,V_FT0,V_FT1);fst_slot(V,V_FT0,s); break;
+        case BIR_FMIN: load_fval(V,V_FT0,I->operands[0]);load_fval(V,V_FT1,I->operands[1]);e_fmins(V,V_FT0,V_FT0,V_FT1);fst_slot(V,V_FT0,s); break;
+
+        /* ---- float remainder, a - trunc(a/b)*b through the fcvts ---- */
+        case BIR_FREM:
+            load_fval(V,V_FT0,I->operands[0]); load_fval(V,V_FT1,I->operands[1]);
+            e_fdivs(V,V_FT2,V_FT0,V_FT1); e_fcvtws(V,V_T0,V_FT2); e_fcvtsw(V,V_FT2,V_T0);
+            e_fmuls(V,V_FT2,V_FT2,V_FT1); e_fsubs(V,V_FT0,V_FT0,V_FT2);
+            fst_slot(V,V_FT0,s); break;
+
+        /* ---- float compare -> i1 (0/1 in a GPR). flt/fle take their
+         * operands swapped to reach the greater-than pair; ne is eq xor 1. ---- */
+        case BIR_FCMP:
+            load_fval(V,V_FT0,I->operands[0]); load_fval(V,V_FT1,I->operands[1]);
+            switch(I->subop){
+            case BIR_FCMP_OEQ: case BIR_FCMP_UEQ: e_feqs(V,V_T0,V_FT0,V_FT1); break;
+            case BIR_FCMP_ONE: case BIR_FCMP_UNE: e_feqs(V,V_T0,V_FT0,V_FT1); e_xori(V,V_T0,V_T0,1); break;
+            case BIR_FCMP_OLT: case BIR_FCMP_ULT: e_flts(V,V_T0,V_FT0,V_FT1); break;
+            case BIR_FCMP_OLE: case BIR_FCMP_ULE: e_fles(V,V_T0,V_FT0,V_FT1); break;
+            case BIR_FCMP_OGT: case BIR_FCMP_UGT: e_flts(V,V_T0,V_FT1,V_FT0); break;
+            case BIR_FCMP_OGE: case BIR_FCMP_UGE: e_fles(V,V_T0,V_FT1,V_FT0); break;
+            default: e_feqs(V,V_T0,V_FT0,V_FT1); break;
+            }
+            st_slot(V,V_T0,s); break;
+
+        /* ---- select. No cmov on RISC-V, so blend with a mask:
+         * result = b ^ ((a ^ b) & -cond). Works for an integer in full width
+         * or a float by its 32 bits. ---- */
+        case BIR_SELECT: {
+            int isf=(I->type<V->M->num_types)
+                    && (V->M->types[I->type].kind==BIR_TYPE_FLOAT
+                        || V->M->types[I->type].kind==BIR_TYPE_BFLOAT);
+            load_val(V,V_T0,I->operands[0]); e_sub(V,V_T0,V_ZERO,V_T0);    /* mask = -cond */
+            if (isf){
+                ld_fbits(V,V_T1,I->operands[1]); ld_fbits(V,V_T2,I->operands[2]);
+                e_xor(V,V_T1,V_T1,V_T2); e_and(V,V_T1,V_T1,V_T0); e_xor(V,V_T1,V_T1,V_T2);
+                st_fbits(V,V_T1,s);
+            } else {
+                load_val(V,V_T1,I->operands[1]); load_val(V,V_T2,I->operands[2]);
+                e_xor(V,V_T1,V_T1,V_T2); e_and(V,V_T1,V_T1,V_T0); e_xor(V,V_T1,V_T1,V_T2);
+                st_slot(V,V_T1,s);
+            }
+            break; }
+
+        /* ---- integer width / sign ---- */
+        case BIR_TRUNC: load_val(V,V_T0,I->operands[0]); rv_sext_to(V,V_T0,tw(V,I->type)); st_slot(V,V_T0,s); break;
+        case BIR_SEXT:  load_val(V,V_T0,I->operands[0]); rv_sext_to(V,V_T0,tw(V,val_type(V,I->operands[0]))); st_slot(V,V_T0,s); break;
+        case BIR_ZEXT:  load_val(V,V_T0,I->operands[0]); rv_zext_to(V,V_T0,tw(V,val_type(V,I->operands[0]))); st_slot(V,V_T0,s); break;
+
+        /* ---- int <-> float (the .l fcvts take the canonical 64-bit) ---- */
+        case BIR_SITOFP: load_val(V,V_T0,I->operands[0]); e_fcvtsl(V,V_FT0,V_T0); fst_slot(V,V_FT0,s); break;
+        case BIR_UITOFP: load_val(V,V_T0,I->operands[0]); rv_zext_to(V,V_T0,tw(V,val_type(V,I->operands[0]))); e_fcvtslu(V,V_FT0,V_T0); fst_slot(V,V_FT0,s); break;
+        case BIR_FPTOSI: load_fval(V,V_FT0,I->operands[0]); e_fcvtls(V,V_T0,V_FT0); rv_sext_to(V,V_T0,tw(V,I->type)); st_slot(V,V_T0,s); break;
+        case BIR_FPTOUI: load_fval(V,V_FT0,I->operands[0]); e_fcvtlus(V,V_T0,V_FT0); rv_zext_to(V,V_T0,tw(V,I->type)); st_slot(V,V_T0,s); break;
+
+        /* ---- float width is a copy; f64/f16 wait their turn ---- */
+        case BIR_FPEXT: case BIR_FPTRUNC: load_fval(V,V_FT0,I->operands[0]); fst_slot(V,V_FT0,s); break;
+
+        /* ---- reinterpret bits + pointer<->int ---- */
+        case BIR_BITCAST: {
+            uint32_t srct=val_type(V,I->operands[0]);
+            int srcf=(srct<V->M->num_types)&&(V->M->types[srct].kind==BIR_TYPE_FLOAT||V->M->types[srct].kind==BIR_TYPE_BFLOAT);
+            int dstf=(I->type<V->M->num_types)&&(V->M->types[I->type].kind==BIR_TYPE_FLOAT||V->M->types[I->type].kind==BIR_TYPE_BFLOAT);
+            if (srcf) ld_fbits(V,V_T0,I->operands[0]); else load_val(V,V_T0,I->operands[0]);
+            if (dstf) st_fbits(V,V_T0,s); else { rv_sext_to(V,V_T0,tw(V,I->type)); st_slot(V,V_T0,s); }
+            break; }
+        case BIR_PTRTOINT: load_val(V,V_T0,I->operands[0]); if(tw(V,I->type)<64) rv_sext_to(V,V_T0,tw(V,I->type)); st_slot(V,V_T0,s); break;
+        case BIR_INTTOPTR: load_val(V,V_T0,I->operands[0]); st_slot(V,V_T0,s); break;
         case BIR_GEP: { int sz=pointee_sz(V,I->type); load_val(V,V_T0,I->operands[1]); e_li(V,V_T1,sz); e_mul(V,V_T0,V_T0,V_T1); load_val(V,V_T1,I->operands[0]); e_add(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break; }
         case BIR_LOAD: { load_val(V,V_T0,I->operands[0]);
             const bir_type_t*t=(I->type<V->M->num_types)?&V->M->types[I->type]:0; int w=t?(int)t->width:32;

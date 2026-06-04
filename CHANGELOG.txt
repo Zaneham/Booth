@@ -1,6 +1,34 @@
 BarraCUDA — Changelog
 =====================
 
+2026-06-05 — The CPU and RISC-V backends learn most of their
+arithmetic. The `--cpu` (x86-64) and `--rv64` emitters carried
+only a starter set of opcodes and everything else quietly returned
+zero, which is a fine way to compute the wrong answer with great
+confidence. This fills out the scalar instruction set on both at
+once, designed the once and encoded twice. Integers gain and/or/xor,
+the shifts (width-aware, so a 32-bit `>>` stops dragging the sign
+bits down and the xorwow RNG stops handing out the same number
+forever), and signed and unsigned divide and remainder. Floats gain
+divide, min/max, remainder, compare and select, and the existing
+add/sub/mul stop reading a constant operand out of slot zero, which
+is to say out of whatever was lying there, a real bug now quietly
+closed. The full conversion set lands too: truncate, sign- and
+zero-extend, integer to float and back in both signednesses, float
+widths, bitcast, and pointer to int. Pointers also stop being
+sign-truncated to 32 bits on the way out of memory, which had been
+turning a perfectly good address into litter. Width is kept honest:
+values sit sign-extended in their slots, RV64 reaches for the *W
+word ops, and x86 reads a source at its own width for cvtsi2ss
+because SysV never promised to sign-extend a narrow argument and a
+64-bit read of one comes back a giant unsigned. Every opcode was
+checked against a plain-C oracle on both targets, x86 natively and
+RV64 under qemu. The structuriser also gains explicit bounds on its
+recursion and its block walk, so a pathological CFG bails rather
+than walking the C stack off the edge. No GPU goes near any of it;
+it is the groundwork for running a whole kernel on a chip that
+never heard of one.
+
 2026-06-04 — Apple Silicon, by way of Metal. A CUDA, HIP or
 Triton kernel now lowers to Metal Shading Language and compiles
 under Apple's own toolchain. The Metal emitter (`--metal`) walks

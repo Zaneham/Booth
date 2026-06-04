@@ -35,6 +35,18 @@ static void st_slot(cpu_mod_t *X,int r,int32_t o){ rexw(X,r,X_RBP);eb(X,0x89);mo
 static void mov_imm(cpu_mod_t *X,int r,int64_t v){ rexw(X,0,r);eb(X,0xC7);modrm(X,3,0,r);ei32(X,(int32_t)v); }
 static int32_t slot(cpu_mod_t *X,uint32_t i){ return X->slots[i]; }
 
+/* Width of an integer result, in the only two sizes that matter to the
+ * shifters and the divider: 64 for an i64, 32 for everything narrower.
+ * Pointers and the rest fall through to 64, which is what they are. The
+ * shift and divide ops are the ones that actually care, because a 64-bit
+ * `>>` on a sign-extended i32 drags the sign bits down into the answer and
+ * the xorwow RNG starts handing out the same number forever. */
+static int int_w(const cpu_mod_t *X, uint32_t ty){
+    if (ty<X->M->num_types && X->M->types[ty].kind==BIR_TYPE_INT)
+        return X->M->types[ty].width>=64 ? 64 : 32;
+    return 64;
+}
+
 static void load_val(cpu_mod_t *X,int reg,uint32_t v){
     if (BIR_VAL_IS_CONST(v)){ uint32_t c=BIR_VAL_INDEX(v); mov_imm(X,reg,c<X->M->num_consts?X->M->consts[c].d.ival:0); }
     else ld_slot(X,reg,slot(X,BIR_VAL_INDEX(v)));
@@ -78,11 +90,15 @@ static uint32_t val_type(const cpu_mod_t *X,uint32_t v){
     return i<X->M->num_insts?X->M->insts[i].type:0;
 }
 
-/* pointee bit width of a pointer-typed value, default 32. */
+/* pointee bit width of a pointer-typed value, default 32. A pointer to a
+ * pointer stores 8 bytes, not 4: the inner PTR carries no width field, so
+ * spot it by kind or the high half of the address quietly falls off and the
+ * next dereference reads litter. */
 static int pointee_bits(const cpu_mod_t *X,uint32_t v){
     uint32_t ty=val_type(X,v);
     if (ty<X->M->num_types && X->M->types[ty].kind==BIR_TYPE_PTR){
         uint32_t in=X->M->types[ty].inner;
+        if (in<X->M->num_types && X->M->types[in].kind==BIR_TYPE_PTR) return 64;
         if (in<X->M->num_types && X->M->types[in].width) return (int)X->M->types[in].width;
     }
     return 32;
@@ -111,6 +127,89 @@ static int param_is_f64(const cpu_mod_t *X,const bir_func_t *F,uint16_t p){
 /* store an incoming XMM arg straight into its frame slot (movss/movsd). */
 static void st_xmm_slot(cpu_mod_t *X,int n,int32_t o,int is64){
     eb(X,is64?0xF2:0xF3);eb(X,0x0F);eb(X,0x11);modrm(X,2,n,X_RBP);ei32(X,o);
+}
+
+/* Load a float operand into xmm `xn`. A constant gets its bits parked in eax
+ * and shuffled across with movd; a real value is a plain movss from its slot.
+ * The old float ops read a constant operand straight out of slot 0, which is
+ * to say out of whatever happened to be living there, so this is also the
+ * quiet end of a bug. */
+static void ld_fval(cpu_mod_t *X,int xn,uint32_t v){
+    if (BIR_VAL_IS_CONST(v)){
+        uint32_t c=BIR_VAL_INDEX(v); uint32_t bits=0;
+        if (c<X->M->num_consts){ float fv=(float)X->M->consts[c].d.fval; memcpy(&bits,&fv,4); }
+        mov_imm(X,X_RAX,(int32_t)bits);
+        eb(X,0x66);eb(X,0x0F);eb(X,0x6E);modrm(X,3,xn,X_RAX);          /* movd xn, eax */
+    } else {
+        eb(X,0xF3);eb(X,0x0F);eb(X,0x10);modrm(X,2,xn,X_RBP);ei32(X,slot(X,BIR_VAL_INDEX(v)));
+    }
+}
+
+/* The raw 32 bits of a float operand in a GPR, zero-extended. Used by SELECT,
+ * which blends two floats by their bit patterns and never has to know it was
+ * floats it was choosing between. */
+static void ld_fbits(cpu_mod_t *X,int r,uint32_t v){
+    if (BIR_VAL_IS_CONST(v)){
+        uint32_t c=BIR_VAL_INDEX(v); uint32_t bits=0;
+        if (c<X->M->num_consts){ float fv=(float)X->M->consts[c].d.fval; memcpy(&bits,&fv,4); }
+        eb(X,0xC7);modrm(X,3,0,r);ei32(X,(int32_t)bits);              /* mov r32, imm32 */
+    } else {
+        eb(X,0x8B);modrm(X,2,r,X_RBP);ei32(X,slot(X,BIR_VAL_INDEX(v))); /* mov r32, [rbp+slot] */
+    }
+}
+
+/* Is this type a float kind? SELECT and a few others branch on it. */
+static int is_float_ty(const cpu_mod_t *X,uint32_t ty){
+    if (ty>=X->M->num_types) return 0;
+    uint8_t k=X->M->types[ty].kind;
+    return k==BIR_TYPE_FLOAT || k==BIR_TYPE_BFLOAT;
+}
+
+/* A float compare predicate, turned into the unsigned setcc condition that
+ * matches ucomiss. NaN is assumed not to show up; the day it does, an isnan
+ * guard goes here. */
+static int fcmp_cc(uint8_t p){
+    switch(p){
+    case BIR_FCMP_OEQ: case BIR_FCMP_UEQ: return XCC_E;
+    case BIR_FCMP_ONE: case BIR_FCMP_UNE: return XCC_NE;
+    case BIR_FCMP_OLT: case BIR_FCMP_ULT: return XCC_B;
+    case BIR_FCMP_OLE: case BIR_FCMP_ULE: return XCC_BE;
+    case BIR_FCMP_OGT: case BIR_FCMP_UGT: return XCC_A;
+    case BIR_FCMP_OGE: case BIR_FCMP_UGE: return XCC_AE;
+    default: return XCC_NE;
+    }
+}
+
+/* The type a value carries, and that type's bit width. The conversions need
+ * to know both the size they are coming from and the size they are going to. */
+static uint32_t val_type_x(const cpu_mod_t *X,uint32_t v){
+    uint32_t i=BIR_VAL_INDEX(v);
+    if (BIR_VAL_IS_CONST(v)) return i<X->M->num_consts?X->M->consts[i].type:0;
+    return i<X->M->num_insts?X->M->insts[i].type:0;
+}
+static int ty_w(const cpu_mod_t *X,uint32_t ty){
+    if (ty<X->M->num_types){ uint16_t w=X->M->types[ty].width; if(w) return (int)w;
+        if (X->M->types[ty].kind==BIR_TYPE_PTR) return 64; }
+    return 32;
+}
+
+/* Canonicalise rax by sign-extending up from a `w`-bit value, and the
+ * zero-extending twin. The slot convention is sign-extended, so a freshly
+ * narrowed or widened integer goes through one of these to stop the high
+ * bits telling stories. */
+static void sext_to(cpu_mod_t *X,int w){
+    if (w>=64) return;
+    if (w==32){ rexw(X,X_RAX,X_RAX);eb(X,0x63);modrm(X,3,X_RAX,X_RAX); }              /* movsxd rax,eax */
+    else if (w==16){ rexw(X,X_RAX,X_RAX);eb(X,0x0F);eb(X,0xBF);modrm(X,3,X_RAX,X_RAX); } /* movsx rax,ax */
+    else if (w==8){ rexw(X,X_RAX,X_RAX);eb(X,0x0F);eb(X,0xBE);modrm(X,3,X_RAX,X_RAX); }  /* movsx rax,al */
+    else { rexw(X,0,X_RAX);eb(X,0x83);modrm(X,3,4,X_RAX);eb(X,1); }                    /* and rax,1 */
+}
+static void zext_to(cpu_mod_t *X,int w){
+    if (w>=64) return;
+    if (w==32){ eb(X,0x89);modrm(X,3,X_RAX,X_RAX); }                                  /* mov eax,eax */
+    else if (w==16){ rexw(X,X_RAX,X_RAX);eb(X,0x0F);eb(X,0xB7);modrm(X,3,X_RAX,X_RAX); } /* movzx rax,ax */
+    else if (w==8){ rexw(X,X_RAX,X_RAX);eb(X,0x0F);eb(X,0xB6);modrm(X,3,X_RAX,X_RAX); }  /* movzx rax,al */
+    else { rexw(X,0,X_RAX);eb(X,0x83);modrm(X,3,4,X_RAX);eb(X,1); }                    /* and rax,1 */
 }
 
 /* incoming value of a phi for a given predecessor block (abs index). */
@@ -224,11 +323,51 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         case BIR_ADD: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x01);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;
         case BIR_SUB: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x29);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;
         case BIR_MUL: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);eb(X,0x48);eb(X,0x0F);eb(X,0xAF);modrm(X,3,X_RAX,X_RCX);st_slot(X,X_RAX,s);break;
+
+        /* ---- integer bitwise (width-agnostic, plain 64-bit) ---- */
+        case BIR_AND: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x21);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;
+        case BIR_OR:  load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x09);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;
+        case BIR_XOR: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x31);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;
+
+        /* ---- shifts (count in cl). Narrow shifts run 32-bit and
+         * sign-extend the answer back to canonical 64, so the high bits stop
+         * lying. ext picks shl(4)/shr(5)/sar(7). ---- */
+        case BIR_SHL: case BIR_LSHR: case BIR_ASHR: {
+            int ext=(I->op==BIR_SHL)?4:(I->op==BIR_LSHR)?5:7;
+            load_val(X,X_RAX,I->operands[0]); load_val(X,X_RCX,I->operands[1]);
+            if (int_w(X,I->type)==64){ rexw(X,0,X_RAX);eb(X,0xD3);modrm(X,3,ext,X_RAX); }
+            else { eb(X,0xD3);modrm(X,3,ext,X_RAX); rexw(X,X_RAX,X_RAX);eb(X,0x63);modrm(X,3,X_RAX,X_RAX); }
+            st_slot(X,X_RAX,s); break; }
+
+        /* ---- signed divide/remainder. cqo/cdq sign-fills the high
+         * half, idiv leaves quotient in rax and remainder in rdx. A narrow
+         * result gets sign-extended back. (Divide by zero traps, same as the
+         * hardware; the kernels are expected to guard their divisors.) ---- */
+        case BIR_SDIV: case BIR_SREM: {
+            int w64=(int_w(X,I->type)==64);
+            load_val(X,X_RAX,I->operands[0]); load_val(X,X_RCX,I->operands[1]);
+            if (w64){ eb(X,0x48);eb(X,0x99); rexw(X,0,X_RCX);eb(X,0xF7);modrm(X,3,7,X_RCX); }
+            else { eb(X,0x99); eb(X,0xF7);modrm(X,3,7,X_RCX); }
+            if (I->op==BIR_SREM){ rexw(X,X_RDX,X_RAX);eb(X,0x89);modrm(X,3,X_RDX,X_RAX); }
+            if (!w64){ rexw(X,X_RAX,X_RAX);eb(X,0x63);modrm(X,3,X_RAX,X_RAX); }
+            st_slot(X,X_RAX,s); break; }
+
+        /* ---- unsigned divide/remainder. rdx cleared, div leaves
+         * quotient in rax, remainder in rdx; the narrow result is naturally
+         * zero-extended, which is exactly what an unsigned 32-bit wants. ---- */
+        case BIR_UDIV: case BIR_UREM: {
+            int w64=(int_w(X,I->type)==64);
+            load_val(X,X_RAX,I->operands[0]); load_val(X,X_RCX,I->operands[1]);
+            if (w64){ eb(X,0x48);eb(X,0x31);modrm(X,3,X_RDX,X_RDX); rexw(X,0,X_RCX);eb(X,0xF7);modrm(X,3,6,X_RCX); }
+            else { eb(X,0x31);modrm(X,3,X_RDX,X_RDX); eb(X,0xF7);modrm(X,3,6,X_RCX); }
+            if (I->op==BIR_UREM){ rexw(X,X_RDX,X_RAX);eb(X,0x89);modrm(X,3,X_RDX,X_RAX); }
+            st_slot(X,X_RAX,s); break; }
         case BIR_GEP: { int sz=pointee_sz(X,I->type); load_val(X,X_RCX,I->operands[1]); mov_imm(X,X_RAX,sz); eb(X,0x48);eb(X,0x0F);eb(X,0xAF);modrm(X,3,X_RCX,X_RAX); load_val(X,X_RAX,I->operands[0]); rexw(X,X_RCX,X_RAX);eb(X,0x01);modrm(X,3,X_RCX,X_RAX); st_slot(X,X_RAX,s); break; }
         case BIR_LOAD: { load_val(X,X_RAX,I->operands[0]); /* addr in rax */
             const bir_type_t *t=(I->type<X->M->num_types)?&X->M->types[I->type]:0;
             int isflt=t&&(t->kind==BIR_TYPE_FLOAT||t->kind==BIR_TYPE_BFLOAT);
             int w=t?(int)t->width:32;
+            if (t && t->kind==BIR_TYPE_PTR) w=64;  /* a loaded pointer is 8 bytes, not a sign-extended 4 */
             /* C integers are signed, so sign-extend to 64 bits. Skip this
              * and a negative int reads back as a giant positive one, and
              * every 64-bit compare downstream quietly lies. Floats stay a
@@ -247,7 +386,105 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
             else if (w==8||w==1){ eb(X,0x88);modrm(X,0,X_RAX,X_RCX); }                   /* mov [rcx],al  */
             else            { eb(X,0x89);modrm(X,0,X_RAX,X_RCX); }                        /* mov [rcx],eax (32-bit, incl f32) */
             break; }
-        case BIR_FADD: case BIR_FSUB: case BIR_FMUL: { uint8_t op=(I->op==BIR_FADD)?0x58:(I->op==BIR_FSUB)?0x5C:0x59; int32_t sa=slot(X,(BIR_VAL_IS_CONST(I->operands[0]))?0:BIR_VAL_INDEX(I->operands[0])); int32_t sb=slot(X,(BIR_VAL_IS_CONST(I->operands[1]))?0:BIR_VAL_INDEX(I->operands[1])); eb(X,0xF3);eb(X,0x0F);eb(X,0x10);modrm(X,2,X_XMM0,X_RBP);ei32(X,sa); eb(X,0xF3);eb(X,0x0F);eb(X,0x10);modrm(X,2,X_XMM1,X_RBP);ei32(X,sb); eb(X,0xF3);eb(X,0x0F);eb(X,op);modrm(X,3,X_XMM0,X_XMM1); eb(X,0xF3);eb(X,0x0F);eb(X,0x11);modrm(X,2,X_XMM0,X_RBP);ei32(X,s); break; }
+        /* ---- float arithmetic. ops[0] -> xmm0, ops[1] -> xmm1, and
+         * the op leaves the answer in xmm0. addss/subss/mulss/divss. ---- */
+        case BIR_FADD: case BIR_FSUB: case BIR_FMUL: case BIR_FDIV: {
+            uint8_t op=(I->op==BIR_FADD)?0x58:(I->op==BIR_FSUB)?0x5C:(I->op==BIR_FMUL)?0x59:0x5E;
+            ld_fval(X,X_XMM0,I->operands[0]); ld_fval(X,X_XMM1,I->operands[1]);
+            eb(X,0xF3);eb(X,0x0F);eb(X,op);modrm(X,3,X_XMM0,X_XMM1);
+            st_xmm_slot(X,X_XMM0,s,0); break; }
+
+        /* ---- float min/max. maxss/minss; NaN handling is the
+         * hardware's (returns the second operand), good enough sans NaN. ---- */
+        case BIR_FMAX: case BIR_FMIN: {
+            uint8_t op=(I->op==BIR_FMAX)?0x5F:0x5D;
+            ld_fval(X,X_XMM0,I->operands[0]); ld_fval(X,X_XMM1,I->operands[1]);
+            eb(X,0xF3);eb(X,0x0F);eb(X,op);modrm(X,3,X_XMM0,X_XMM1);
+            st_xmm_slot(X,X_XMM0,s,0); break; }
+
+        /* ---- float remainder the scenic route, a - trunc(a/b)*b, since
+         * x86 never did grow a frem instruction and was not about to start
+         * on our account. ---- */
+        case BIR_FREM: {
+            ld_fval(X,X_XMM0,I->operands[0]); ld_fval(X,X_XMM1,I->operands[1]);
+            eb(X,0x0F);eb(X,0x28);modrm(X,3,X_XMM2,X_XMM0);                 /* movaps xmm2,xmm0 (a) */
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x5E);modrm(X,3,X_XMM0,X_XMM1);      /* divss xmm0,xmm1 (a/b) */
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x2C);modrm(X,3,X_RAX,X_XMM0);       /* cvttss2si eax,xmm0 (trunc) */
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x2A);modrm(X,3,X_XMM0,X_RAX);       /* cvtsi2ss xmm0,eax */
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x59);modrm(X,3,X_XMM0,X_XMM1);      /* mulss xmm0,xmm1 (*b) */
+            eb(X,0x0F);eb(X,0x28);modrm(X,3,X_XMM1,X_XMM2);                 /* movaps xmm1,xmm2 (a) */
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x5C);modrm(X,3,X_XMM1,X_XMM0);      /* subss xmm1,xmm0 (a - ...) */
+            st_xmm_slot(X,X_XMM1,s,0); break; }
+
+        /* ---- float compare -> i1. ucomiss sets the unsigned flags,
+         * setcc reads them, movzx widens the bool. ---- */
+        case BIR_FCMP: {
+            ld_fval(X,X_XMM0,I->operands[0]); ld_fval(X,X_XMM1,I->operands[1]);
+            eb(X,0x0F);eb(X,0x2E);modrm(X,3,X_XMM0,X_XMM1);                 /* ucomiss xmm0,xmm1 */
+            int cc=fcmp_cc(I->subop);
+            eb(X,0x0F);eb(X,(uint8_t)(0x90+cc));modrm(X,3,0,X_RAX);         /* setcc al */
+            rexw(X,0,X_RAX);eb(X,0x0F);eb(X,0xB6);modrm(X,3,X_RAX,X_RAX);   /* movzx rax,al */
+            st_slot(X,X_RAX,s); break; }
+
+        /* ---- select. cond ? a : b. Integers ride cmov; floats get
+         * blended by their bits, so cmov works on those too without xmm ever
+         * hearing about the choice. ---- */
+        case BIR_SELECT: {
+            if (is_float_ty(X,I->type)){
+                ld_fbits(X,X_RAX,I->operands[2]); ld_fbits(X,X_RCX,I->operands[1]);
+                load_val(X,X_RDX,I->operands[0]);
+                rexw(X,X_RDX,X_RDX);eb(X,0x85);modrm(X,3,X_RDX,X_RDX);      /* test rdx,rdx */
+                eb(X,0x0F);eb(X,0x45);modrm(X,3,X_RAX,X_RCX);              /* cmovnz eax,ecx */
+                eb(X,0x89);modrm(X,2,X_RAX,X_RBP);ei32(X,s);              /* mov [rbp+s],eax */
+            } else {
+                load_val(X,X_RAX,I->operands[2]); load_val(X,X_RCX,I->operands[1]);
+                load_val(X,X_RDX,I->operands[0]);
+                rexw(X,X_RDX,X_RDX);eb(X,0x85);modrm(X,3,X_RDX,X_RDX);      /* test rdx,rdx */
+                rexw(X,X_RAX,X_RCX);eb(X,0x0F);eb(X,0x45);modrm(X,3,X_RAX,X_RCX); /* cmovnz rax,rcx */
+                st_slot(X,X_RAX,s);
+            }
+            break; }
+
+        /* ---- integer width / sign changes. Truncate canonicalises
+         * to the result width; sext/zext widen from the source width. ---- */
+        case BIR_TRUNC: load_val(X,X_RAX,I->operands[0]); sext_to(X,ty_w(X,I->type)); st_slot(X,X_RAX,s); break;
+        case BIR_SEXT:  load_val(X,X_RAX,I->operands[0]); sext_to(X,ty_w(X,val_type_x(X,I->operands[0]))); st_slot(X,X_RAX,s); break;
+        case BIR_ZEXT:  load_val(X,X_RAX,I->operands[0]); zext_to(X,ty_w(X,val_type_x(X,I->operands[0]))); st_slot(X,X_RAX,s); break;
+
+        /* ---- int <-> float. cvtsi2ss takes the sign-extended 64-bit
+         * value (unsigned zero-extends first); cvttss2si truncates toward
+         * zero, the way CUDA's (int)f does. ---- */
+        case BIR_SITOFP: load_val(X,X_RAX,I->operands[0]);
+            /* read the source at its own width: a 32-bit int arrives with its
+             * high half undefined (SysV does not sign-extend args), so a
+             * 64-bit cvtsi2ss would read it as a giant unsigned. cvtsi2ss off
+             * eax takes the i32 honestly. */
+            eb(X,0xF3); if(ty_w(X,val_type_x(X,I->operands[0]))>32) rexw(X,X_XMM0,X_RAX);
+            eb(X,0x0F);eb(X,0x2A);modrm(X,3,X_XMM0,X_RAX);
+            st_xmm_slot(X,X_XMM0,s,0); break;
+        case BIR_UITOFP: load_val(X,X_RAX,I->operands[0]); zext_to(X,ty_w(X,val_type_x(X,I->operands[0])));
+            eb(X,0xF3);rexw(X,X_XMM0,X_RAX);eb(X,0x0F);eb(X,0x2A);modrm(X,3,X_XMM0,X_RAX);
+            st_xmm_slot(X,X_XMM0,s,0); break;
+        case BIR_FPTOSI: ld_fval(X,X_XMM0,I->operands[0]);
+            eb(X,0xF3);rexw(X,X_RAX,X_XMM0);eb(X,0x0F);eb(X,0x2C);modrm(X,3,X_RAX,X_XMM0);
+            sext_to(X,ty_w(X,I->type)); st_slot(X,X_RAX,s); break;
+        case BIR_FPTOUI: ld_fval(X,X_XMM0,I->operands[0]);
+            eb(X,0xF3);rexw(X,X_RAX,X_XMM0);eb(X,0x0F);eb(X,0x2C);modrm(X,3,X_RAX,X_XMM0);
+            zext_to(X,ty_w(X,I->type)); st_slot(X,X_RAX,s); break;
+
+        /* ---- float width. BIR floats are f32, so f32<->f32 is a
+         * copy; a real f64 or f16 is a later sitting. ---- */
+        case BIR_FPEXT: case BIR_FPTRUNC: ld_fval(X,X_XMM0,I->operands[0]); st_xmm_slot(X,X_XMM0,s,0); break;
+
+        /* ---- reinterpret the bits (32-bit), and pointer<->int. ---- */
+        case BIR_BITCAST: {
+            uint32_t srct=val_type_x(X,I->operands[0]);
+            if (is_float_ty(X,srct)) ld_fbits(X,X_RAX,I->operands[0]); else load_val(X,X_RAX,I->operands[0]);
+            if (is_float_ty(X,I->type)){ eb(X,0x89);modrm(X,2,X_RAX,X_RBP);ei32(X,s); }
+            else { sext_to(X,ty_w(X,I->type)); st_slot(X,X_RAX,s); }
+            break; }
+        case BIR_PTRTOINT: load_val(X,X_RAX,I->operands[0]); if(ty_w(X,I->type)<64) sext_to(X,ty_w(X,I->type)); st_slot(X,X_RAX,s); break;
+        case BIR_INTTOPTR: load_val(X,X_RAX,I->operands[0]); st_slot(X,X_RAX,s); break;
         case BIR_ICMP: { load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]); rexw(X,X_RCX,X_RAX);eb(X,0x39);modrm(X,3,X_RCX,X_RAX); int cc; switch(I->subop){ case BIR_ICMP_EQ:cc=XCC_E;break; case BIR_ICMP_NE:cc=XCC_NE;break; case BIR_ICMP_SLT:cc=XCC_L;break; case BIR_ICMP_SLE:cc=XCC_LE;break; case BIR_ICMP_SGT:cc=XCC_G;break; case BIR_ICMP_SGE:cc=XCC_GE;break; case BIR_ICMP_ULT:cc=XCC_B;break; case BIR_ICMP_ULE:cc=XCC_BE;break; case BIR_ICMP_UGT:cc=XCC_A;break; case BIR_ICMP_UGE:cc=XCC_AE;break; default:cc=XCC_NE;break; } eb(X,0x0F);eb(X,(uint8_t)(0x90+cc));modrm(X,3,0,X_RAX); rexw(X,0,X_RAX);eb(X,0x0F);eb(X,0xB6);modrm(X,3,X_RAX,X_RAX); st_slot(X,X_RAX,s); break; }
         case BIR_BR: { uint32_t cur=F->first_block+b; emit_phi_copies(X,I->operands[0],cur); eb(X,0xE9); X->fix[X->n_fix].off=X->codelen; X->fix[X->n_fix++].blk=I->operands[0]; ei32(X,0); break; }
         case BIR_BR_COND: { uint32_t cur=F->first_block+b;
