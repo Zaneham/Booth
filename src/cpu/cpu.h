@@ -41,6 +41,9 @@
 #define CPU_CODE_MAX  (256 * 1024)
 #define CPU_FIX_MAX   8192
 #define CPU_ALLOCA_MAX 4096
+#define CPU_RELOC_MAX  4096
+#define CPU_EXTSYM_MAX 64
+#define CPU_EXTSYM_LEN 24
 
 typedef struct {
     const bir_module_t *M;
@@ -59,6 +62,15 @@ typedef struct {
 
     struct { uint32_t off; uint32_t blk; } fix[CPU_FIX_MAX];
     int       n_fix;
+
+    /* External calls (libm and friends). Each call to an outside symbol
+     * leaves a rel32 hole in .text and a note here saying which symbol
+     * fills it; the ELF writer turns the notes into .rela.text entries and
+     * undefined symbols so the linker can wire them up. */
+    struct { uint32_t off; uint32_t sym; } reloc[CPU_RELOC_MAX];
+    int       n_reloc;
+    char      extsym[CPU_EXTSYM_MAX][CPU_EXTSYM_LEN];
+    int       n_extsym;
 
     int       n_errs;
 } cpu_mod_t;

@@ -60,7 +60,11 @@ static void e_lui (rv64_mod_t*V,int d,int i){ ew(V,mk_U(0x37,d,i)); }
 static void e_jal (rv64_mod_t*V,int d,int i){ ew(V,mk_J(0x6F,d,i)); }
 static void e_jalr(rv64_mod_t*V,int d,int a,int i){ ew(V,mk_I(0x67,d,0,a,i&0xFFF)); }
 static void e_beq (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,0,a,b,o)); }
+static void e_bne (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,1,a,b,o)); }
 static void e_blt (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,4,a,b,o)); }
+/* atomic memory op (A extension): rd = *rs1; *rs1 = rd OP rs2. funct7 is
+ * the op's funct5 shifted up, with aq/rl left at zero. */
+static void e_amo(rv64_mod_t*V,int f5,int w64,int rd,int addr,int val){ ew(V,mk_R(0x2F,rd,w64?3:2,addr,val,f5<<2)); }
 
 /* ---- Integer ALU. RISC-V keeps it tidy: bitwise and the full-width
  * shifts on opcode 0x33, and the narrow *W cousins on 0x3B, which chew on
@@ -110,6 +114,12 @@ static void e_fcvtsl (rv64_mod_t*V,int fd,int rs){ ew(V,mk_R(0x53,fd,0,rs,2,0x68
 static void e_fcvtls (rv64_mod_t*V,int rd,int fs){ ew(V,mk_R(0x53,rd,1,fs,2,0x60)); } /* float -> i64, RTZ */
 static void e_fcvtslu(rv64_mod_t*V,int fd,int rs){ ew(V,mk_R(0x53,fd,0,rs,3,0x68)); } /* u64 -> float */
 static void e_fcvtlus(rv64_mod_t*V,int rd,int fs){ ew(V,mk_R(0x53,rd,1,fs,3,0x60)); } /* float -> u64, RTZ */
+/* Math the F extension does outright: sqrt, and abs as fsgnjx of a value
+ * with itself (sign XOR sign = 0). Rounding has no instruction of its own,
+ * so it goes out to an int and back at the requested rounding mode. */
+static void e_fsqrts(rv64_mod_t*V,int d,int s){ ew(V,mk_R(0x53,d,0,s,0,0x2C)); }
+static void e_fabss (rv64_mod_t*V,int d,int s){ ew(V,mk_R(0x53,d,2,s,s,0x10)); }
+static void e_fcvtws_rm(rv64_mod_t*V,int rd,int fs,int rm){ ew(V,mk_R(0x53,rd,rm,fs,0,0x60)); }
 static void e_slli (rv64_mod_t*V,int d,int a,int sh){ ew(V,mk_I(0x13,d,1,a,sh&0x3F)); }
 static void e_srli (rv64_mod_t*V,int d,int a,int sh){ ew(V,mk_I(0x13,d,5,a,sh&0x3F)); }
 static void e_srai (rv64_mod_t*V,int d,int a,int sh){ ew(V,mk_I(0x13,d,5,a,(sh&0x3F)|0x400)); }
@@ -160,7 +170,15 @@ static void st_slot(rv64_mod_t*V,int r,int32_t o){
  * fetch its 64-bit slot. */
 static void load_val(rv64_mod_t*V,int r,uint32_t v){
     if (BIR_VAL_IS_CONST(v)){ uint32_t c=BIR_VAL_INDEX(v);
-        e_li(V,r,(int32_t)(c<V->M->num_consts?V->M->consts[c].d.ival:0)); }
+        if (c<V->M->num_consts && V->M->consts[c].kind==BIR_CONST_FLOAT){
+            /* float const's union holds a double; narrow to f32 and take
+             * those bits, the shape a store or bit-shuffle expects. */
+            uint32_t bits=0; float fv=(float)V->M->consts[c].d.fval; memcpy(&bits,&fv,4);
+            e_li(V,r,(int32_t)bits);
+        } else {
+            e_li(V,r,(int32_t)(c<V->M->num_consts?V->M->consts[c].d.ival:0));
+        }
+    }
     else ld_slot(V,r,slot(V,BIR_VAL_INDEX(v)));
 }
 
@@ -202,12 +220,57 @@ static void st_fbits(rv64_mod_t*V,int r,int32_t o){
     else { e_li(V,V_T2,o); e_add(V,V_T2,V_S0,V_T2); e_sw(V,V_T2,r,0); }
 }
 
+/* Intern an external symbol name, de-duplicated. */
+static uint32_t rv_extsym(rv64_mod_t*V,const char *name){
+    for (int i=0;i<V->n_extsym;i++) if(!strcmp(V->extsym[i],name)) return (uint32_t)i;
+    if (V->n_extsym>=RV_EXTSYM_MAX) return 0;
+    int idx=V->n_extsym++;
+    size_t n=strlen(name); if(n>=RV_EXTSYM_LEN)n=RV_EXTSYM_LEN-1;
+    memcpy(V->extsym[idx],name,n); V->extsym[idx][n]='\0';
+    return (uint32_t)idx;
+}
+
+/* Call an external symbol with auipc + jalr, the pair the linker patches
+ * from a single R_RISCV_CALL_PLT on the auipc. The frame is already
+ * 16-aligned and ra is restored at the epilogue, so the call clobbering ra
+ * and t1 mid-body bothers nobody. Arg in fa0, result back in fa0. */
+static void emit_call_ext(rv64_mod_t*V,const char *name){
+    uint32_t sym=rv_extsym(V,name);
+    if (V->n_reloc<RV_RELOC_MAX){ V->reloc[V->n_reloc].off=V->codelen; V->reloc[V->n_reloc].sym=sym; V->n_reloc++; }
+    ew(V,mk_U(0x17,V_T1,0));        /* auipc t1, 0  (the reloc target) */
+    e_jalr(V,V_RA,V_T1,0);          /* jalr ra, t1, 0 */
+}
+
+/* A plain one-argument libm call: float in fa0, float out fa0. */
+static void call_libm1(rv64_mod_t*V,const char *name,uint32_t op0,int32_t s){
+    load_fval(V,V_FA0,op0);
+    emit_call_ext(V,name);
+    fst_slot(V,V_FA0,s);
+}
+
 /* element size in bytes of a pointer's pointee (drives GEP stride) */
+/* size in bytes of a type. Aggregates summed naively (no padding), which is
+ * right for these kernels: every field is 4 or 8 bytes, so nothing needs it. */
+static int type_size(const rv64_mod_t*V,uint32_t ty){
+    if (ty>=V->M->num_types) return 8;
+    const bir_type_t *t=&V->M->types[ty];
+    switch (t->kind){
+    case BIR_TYPE_INT: case BIR_TYPE_FLOAT: case BIR_TYPE_BFLOAT: return t->width?(int)(t->width/8):4;
+    case BIR_TYPE_PTR: return 8;
+    case BIR_TYPE_ARRAY: return (int)t->count*type_size(V,t->inner);
+    case BIR_TYPE_VECTOR: return (int)t->width*type_size(V,t->inner);
+    case BIR_TYPE_STRUCT: { int s=0; for(uint16_t i=0;i<t->num_fields;i++) s+=type_size(V,V->M->type_fields[t->count+i]); return s; }
+    default: return 8;
+    }
+}
+
 static int pointee_sz(rv64_mod_t*V,uint32_t ty){
     if (ty<V->M->num_types && V->M->types[ty].kind==BIR_TYPE_PTR){
         uint32_t in=V->M->types[ty].inner;
         if (in<V->M->num_types){
-            if (V->M->types[in].kind==BIR_TYPE_PTR) return 8;
+            uint8_t k=V->M->types[in].kind;
+            if (k==BIR_TYPE_PTR) return 8;
+            if (k==BIR_TYPE_STRUCT || k==BIR_TYPE_ARRAY || k==BIR_TYPE_VECTOR) return type_size(V,in);
             uint32_t w=V->M->types[in].width; if (w>=8) return (int)(w/8);
         }
     }
@@ -432,6 +495,81 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
             break; }
         case BIR_PTRTOINT: load_val(V,V_T0,I->operands[0]); if(tw(V,I->type)<64) rv_sext_to(V,V_T0,tw(V,I->type)); st_slot(V,V_T0,s); break;
         case BIR_INTTOPTR: load_val(V,V_T0,I->operands[0]); st_slot(V,V_T0,s); break;
+
+        /* ---- Math the F extension already knows. sqrt and abs outright;
+         * rcp and rsqrt as an honest 1.0 / x; rounding out to an int at the
+         * right mode and back (which clamps past 2^31, fine for the energies
+         * and positions these kernels actually carry). ---- */
+        case BIR_SQRT: load_fval(V,V_FT0,I->operands[0]); e_fsqrts(V,V_FT0,V_FT0); fst_slot(V,V_FT0,s); break;
+        case BIR_FABS: load_fval(V,V_FT0,I->operands[0]); e_fabss(V,V_FT0,V_FT0); fst_slot(V,V_FT0,s); break;
+        case BIR_RCP:
+            e_li(V,V_T0,0x3F800000); e_fmvwx(V,V_FT0,V_T0);
+            load_fval(V,V_FT1,I->operands[0]); e_fdivs(V,V_FT0,V_FT0,V_FT1); fst_slot(V,V_FT0,s); break;
+        case BIR_RSQ:
+            load_fval(V,V_FT1,I->operands[0]); e_fsqrts(V,V_FT1,V_FT1);
+            e_li(V,V_T0,0x3F800000); e_fmvwx(V,V_FT0,V_T0);
+            e_fdivs(V,V_FT0,V_FT0,V_FT1); fst_slot(V,V_FT0,s); break;
+        case BIR_FLOOR: case BIR_CEIL: case BIR_FTRUNC: case BIR_RNDNE: {
+            int rm=(I->op==BIR_FLOOR)?2:(I->op==BIR_CEIL)?3:(I->op==BIR_FTRUNC)?1:0;
+            load_fval(V,V_FT0,I->operands[0]);
+            e_fcvtws_rm(V,V_T0,V_FT0,rm); e_fcvtsw(V,V_FT0,V_T0);
+            fst_slot(V,V_FT0,s); break; }
+
+        /* ---- Transcendentals out to libm. sin/cos arrive in turns (the
+         * frontend's 1/2pi prescale for the GPU), so wind 2pi back in to get
+         * the radians libm wants; exp2/log2 go straight out. ---- */
+        case BIR_SIN: case BIR_COS: {
+            const char *fn=(I->op==BIR_SIN)?"sinf":"cosf";
+            load_fval(V,V_FA0,I->operands[0]);
+            e_li(V,V_T0,0x40C90FDB); e_fmvwx(V,V_FT1,V_T0);  /* ft1 = 2pi */
+            e_fmuls(V,V_FA0,V_FA0,V_FT1);                    /* fa0 = turns*2pi */
+            emit_call_ext(V,fn);
+            fst_slot(V,V_FA0,s); break; }
+        case BIR_EXP2: call_libm1(V,"exp2f",I->operands[0],s); break;
+        case BIR_LOG2: call_libm1(V,"log2f",I->operands[0],s); break;
+
+        /* ---- Atomics. The A extension does the whole load-op-store and
+         * returns the old value in one instruction, which is exactly the
+         * shape CUDA's atomics want. Subtract has no amo of its own, so it
+         * adds a negated value. ---- */
+        case BIR_ATOMIC_ADD: case BIR_ATOMIC_SUB: case BIR_ATOMIC_AND:
+        case BIR_ATOMIC_OR:  case BIR_ATOMIC_XOR: case BIR_ATOMIC_MIN:
+        case BIR_ATOMIC_MAX: case BIR_ATOMIC_XCHG: {
+            int w64=(int_w(V,I->type)==64);
+            load_val(V,V_T1,I->operands[0]); load_val(V,V_T2,I->operands[1]);
+            if (I->op==BIR_ATOMIC_SUB) e_sub(V,V_T2,V_ZERO,V_T2);
+            int f5=(I->op==BIR_ATOMIC_ADD||I->op==BIR_ATOMIC_SUB)?0x00:
+                   (I->op==BIR_ATOMIC_XCHG)?0x01:(I->op==BIR_ATOMIC_AND)?0x0C:
+                   (I->op==BIR_ATOMIC_OR)?0x08:(I->op==BIR_ATOMIC_XOR)?0x04:
+                   (I->op==BIR_ATOMIC_MIN)?0x10:0x14;
+            e_amo(V,f5,w64,V_T0,V_T1,V_T2);
+            st_slot(V,V_T0,s); break; }
+        case BIR_ATOMIC_CAS: {
+            int w64=(int_w(V,I->type)==64);
+            load_val(V,V_T1,I->operands[0]); load_val(V,V_T0,I->operands[1]); load_val(V,V_T2,I->operands[2]);
+            if (w64) e_ld(V,V_A0,V_T1,0); else e_lw(V,V_A0,V_T1,0);   /* old */
+            e_bne(V,V_A0,V_T0,8);                                     /* old != expected -> skip store */
+            if (w64) e_sd(V,V_T1,V_T2,0); else e_sw(V,V_T1,V_T2,0);
+            st_slot(V,V_A0,s); break; }
+        case BIR_ATOMIC_LOAD: {
+            int w64=(int_w(V,I->type)==64);
+            load_val(V,V_T1,I->operands[0]);
+            if (w64) e_ld(V,V_T0,V_T1,0); else e_lw(V,V_T0,V_T1,0);
+            st_slot(V,V_T0,s); break; }
+        case BIR_ATOMIC_STORE: {
+            int w64=(int_w(V,val_type(V,I->operands[1]))==64);
+            load_val(V,V_T1,I->operands[0]); load_val(V,V_T2,I->operands[1]);
+            if (w64) e_sd(V,V_T1,V_T2,0); else e_sw(V,V_T1,V_T2,0); break; }
+
+        /* ---- Barriers: one thread, nothing to wait for. ---- */
+        case BIR_BARRIER: case BIR_BARRIER_GROUP: break;
+
+        /* ---- Warp primitives, single-lane degenerate forms. ---- */
+        case BIR_SHFL: case BIR_SHFL_UP: case BIR_SHFL_DOWN: case BIR_SHFL_XOR:
+            load_val(V,V_T0,I->operands[0]); st_slot(V,V_T0,s); break;
+        case BIR_BALLOT: e_li(V,V_T0,1); st_slot(V,V_T0,s); break;
+        case BIR_VOTE_ANY: case BIR_VOTE_ALL:
+            load_val(V,V_T0,I->operands[0]); st_slot(V,V_T0,s); break;
         case BIR_GEP: { int sz=pointee_sz(V,I->type); load_val(V,V_T0,I->operands[1]); e_li(V,V_T1,sz); e_mul(V,V_T0,V_T0,V_T1); load_val(V,V_T1,I->operands[0]); e_add(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break; }
         case BIR_LOAD: { load_val(V,V_T0,I->operands[0]);
             const bir_type_t*t=(I->type<V->M->num_types)?&V->M->types[I->type]:0; int w=t?(int)t->width:32;

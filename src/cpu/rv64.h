@@ -35,6 +35,9 @@
 #define RV_CODE_MAX   (256 * 1024)
 #define RV_FIX_MAX    8192
 #define RV_ALLOCA_MAX 4096
+#define RV_RELOC_MAX  4096
+#define RV_EXTSYM_MAX 64
+#define RV_EXTSYM_LEN 24
 
 typedef struct {
     const bir_module_t *M;
@@ -51,6 +54,14 @@ typedef struct {
     /* branch fixups: a 32-bit instruction at code[off] targets block blk */
     struct { uint32_t off; uint32_t blk; uint8_t kind; } fix[RV_FIX_MAX];
     int       n_fix;
+
+    /* External calls (libm). Each leaves an auipc/jalr pair in .text and a
+     * note here; the ELF writer turns them into R_RISCV_CALL_PLT relocations
+     * and undefined symbols for the linker to resolve. */
+    struct { uint32_t off; uint32_t sym; } reloc[RV_RELOC_MAX];
+    int       n_reloc;
+    char      extsym[RV_EXTSYM_MAX][RV_EXTSYM_LEN];
+    int       n_extsym;
 
     int       n_errs;
 } rv64_mod_t;

@@ -1,6 +1,30 @@
 BarraCUDA — Changelog
 =====================
 
+2026-06-06 — The scalar backends finish the job, and a real
+workload drags three old bugs into the light. Building on
+yesterday's arithmetic, `--cpu` and `--rv64` gain the direct-ISA
+maths (sqrt, abs, round, floor, ceil, min and max), the libm
+transcendentals (sin, cos, exp2, log2) reached through honest ELF
+relocations and the platform call sequence, with sine and cosine
+prescaled back from turns to radians so the GPU's hardware habit
+does not leak into a CPU answer, and the atomics, barriers and warp
+primitives, which on a loop that runs one thread at a time collapse
+politely to a single lane: an atomic is a load, an op and a store
+that hands back the old value, a barrier waits for nobody, a shuffle
+returns the lane its own value. Then Moa's Monte Carlo neutron
+transport, compiled through `--cpu` with no GPU in the room, landed
+at k_eff 0.999, but only after it shook loose three codegen bugs
+that had been sitting in the tree since March: a narrow integer
+parameter never sign-extended, so SysV's undefined high half quietly
+broke the kernel's `if(tid < n)` guard; a struct-array stride that
+strode by four bytes instead of the whole struct, so every element
+past the first read the wrong place; and a float constant taken from
+the low half of its double union, so 1.0f stored as zero and an
+infinity stored as a rounding crumb. All three are closed, caught by
+compiling the same kernel with a stock compiler and diffing the two
+runs particle by particle until they agreed.
+
 2026-06-05 — The CPU and RISC-V backends learn most of their
 arithmetic. The `--cpu` (x86-64) and `--rv64` emitters carried
 only a starter set of opcodes and everything else quietly returned

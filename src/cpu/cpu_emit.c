@@ -48,18 +48,36 @@ static int int_w(const cpu_mod_t *X, uint32_t ty){
 }
 
 static void load_val(cpu_mod_t *X,int reg,uint32_t v){
-    if (BIR_VAL_IS_CONST(v)){ uint32_t c=BIR_VAL_INDEX(v); mov_imm(X,reg,c<X->M->num_consts?X->M->consts[c].d.ival:0); }
+    if (BIR_VAL_IS_CONST(v)){
+        uint32_t c=BIR_VAL_INDEX(v);
+        if (c<X->M->num_consts && X->M->consts[c].kind==BIR_CONST_FLOAT){
+            /* a float const's union holds a DOUBLE; grabbing its low 32 bits
+             * as an int hands you garbage. Narrow to f32 and take those bits,
+             * which is what a store or a bit-pattern shuffle actually wants. */
+            uint32_t bits=0; float fv=(float)X->M->consts[c].d.fval; memcpy(&bits,&fv,4);
+            mov_imm(X,reg,(int32_t)bits);
+        } else {
+            mov_imm(X,reg,c<X->M->num_consts?X->M->consts[c].d.ival:0);
+        }
+    }
     else ld_slot(X,reg,slot(X,BIR_VAL_INDEX(v)));
 }
 
 /* element size in bytes of a pointer's pointee, default 4 (i32/f32).
  * Drives GEP stride, so it must be width-accurate: i8->1, i16->2,
  * i32/f32->4, i64/f64->8, ptr-to-ptr->8. */
+static int type_size(const cpu_mod_t *X,uint32_t ty);
+
 static int pointee_sz(cpu_mod_t *X,uint32_t ty){
     if (ty<X->M->num_types && X->M->types[ty].kind==BIR_TYPE_PTR){
         uint32_t in=X->M->types[ty].inner;
         if (in<X->M->num_types){
-            if (X->M->types[in].kind==BIR_TYPE_PTR) return 8;
+            uint8_t k=X->M->types[in].kind;
+            if (k==BIR_TYPE_PTR) return 8;
+            /* an array of structs strides by the whole struct, not by 4: a
+             * struct pointee has no width field, so size it properly or every
+             * index past the first lands in the wrong element. */
+            if (k==BIR_TYPE_STRUCT || k==BIR_TYPE_ARRAY || k==BIR_TYPE_VECTOR) return type_size(X,in);
             uint32_t w=X->M->types[in].width;
             if (w>=8) return (int)(w/8);
         }
@@ -123,6 +141,17 @@ static int param_is_f64(const cpu_mod_t *X,const bir_func_t *F,uint16_t p){
     if (t->kind!=BIR_TYPE_FUNC || p>=t->num_fields) return 0;
     uint32_t pt=X->M->type_fields[t->count+p];
     return pt<X->M->num_types && X->M->types[pt].width==64;
+}
+/* Width of an integer parameter, 0 if the param is not an integer. SysV
+ * leaves the high half of a narrow int arg undefined, so the prologue uses
+ * this to know which params need sign-extending into their slots. */
+static int param_int_w(const cpu_mod_t *X,const bir_func_t *F,uint16_t p){
+    if (F->type>=X->M->num_types) return 0;
+    const bir_type_t *t=&X->M->types[F->type];
+    if (t->kind!=BIR_TYPE_FUNC || p>=t->num_fields) return 0;
+    uint32_t pt=X->M->type_fields[t->count+p];
+    if (pt<X->M->num_types && X->M->types[pt].kind==BIR_TYPE_INT) return (int)X->M->types[pt].width;
+    return 0;
 }
 /* store an incoming XMM arg straight into its frame slot (movss/movsd). */
 static void st_xmm_slot(cpu_mod_t *X,int n,int32_t o,int is64){
@@ -212,6 +241,38 @@ static void zext_to(cpu_mod_t *X,int w){
     else { rexw(X,0,X_RAX);eb(X,0x83);modrm(X,3,4,X_RAX);eb(X,1); }                    /* and rax,1 */
 }
 
+/* Intern an external symbol name (sinf and the like), de-duplicated, and
+ * hand back its index. The ELF writer reads these out as undefined globals
+ * for the linker to chase down in libm. */
+static uint32_t cpu_extsym(cpu_mod_t *X,const char *name){
+    for (int i=0;i<X->n_extsym;i++) if(!strcmp(X->extsym[i],name)) return (uint32_t)i;
+    if (X->n_extsym>=CPU_EXTSYM_MAX) return 0;
+    int idx=X->n_extsym++;
+    size_t n=strlen(name); if(n>=CPU_EXTSYM_LEN) n=CPU_EXTSYM_LEN-1;
+    memcpy(X->extsym[idx],name,n); X->extsym[idx][n]='\0';
+    return (uint32_t)idx;
+}
+
+/* Align the stack to 16 and call an external symbol, leaving the rel32 for
+ * the linker and a note in the reloc table. SysV insists on the alignment,
+ * and a misaligned call into a function that uses an aligned move is a
+ * segfault biding its time. Whatever the call wants in xmm0 must already be
+ * there; whatever it returns comes back the same way. */
+static void emit_call_ext(cpu_mod_t *X,const char *name){
+    rexw(X,0,X_RSP);eb(X,0x83);modrm(X,3,4,X_RSP);eb(X,0xF0); /* and rsp,-16 */
+    uint32_t sym=cpu_extsym(X,name);
+    eb(X,0xE8);
+    if (X->n_reloc<CPU_RELOC_MAX){ X->reloc[X->n_reloc].off=X->codelen; X->reloc[X->n_reloc].sym=sym; X->n_reloc++; }
+    ei32(X,0);
+}
+
+/* A plain one-argument libm call: float operand in, float result out. */
+static void call_libm1(cpu_mod_t *X,const char *name,uint32_t op0,int32_t s){
+    ld_fval(X,X_XMM0,op0);
+    emit_call_ext(X,name);
+    st_xmm_slot(X,X_XMM0,s,0);
+}
+
 /* incoming value of a phi for a given predecessor block (abs index). */
 static uint32_t phi_incoming(const cpu_mod_t *X,const bir_inst_t *P,uint32_t pred){
     if (P->num_operands==BIR_OPERANDS_OVERFLOW){
@@ -296,8 +357,18 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
                 if (xi<8) st_xmm_slot(X,xi++,dest,param_is_f64(X,F,p));
                 else { rexw(X,X_RAX,X_RBP);eb(X,0x8B);modrm(X,2,X_RAX,X_RBP);ei32(X,stk); st_slot(X,X_RAX,dest); stk+=8; }
             } else {
-                if (gi<6) st_slot(X,areg[gi++],dest);
-                else { rexw(X,X_RAX,X_RBP);eb(X,0x8B);modrm(X,2,X_RAX,X_RBP);ei32(X,stk); st_slot(X,X_RAX,dest); stk+=8; gi++; }
+                int pw=(p<F->num_params)?param_int_w(X,F,p):0;
+                int narrow=(pw>0 && pw<64);
+                if (gi<6){
+                    if (narrow){
+                        rexw(X,areg[gi],X_RAX);eb(X,0x89);modrm(X,3,areg[gi],X_RAX); /* mov rax, arg */
+                        sext_to(X,pw); st_slot(X,X_RAX,dest); gi++;
+                    } else st_slot(X,areg[gi++],dest);
+                } else {
+                    rexw(X,X_RAX,X_RBP);eb(X,0x8B);modrm(X,2,X_RAX,X_RBP);ei32(X,stk); /* mov rax, [rbp+stk] */
+                    if (narrow) sext_to(X,pw);
+                    st_slot(X,X_RAX,dest); stk+=8; gi++;
+                }
             }
         }
     }
@@ -485,6 +556,110 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
             break; }
         case BIR_PTRTOINT: load_val(X,X_RAX,I->operands[0]); if(ty_w(X,I->type)<64) sext_to(X,ty_w(X,I->type)); st_slot(X,X_RAX,s); break;
         case BIR_INTTOPTR: load_val(X,X_RAX,I->operands[0]); st_slot(X,X_RAX,s); break;
+
+        /* ---- Math the chip already knows. sqrt and round are single
+         * instructions; abs just wipes the sign bit out of the bits; rcp and
+         * rsqrt are an honest 1.0 / x rather than the fast-and-loose
+         * approximations, because a reactor is a poor place to be roughly
+         * right. ---- */
+        case BIR_SQRT: ld_fval(X,X_XMM0,I->operands[0]);
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x51);modrm(X,3,X_XMM0,X_XMM0);      /* sqrtss xmm0,xmm0 */
+            st_xmm_slot(X,X_XMM0,s,0); break;
+        case BIR_FABS: ld_fbits(X,X_RAX,I->operands[0]);
+            eb(X,0x25);ei32(X,0x7FFFFFFF);                                 /* and eax,0x7FFFFFFF */
+            eb(X,0x89);modrm(X,2,X_RAX,X_RBP);ei32(X,s); break;            /* mov [rbp+s],eax */
+        case BIR_RCP:
+            mov_imm(X,X_RAX,0x3F800000);eb(X,0x66);eb(X,0x0F);eb(X,0x6E);modrm(X,3,X_XMM0,X_RAX); /* xmm0=1.0f */
+            ld_fval(X,X_XMM1,I->operands[0]);
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x5E);modrm(X,3,X_XMM0,X_XMM1);      /* divss xmm0,xmm1 */
+            st_xmm_slot(X,X_XMM0,s,0); break;
+        case BIR_RSQ:
+            ld_fval(X,X_XMM1,I->operands[0]);
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x51);modrm(X,3,X_XMM1,X_XMM1);      /* sqrtss xmm1,xmm1 */
+            mov_imm(X,X_RAX,0x3F800000);eb(X,0x66);eb(X,0x0F);eb(X,0x6E);modrm(X,3,X_XMM0,X_RAX);
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x5E);modrm(X,3,X_XMM0,X_XMM1);      /* divss xmm0,xmm1 */
+            st_xmm_slot(X,X_XMM0,s,0); break;
+        case BIR_FLOOR: case BIR_CEIL: case BIR_FTRUNC: case BIR_RNDNE: {
+            uint8_t mode=(I->op==BIR_FLOOR)?1:(I->op==BIR_CEIL)?2:(I->op==BIR_FTRUNC)?3:0;
+            ld_fval(X,X_XMM0,I->operands[0]);
+            eb(X,0x66);eb(X,0x0F);eb(X,0x3A);eb(X,0x0A);modrm(X,3,X_XMM0,X_XMM0);eb(X,mode); /* roundss */
+            st_xmm_slot(X,X_XMM0,s,0); break; }
+
+        /* ---- Transcendentals the chip does not do in one instruction, so
+         * they go out to libm and the linker earns its keep. sin and cos
+         * arrive in turns (the frontend pre-scales by 1/2pi for the GPU's
+         * hardware sin), and libm wants radians, so wind the 2pi back in
+         * first. exp2 and log2 are already in the units libm uses. ---- */
+        case BIR_SIN: case BIR_COS: {
+            const char *fn=(I->op==BIR_SIN)?"sinf":"cosf";
+            ld_fval(X,X_XMM0,I->operands[0]);
+            mov_imm(X,X_RAX,0x40C90FDB);                                /* 2pi as f32 */
+            eb(X,0x66);eb(X,0x0F);eb(X,0x6E);modrm(X,3,X_XMM1,X_RAX);   /* movd xmm1,2pi */
+            eb(X,0xF3);eb(X,0x0F);eb(X,0x59);modrm(X,3,X_XMM0,X_XMM1);  /* mulss xmm0,xmm1 */
+            emit_call_ext(X,fn);
+            st_xmm_slot(X,X_XMM0,s,0); break; }
+        case BIR_EXP2: call_libm1(X,"exp2f", I->operands[0], s); break;
+        case BIR_LOG2: call_libm1(X,"log2f", I->operands[0], s); break;
+
+        /* ---- Atomics. The SIMT loop runs one thread at a time, so an
+         * atomic is a load, an op, and a store, handing back the old value
+         * the way CUDA promises. No lock prefix: there is nobody else in the
+         * building to race. ---- */
+        case BIR_ATOMIC_ADD: case BIR_ATOMIC_SUB: case BIR_ATOMIC_AND:
+        case BIR_ATOMIC_OR:  case BIR_ATOMIC_XOR: case BIR_ATOMIC_MIN:
+        case BIR_ATOMIC_MAX: case BIR_ATOMIC_XCHG: {
+            int w64=(int_w(X,I->type)==64);
+            load_val(X,X_RCX,I->operands[0]);
+            load_val(X,X_RDX,I->operands[1]);
+            if (w64) rexw(X,X_RAX,X_RCX);
+            eb(X,0x8B);modrm(X,0,X_RAX,X_RCX);                 /* old = *addr */
+            if (!w64) sext_to(X,32);
+            st_slot(X,X_RAX,s);                                /* result = old */
+            uint8_t aop=(I->op==BIR_ATOMIC_ADD)?0x01:(I->op==BIR_ATOMIC_SUB)?0x29:
+                        (I->op==BIR_ATOMIC_AND)?0x21:(I->op==BIR_ATOMIC_OR)?0x09:
+                        (I->op==BIR_ATOMIC_XOR)?0x31:0x00;
+            if (aop){ if(w64)rexw(X,X_RDX,X_RAX); eb(X,aop);modrm(X,3,X_RDX,X_RAX); }
+            else if (I->op==BIR_ATOMIC_XCHG){ if(w64)rexw(X,X_RDX,X_RAX); eb(X,0x89);modrm(X,3,X_RDX,X_RAX); }
+            else { uint8_t cc=(I->op==BIR_ATOMIC_MIN)?0x4F:0x4C;       /* cmovg / cmovl */
+                   if(w64){rexw(X,X_RDX,X_RAX);} eb(X,0x39);modrm(X,3,X_RDX,X_RAX);
+                   if(w64){rexw(X,X_RAX,X_RDX);} eb(X,0x0F);eb(X,cc);modrm(X,3,X_RAX,X_RDX); }
+            if (w64) rexw(X,X_RAX,X_RCX);
+            eb(X,0x89);modrm(X,0,X_RAX,X_RCX);                 /* *addr = new */
+            break; }
+        case BIR_ATOMIC_CAS: {
+            int w64=(int_w(X,I->type)==64);
+            load_val(X,X_RCX,I->operands[0]);
+            load_val(X,X_RAX,I->operands[1]);                  /* expected */
+            load_val(X,X_RDX,I->operands[2]);                  /* new */
+            if (w64) rexw(X,X_RDX,X_RCX);
+            eb(X,0x0F);eb(X,0xB1);modrm(X,0,X_RDX,X_RCX);      /* cmpxchg [rcx],edx -> eax=old */
+            if (!w64) sext_to(X,32);
+            st_slot(X,X_RAX,s); break; }
+        case BIR_ATOMIC_LOAD: {
+            int w64=(int_w(X,I->type)==64);
+            load_val(X,X_RCX,I->operands[0]);
+            if (w64) rexw(X,X_RAX,X_RCX);
+            eb(X,0x8B);modrm(X,0,X_RAX,X_RCX);
+            if (!w64) sext_to(X,32);
+            st_slot(X,X_RAX,s); break; }
+        case BIR_ATOMIC_STORE: {
+            int w64=(int_w(X,val_type_x(X,I->operands[1]))==64);
+            load_val(X,X_RCX,I->operands[0]);
+            load_val(X,X_RAX,I->operands[1]);
+            if (w64) rexw(X,X_RAX,X_RCX);
+            eb(X,0x89);modrm(X,0,X_RAX,X_RCX); break; }
+
+        /* ---- Barriers: one thread, nothing to wait for. ---- */
+        case BIR_BARRIER: case BIR_BARRIER_GROUP: break;
+
+        /* ---- Warp primitives, degenerate at a single lane: a shuffle hands
+         * back the lane's own value, a ballot is just this lane's bit, a vote
+         * is the predicate itself. ---- */
+        case BIR_SHFL: case BIR_SHFL_UP: case BIR_SHFL_DOWN: case BIR_SHFL_XOR:
+            load_val(X,X_RAX,I->operands[0]); st_slot(X,X_RAX,s); break;
+        case BIR_BALLOT: mov_imm(X,X_RAX,1); st_slot(X,X_RAX,s); break;
+        case BIR_VOTE_ANY: case BIR_VOTE_ALL:
+            load_val(X,X_RAX,I->operands[0]); st_slot(X,X_RAX,s); break;
         case BIR_ICMP: { load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]); rexw(X,X_RCX,X_RAX);eb(X,0x39);modrm(X,3,X_RCX,X_RAX); int cc; switch(I->subop){ case BIR_ICMP_EQ:cc=XCC_E;break; case BIR_ICMP_NE:cc=XCC_NE;break; case BIR_ICMP_SLT:cc=XCC_L;break; case BIR_ICMP_SLE:cc=XCC_LE;break; case BIR_ICMP_SGT:cc=XCC_G;break; case BIR_ICMP_SGE:cc=XCC_GE;break; case BIR_ICMP_ULT:cc=XCC_B;break; case BIR_ICMP_ULE:cc=XCC_BE;break; case BIR_ICMP_UGT:cc=XCC_A;break; case BIR_ICMP_UGE:cc=XCC_AE;break; default:cc=XCC_NE;break; } eb(X,0x0F);eb(X,(uint8_t)(0x90+cc));modrm(X,3,0,X_RAX); rexw(X,0,X_RAX);eb(X,0x0F);eb(X,0xB6);modrm(X,3,X_RAX,X_RAX); st_slot(X,X_RAX,s); break; }
         case BIR_BR: { uint32_t cur=F->first_block+b; emit_phi_copies(X,I->operands[0],cur); eb(X,0xE9); X->fix[X->n_fix].off=X->codelen; X->fix[X->n_fix++].blk=I->operands[0]; ei32(X,0); break; }
         case BIR_BR_COND: { uint32_t cur=F->first_block+b;
