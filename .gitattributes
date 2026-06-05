@@ -1,0 +1,7 @@
+# Line endings live as LF in the repo and check out as LF everywhere, so a
+# Windows editor saving CRLF can no longer flip the whole tree and bury the
+# real diff. git auto-detects text vs binary; the explicit rules below just
+# spell out the assets it must never touch.
+* text=auto eol=lf
+
+*.png binary
