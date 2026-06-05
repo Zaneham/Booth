@@ -22,6 +22,16 @@ int th_run(const char *cmd, char *obuf, int osz)
     int n = (int)fread(obuf, 1, (size_t)(osz - 1), fp);
     if (n < 0) n = 0;
     obuf[n] = '\0';
+    /* Keep swallowing the rest of the pipe even though obuf is full. A child
+     * that dumps more than osz bytes would otherwise write into a read end the
+     * harness already walked away from, catch a SIGPIPE, and die by signal --
+     * which pclose hands back as a non-zero status and the test reads as a
+     * failure the compiler never actually committed. Drain to EOF and the
+     * child exits in peace. */
+    {
+        char sink[4096];
+        while (fread(sink, 1, sizeof sink, fp) > 0) { }
+    }
     int rc = pclose(fp);
 #ifndef _WIN32
     if (rc != -1 && (rc & 0xFF) == 0)
