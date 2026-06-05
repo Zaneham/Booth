@@ -3,6 +3,7 @@
 #include "parser.h"
 #include "sema.h"
 #include "bir_lower.h"
+#include "bir_sroa.h"
 #include "bir_mem2reg.h"
 #include "bir_cfold.h"
 #include "bir_dce.h"
@@ -36,7 +37,7 @@ static bir_module_t *bir_module; /* heap-allocated (~11 MB) */
  * backend wiring. */
 
 typedef struct {
-    int             no_mem2reg, no_cfold, no_dce, no_sched;
+    int             no_mem2reg, no_cfold, no_dce, no_sched, no_sroa;
     int             mode_ir, mode_tdf, mode_tdf_fission;
     int             mode_amdgpu, mode_amdgpu_bin;
     int             mode_tensix, mode_nvidia, nv_bkhit;
@@ -94,6 +95,7 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     }
 
     /* Optimisation passes: same shape regardless of frontend. */
+    if (!cfg->no_sroa)    bir_sroa(bir);
     if (!cfg->no_mem2reg) bir_mem2reg(bir);
     if (!cfg->no_cfold)   bir_cfold(bir);
     if (!cfg->no_dce)     bir_dce(bir);
@@ -451,6 +453,7 @@ int main(int argc, char *argv[])
     int no_mem2reg = 0;
     int no_cfold = 0;
     int no_dce = 0;
+    int no_sroa = 0;
     int no_sched = 0;
     int no_pp = 0;
     int snap_mode = 0;
@@ -584,6 +587,8 @@ int main(int argc, char *argv[])
             no_cfold = 1;
         else if (strcmp(argv[i], "--no-dce") == 0)
             no_dce = 1;
+        else if (strcmp(argv[i], "--no-sroa") == 0)
+            no_sroa = 1;
         else if (strcmp(argv[i], "--no-sched") == 0)
             no_sched = 1;
         else if (strcmp(argv[i], "--no-graphcolor") == 0)
@@ -754,6 +759,7 @@ int main(int argc, char *argv[])
                         cfg.no_cfold   = no_cfold;
                         cfg.no_dce     = no_dce;
                         cfg.no_sched   = no_sched;
+                        cfg.no_sroa    = no_sroa;
                         cfg.mode_ir    = mode_ir;
                         cfg.mode_tdf   = mode_tdf;
                         cfg.mode_tdf_fission = mode_tdf_fission;
@@ -970,6 +976,7 @@ int main(int argc, char *argv[])
                 cfg.no_cfold   = no_cfold;
                 cfg.no_dce     = no_dce;
                 cfg.no_sched   = no_sched;
+                cfg.no_sroa    = no_sroa;
                 cfg.mode_ir    = mode_ir;
                 cfg.mode_tdf   = mode_tdf;
                 cfg.mode_tdf_fission = mode_tdf_fission;
