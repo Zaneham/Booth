@@ -1,0 +1,63 @@
+name: Moa k_eff (physics guard)
+
+# Compiles Moa's GPU neutron-transport kernel through the --cpu backend, runs
+# the Godiva criticality benchmark with no GPU in sight, and fails if k_eff
+# wanders away from 1. A codegen change that quietly bends the arithmetic does
+# not crash or fail a unit test; it just computes a slightly wrong reactor. So
+# a real physics workload stands in as the oracle: the proof verifies or it
+# does not. Three latent bugs were caught exactly this way.
+
+on:
+  push:
+    branches: [master, cpu-backend-scalar-isa]
+    paths:
+      - 'src/**'
+      - 'Makefile'
+      - '.github/workflows/moa-keff.yml'
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  godiva:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out BarraCUDA
+        uses: actions/checkout@v4
+
+      - name: Build the compiler
+        run: make
+
+      - name: Fetch the workload (Moa) and its safety library (Kauri)
+        run: |
+          git clone --depth 1 https://github.com/Zaneham/Moa.git moa
+          git clone --depth 1 https://github.com/Zaneham/kauri.git kauri
+
+      # The ENDF cross-section files are tens of MB, too large to live in git,
+      # so they ride on a fixed Moa release instead. Without them Godiva has no
+      # nuclear data and k_eff is a flat zero.
+      - name: Fetch the Godiva nuclear data (Moa release asset)
+        run: |
+          cd moa && mkdir -p data
+          base=https://github.com/Zaneham/Moa/releases/download/godiva-data
+          for iso in n_9225_92-U-234 n_9228_92-U-235 n_9237_92-U-238; do
+            curl -fsSL "$base/$iso.zip" -o "data/$iso.zip"
+            unzip -oq "data/$iso.zip" -d data/
+          done
+          ls -la data/*.dat
+
+      - name: Compile the kernel through --cpu and build Moa on the CPU
+        run: make -C moa GPU=CPU BCSRC="$GITHUB_WORKSPACE" KAURI="$GITHUB_WORKSPACE/kauri"
+
+      - name: Run Godiva and check k_eff has not bent
+        run: |
+          cd moa
+          out=$(./moa.exe bench/godiva_cpu.inp)
+          echo "$out" | grep -i 'Final k_eff'
+          k=$(printf '%s\n' "$out" | grep -oE 'Final k_eff = [0-9.]+' | grep -oE '[0-9.]+$')
+          if [ -z "$k" ]; then echo "no k_eff in output -- the run did not finish"; exit 1; fi
+          awk -v k="$k" 'BEGIN {
+            d = k - 1; if (d < 0) d = -d;
+            if (d < 0.03) { printf "k_eff = %s, within 0.03 of critical -- physics intact\n", k; exit 0 }
+            printf "k_eff = %s, off by %.4f -- a codegen change has bent the physics\n", k, d; exit 1
+          }'
