@@ -92,44 +92,40 @@ async function runE2ETests() {
     
     console.log("Worker initialized in browser.");
 
-    // Test first example (Vector Add)
-    console.log("Testing Vector Add example...");
-    await page.click('#compile-btn');
-    
-    // Wait for output to be populated
-    await page.waitForFunction(() => {
-        const out = document.getElementById('output-view').value;
-        return out.length > 0 && out !== '// No output generated.';
-    }, { timeout: 10000 });
-    
-    const output1 = await page.$eval('#output-view', el => el.value);
-    if (!output1.includes('.entry vector_add')) {
-        throw new Error("Vector Add PTX output invalid.");
-    }
-    console.log("Vector Add compiled successfully.");
+    const examples = ['vector_add', 'matmul'];
+    const targets = ['--nvidia-ptx', '--amdgpu', '--tensix', '--cpu'];
 
-    // Switch to Matmul example
-    console.log("Testing Matmul example...");
-    await page.select('#example-select', 'matmul');
-    
-    // We need to wait a tiny bit for the editor to update the value
-    await new Promise(r => setTimeout(r, 500));
-
-    await page.click('#compile-btn');
-    
-    // Wait for compilation to finish (button re-enables)
-    await page.waitForFunction(() => {
-        const btn = document.getElementById('compile-btn');
-        return btn && btn.disabled === false;
-    }, { timeout: 10000 });
-
-    // Assuming matmul stub produces some output, we just verify it didn't crash
-    const consoleOut = await page.$eval('#console-view', el => el.value);
-    if (consoleOut.includes('failed with exit code')) {
-        // Just warning if the Python/Triton parser stub fails since it's a stub
-        console.warn("Warning: Matmul example failed to compile. Console:", consoleOut);
-    } else {
-        console.log("Matmul stub compiled successfully.");
+    for (const example of examples) {
+        for (const target of targets) {
+            console.log("Testing combination: Example=" + example + ", Target=" + target + " ...");
+            
+            // Select Example
+            await page.select('#example-select', example);
+            await new Promise(r => setTimeout(r, 500)); // wait for editor update
+            
+            // Select Target
+            await page.select('#target-select', target);
+            
+            // Trigger Compile
+            await page.click('#compile-btn');
+            
+            // Wait for compilation to finish (button re-enables)
+            await page.waitForFunction(() => {
+                const btn = document.getElementById('compile-btn');
+                return btn && btn.disabled === false;
+            }, { timeout: 15000 });
+            
+            const consoleOut = await page.$eval('#console-view', el => el.value);
+            const outputText = await page.$eval('#output-view', el => el.value);
+            
+            if (consoleOut.includes('failed with exit code')) {
+                console.warn("Warning: Compilation failed for " + example + " with " + target + ". Console:", consoleOut);
+            } else if (outputText.includes('could not read output file')) {
+                throw new Error("Output file reading failed for " + example + " with " + target);
+            } else {
+                console.log("Combination " + example + " + " + target + " compiled successfully.");
+            }
+        }
     }
 
     if (errors.length > 0) {

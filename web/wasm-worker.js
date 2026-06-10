@@ -107,7 +107,7 @@ self.onmessage = function(e) {
         
         try {
             // Write the incoming source code to a virtual file
-            Module.FS.writeFile('/input.cu', sourceCode);
+            Module.FS.writeFile(args[0] || '/input.cu', sourceCode);
             
             // Execute the compiler
             // Expected args: e.g. ['/input.cu', '-o', '/out.ptx', '--nvidia-ptx']
