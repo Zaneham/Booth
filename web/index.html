@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Character set and viewport configuration for mobile responsiveness -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BarraCUDA Web Compiler</title>
+    <!-- Load vanilla stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Top Navigation / Header Area -->
+    <header class="app-header">
+        <h1>BarraCUDA Web Compiler</h1>
+        <!-- Controls Container: Contains dropdowns and the compile button -->
+        <div class="controls">
+            <!-- Dropdown for pre-loaded example snippets -->
+            <select id="example-select" title="Choose an Example">
+                <!-- Options populated by app.js -->
+            </select>
+            
+            <!-- Target architecture selector -->
+            <select id="target-select" title="Select Compilation Target">
+                <option value="--nvidia-ptx">NVIDIA PTX</option>
+                <option value="--amdgpu">AMD GCN (gfx1100)</option>
+                <option value="--tensix">Tensix TT-Metal</option>
+                <option value="--cpu">CPU (x86_64)</option>
+            </select>
+            
+            <!-- Action button to trigger compilation -->
+            <button id="compile-btn">Compile</button>
+        </div>
+    </header>
+
+    <!-- Main Application Layout Container -->
+    <main class="app-main">
+        <!-- Left Pane: Code Editor -->
+        <section class="pane editor-pane">
+            <header>Source Code</header>
+            <!-- Container where Monaco editor will be injected -->
+            <div id="editor-container"></div>
+        </section>
+
+        <!-- Right Pane: Output and Logs -->
+        <section class="pane right-pane">
+            <!-- Top Half of Right Pane: Compiled Output -->
+            <div class="output-pane">
+                <header>Compiled Output</header>
+                <!-- Readonly textarea for displaying the compiled PTX/ASM/etc. -->
+                <textarea id="output-view" readonly></textarea>
+            </div>
+            <!-- Bottom Half of Right Pane: Console Logs -->
+            <div class="console-pane">
+                <header>Console</header>
+                <!-- Readonly textarea for displaying compiler stdout/stderr logs -->
+                <textarea id="console-view" readonly></textarea>
+            </div>
+        </section>
+    </main>
+
+    <!-- Monaco Editor Loader Script (AMD loader from CDN) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.41.0/min/vs/loader.min.js"></script>
+    <!-- Main application logic -->
+    <script src="app.js"></script>
+</body>
+</html>

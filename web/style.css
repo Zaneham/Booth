@@ -1,0 +1,187 @@
+/* 
+ * style.css
+ * Vanilla CSS styling for the BarraCUDA Web Compiler.
+ * Focuses on a modern, responsive layout without relying on external frameworks.
+ */
+
+/* Basic resets and base styles for the document */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #1e1e1e;
+    color: #cccccc;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden; /* Prevent body scroll, handle scrolling within panes */
+}
+
+/* Header layout using flexbox to space out title and controls */
+.app-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background-color: #252526;
+    border-bottom: 1px solid #333333;
+}
+
+.app-header h1 {
+    font-size: 1.2rem;
+    color: #ffffff;
+}
+
+/* Controls grouping (dropdowns and button) */
+.controls {
+    display: flex;
+    gap: 10px;
+}
+
+select, button {
+    padding: 6px 12px;
+    font-size: 0.9rem;
+    border-radius: 4px;
+    border: 1px solid #3c3c3c;
+    background-color: #333333;
+    color: #ffffff;
+    outline: none;
+}
+
+button {
+    background-color: #0e639c;
+    border: 1px solid #0e639c;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background-color 0.2s ease;
+}
+
+button:hover {
+    background-color: #1177bb;
+}
+
+button:disabled {
+    background-color: #4d4d4d;
+    border-color: #4d4d4d;
+    color: #888888;
+    cursor: not-allowed;
+}
+
+/* Main application area using CSS Grid for a 50/50 split on desktop */
+.app-main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* Base style for panes */
+.pane {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #333333;
+    background-color: #1e1e1e;
+}
+
+.pane:last-child {
+    border-right: none;
+}
+
+.pane header {
+    padding: 5px 10px;
+    background-color: #2d2d2d;
+    font-size: 0.8rem;
+    font-weight: bold;
+    text-transform: uppercase;
+    color: #aaaaaa;
+    border-bottom: 1px solid #333333;
+}
+
+/* Editor container needs to fill the remaining space */
+#editor-container {
+    flex: 1;
+    position: relative;
+}
+
+/* Right pane is further split vertically into Output and Console */
+.right-pane {
+    display: grid;
+    grid-template-rows: 60% 40%;
+}
+
+.output-pane, .console-pane {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid #333333;
+}
+
+.console-pane {
+    border-bottom: none;
+}
+
+/* Textareas for displaying output and logs */
+textarea {
+    flex: 1;
+    width: 100%;
+    resize: none;
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    border: none;
+    padding: 10px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.85rem;
+    outline: none;
+    line-height: 1.4;
+}
+
+/* Custom scrollbars for a polished look */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: #1e1e1e; 
+}
+::-webkit-scrollbar-thumb {
+    background: #424242; 
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #4f4f4f; 
+}
+
+/* Responsive Media Query: Stack panes vertically on mobile screens (max-width: 768px) */
+@media (max-width: 768px) {
+    .app-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .controls {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+    
+    .controls select, .controls button {
+        flex: 1;
+    }
+
+    .app-main {
+        grid-template-columns: 1fr;
+        grid-template-rows: 50vh auto auto;
+        overflow-y: auto;
+    }
+    
+    .pane {
+        border-right: none;
+        border-bottom: 1px solid #333333;
+    }
+    
+    .right-pane {
+        grid-template-rows: 40vh 30vh;
+    }
+}
