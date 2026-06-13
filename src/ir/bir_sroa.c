@@ -1,23 +1,22 @@
 /* bir_sroa.c -- Scalar Replacement of Aggregates.
  *
- * mem2reg can only promote an alloca whose loads and stores reference it
- * directly. A struct alloca always has a GEP in between (load through
- * GEP(alloca, field)), so mem2reg leaves it in memory and every field
- * access becomes a per-thread stack round-trip. SROA removes the GEP
- * layer: each accessed field gets its own scalar alloca, the loads and
- * stores are repointed at it, and mem2reg then promotes the scalars to
- * SSA. The struct alloca and its GEPs fall out as dead and DCE sweeps
- * them.
+ * mem2reg won't go near a struct alloca: a GEP sits between it and every
+ * load/store, so the whole thing stays in memory, sulking. All right, but
+ * apart from prising that GEP layer off, handing every accessed field its
+ * own scalar alloca, repointing the loads and stores, and letting mem2reg
+ * promote the lot... what has SROA ever done for us? The dead struct alloca
+ * and its GEPs are carried off by DCE, and good riddance.
  *
- * v1 handles the textbook case and only that: a struct alloca whose
- * every use is a constant-index GEP to a SCALAR field, each GEP used
- * only as a load or store address. Anything else (variable index,
- * nested aggregate, the pointer escaping to a call or a store) makes the
- * alloca ineligible and it is left untouched. Bail, never miscompile.
+ * We only bless the righteous case: a struct alloca whose every use is a
+ * constant-index GEP to a scalar field, each GEP used only as a load or
+ * store address. Anything stranger (variable index, nested aggregate, a
+ * pointer that wanders off) is not the Messiah, it's a very naughty alloca,
+ * and we leave it well alone.
  *
- * Runs BEFORE mem2reg. Value-preserving by construction: it moves where
- * a field lives, not what it holds, so output must be bit-identical with
- * SROA on or off. That equality is the test that guards it. */
+ * Runs before mem2reg, and only moves where a field lives, never what it
+ * holds, so output is bit-identical with SROA on or off. If a single bit so
+ * much as twitches, SROA has sinned, and the diff test will not be looking
+ * on the bright side of life. */
 
 #include "bir_sroa.h"
 #include "bir_insert.h"
@@ -27,8 +26,7 @@
 #define SROA_MAX_USE    2048   /* load/store users across those GEPs    */
 #define SROA_MAX_FIELD  64     /* distinct fields we will split out     */
 
-/* Working state. Static (like mem2reg's G) to keep the arrays off the
- * stack and under the per-function stack-usage ceiling. */
+/* Working state, kept static so the arrays stay off the stack. */
 typedef struct {
     uint32_t   gep[SROA_MAX_GEP];        /* GEP instruction index        */
     uint32_t   gep_field[SROA_MAX_GEP];  /* its field number             */
@@ -66,10 +64,9 @@ static uint32_t pointee(const bir_module_t *M, uint32_t t)
     return BIR_VAL_NONE;
 }
 
-/* Does instruction I reference value `v` in a value-reference operand?
- * Block indices, the CALL callee, constants, and BIR_VAL_NONE are not
- * value references and are skipped. Same per-opcode classifier as
- * bir_insert (and the printer), so the two never disagree. */
+/* Does instruction I reference value `v` as a value operand? Skips block
+ * indices, the CALL callee, constants and BIR_VAL_NONE. Same per-opcode
+ * classifier as bir_insert and the printer. */
 static int refs_value(const bir_module_t *M, const bir_inst_t *I, uint32_t v)
 {
     int      ovf   = (I->num_operands == BIR_OPERANDS_OVERFLOW);
@@ -124,7 +121,7 @@ static uint32_t slot_of(uint32_t field)
     uint32_t j;
     for (j = 0; j < S.n_field; j++)
         if (S.field[j] == field) return j;
-    return 0;   /* unreachable: every used field is in the list */
+    return 0;   /* unreachable; reach it and the invariants have been crucified */
 }
 
 /* ---- Eligibility + transform for one struct alloca ---- */
@@ -145,8 +142,8 @@ static int try_alloca(bir_module_t *M, const bir_func_t *F, uint32_t sa)
     S.n_use  = 0;
     S.n_field = 0;
 
-    /* Pass 1: classify every use of the struct pointer. Each must be a
-     * constant-index GEP to a scalar field; anything else is an escape. */
+    /* Pass 1: every use of the struct pointer must be a constant-index GEP
+     * to a scalar field; anything else is an escape. */
     for (b = F->first_block; b < F->first_block + F->num_blocks; b++) {
         const bir_block_t *B = &M->blocks[b];
         uint32_t jj;
@@ -205,13 +202,13 @@ static int try_alloca(bir_module_t *M, const bir_func_t *F, uint32_t sa)
             }
         }
     }
-    /* Orphan guard: a struct alloca with no live field accesses (e.g.
-     * one we already split, whose GEPs are now userless) is skipped, so
-     * the driver's rescan loop terminates. */
+    /* Orphan guard: nothing left to read. We already split this one to
+     * bits, its GEPs point nowhere; out the door, line on the left, and the
+     * driver's rescan can stop. */
     if (S.n_use == 0) return 0;
 
-    /* Distinct accessed fields, each tagged with its ptr-to-field type
-     * (the GEP's own result type). */
+    /* The distinct accessed fields, each splitting off with its own
+     * ptr-to-field type (the GEP's result type). Splitters. */
     for (j = 0; j < S.n_gep; j++) {
         uint32_t f = S.gep_field[j];
         uint32_t q;
@@ -274,10 +271,10 @@ void bir_sroa(bir_module_t *M)
         const bir_func_t *F = &M->funcs[f];
         int progress = 1;
 
-        /* Process one eligible struct alloca per pass and rescan, since
-         * each transform shifts instruction indices. Terminates because
-         * every transform turns its struct alloca into an orphan that
-         * the orphan guard then skips. */
+        /* One struct alloca per pass, then rescan, since each transform
+         * shifts every index out from under us. It terminates: each pass
+         * leaves its struct alloca an orphan, the guard waves it off to the
+         * left with the other crosses, and we never pick it up again. */
         while (progress) {
             uint32_t b;
             progress = 0;

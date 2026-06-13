@@ -131,3 +131,12 @@ Thumbs.db
 .github/copilot/
 CLAUDE.md
 .aider*
+
+# Personal working notes / scratch planning — not shipped, not committed
+/note.txt
+/trck.txt
+
+# Build artifacts (root-level binaries + generated kernels)
+/barracuda
+/trunner
+/tdf_*.elf

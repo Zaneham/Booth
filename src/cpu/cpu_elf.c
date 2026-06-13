@@ -15,8 +15,16 @@ static void p16(FILE*f,unsigned v){fputc((int)(v&0xff),f);fputc((int)((v>>8)&0xf
 int cpu_elf(const cpu_mod_t *X, const char *path)
 {
     FILE *f = fopen(path,"wb"); if(!f) return -1;
-    const char *kn = (X->M->num_funcs && X->M->funcs[0].name < X->M->string_len)
-                     ? &X->M->strings[X->M->funcs[0].name] : "kernel";
+    /* The host calls the kernel by name, so export the __global__ entry at its
+     * own offset -- it is not always function 0 once device helpers, defined
+     * before they are used, sit ahead of it. Those helpers share this .text and
+     * are reached by internal rel32, so they need no symbol of their own. */
+    uint32_t ki=0;
+    for (uint32_t i=0;i<X->M->num_funcs;i++) if (X->M->funcs[i].cuda_flags & CUDA_GLOBAL){ ki=i; break; }
+    const char *kn = (X->M->num_funcs && X->M->funcs[ki].name < X->M->string_len)
+                     ? &X->M->strings[X->M->funcs[ki].name] : "kernel";
+    uint64_t kval  = X->func_off[ki];
+    uint64_t ksize = ((ki+1<X->M->num_funcs)? X->func_off[ki+1] : X->codelen) - X->func_off[ki];
 
     /* ---- section-header string table ---- */
     char shstr[64]={0}; uint32_t sh=1;
@@ -66,7 +74,7 @@ int cpu_elf(const cpu_mod_t *X, const char *path)
 
     /* ---- .symtab: NULL, kernel (global func, defined), then undef globals ---- */
     p32(f,0);p32(f,0);p64(f,0);p64(f,0);
-    p32(f,s_k);fputc(0x12,f);fputc(0,f);p16(f,1);p64(f,0);p64(f,X->codelen);
+    p32(f,s_k);fputc(0x12,f);fputc(0,f);p16(f,1);p64(f,kval);p64(f,ksize);
     for (int i=0;i<X->n_extsym;i++){ p32(f,s_ext[i]);fputc(0x10,f);fputc(0,f);p16(f,0);p64(f,0);p64(f,0); }
 
     /* ---- .strtab ---- */

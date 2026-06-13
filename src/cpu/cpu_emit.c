@@ -306,6 +306,9 @@ static void emit_phi_copies(cpu_mod_t *X,uint32_t succ,uint32_t pred){
 #define CPU_RET_MAX 256
 
 static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
+    /* Where this function lands in .text. The frame pre-pass below emits no
+     * code, so codelen here is already the address a caller will jump to. */
+    X->func_off[(uint32_t)(F - X->M->funcs)] = X->codelen;
     /* One slot per BIR value index, spanning params and every block
      * inst. Params are signature insts 0..num_params-1; block insts
      * follow. Single pass so nothing aliases. */
@@ -350,9 +353,14 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         static const int areg[6]={X_RDI,X_RSI,X_RDX,X_RCX,8,9};
         int gi=0, xi=0; int32_t stk=16;
         uint16_t total=(uint16_t)(F->num_params + (is_kernel?1:0));
+        /* A param is a BIR_PARAM at the head of the entry block, so the body
+         * reads it by its GLOBAL value index. Once a device helper sits ahead
+         * of this function that index is not the local p, so store the incoming
+         * arg to the same slot the body will read, not to slots[p]. */
+        uint32_t pbase=(F->num_blocks>0)?X->M->blocks[F->first_block].first_inst:0;
         for (uint16_t p=0;p<total;p++){
             int isf=(p<F->num_params) && param_is_float(X,F,p);
-            int32_t dest=(p<F->num_params)?X->slots[p]:ntid_off;
+            int32_t dest=(p<F->num_params)?X->slots[pbase+p]:ntid_off;
             if (isf){
                 if (xi<8) st_xmm_slot(X,xi++,dest,param_is_f64(X,F,p));
                 else { rexw(X,X_RAX,X_RBP);eb(X,0x8B);modrm(X,2,X_RAX,X_RBP);ei32(X,stk); st_slot(X,X_RAX,dest); stk+=8; }
@@ -679,6 +687,30 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
                 rexw(X,X_RSP,X_RBP);eb(X,0x89);modrm(X,3,X_RBP,X_RSP);eb(X,0x5D);eb(X,0xC3);
             }
             break;
+        case BIR_CALL: {
+            /* Device function call. op[0] is the callee's function index, op[1..]
+             * the arguments, dropped into the SysV registers the callee already
+             * reads its params from. Each is classed by the callee's signature:
+             * a float rides an xmm, an int or pointer a gpr. The body keeps no
+             * live value in a register between instructions, so the call clobbering
+             * the caller-saved set costs nothing -- the next instruction reloads
+             * from its frame slot regardless. */
+            uint32_t callee=I->operands[0];
+            const bir_func_t *cF=(callee<X->M->num_funcs)?&X->M->funcs[callee]:0;
+            static const int iarg[6]={X_RDI,X_RSI,X_RDX,X_RCX,8,9};
+            int gi=0,xi=0;
+            for (uint16_t a=1;a<I->num_operands;a++){
+                uint32_t av=I->operands[a];
+                if (cF && param_is_float(X,cF,(uint16_t)(a-1))){ if(xi<8) ld_fval(X,xi++,av); }
+                else { if(gi<6) load_val(X,iarg[gi++],av); }
+            }
+            rexw(X,0,X_RSP);eb(X,0x83);modrm(X,3,4,X_RSP);eb(X,0xF0);   /* and rsp,-16 */
+            eb(X,0xE8);                                                  /* call rel32 (patched once every func_off is known) */
+            if (X->n_callfix<CPU_FIX_MAX){ X->callfix[X->n_callfix].off=X->codelen; X->callfix[X->n_callfix].func=callee; X->n_callfix++; }
+            ei32(X,0);
+            if (is_float_ty(X,I->type)){ int w64=(I->type<X->M->num_types&&X->M->types[I->type].width==64); st_xmm_slot(X,X_XMM0,s,w64); }
+            else st_slot(X,X_RAX,s);
+            break; }
         default: mov_imm(X,X_RAX,0); st_slot(X,X_RAX,s); break;
         }}
     }
@@ -696,4 +728,16 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
 }
 
 void cpu_init(cpu_mod_t *X,const bir_module_t *M){ memset(X,0,sizeof(*X)); X->M=M; }
-int cpu_emit(cpu_mod_t *X){ for(uint32_t f=0;f<X->M->num_funcs;f++) cpu_func(X,&X->M->funcs[f]); return 0; }
+int cpu_emit(cpu_mod_t *X){
+    for(uint32_t f=0;f<X->M->num_funcs;f++) cpu_func(X,&X->M->funcs[f]);
+    /* Every function has landed, so every call hole can be filled now:
+     * rel32 = where the callee starts - (the byte after the rel32). */
+    for(int k=0;k<X->n_callfix;k++){
+        uint32_t site=X->callfix[k].off;
+        uint32_t tgt=(X->callfix[k].func<X->M->num_funcs)?X->func_off[X->callfix[k].func]:site;
+        int32_t rel=(int32_t)tgt-(int32_t)(site+4);
+        X->code[site]=(uint8_t)rel;X->code[site+1]=(uint8_t)(rel>>8);
+        X->code[site+2]=(uint8_t)(rel>>16);X->code[site+3]=(uint8_t)(rel>>24);
+    }
+    return 0;
+}

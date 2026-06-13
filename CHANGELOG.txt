@@ -1,6 +1,14 @@
 BarraCUDA — Changelog
 =====================
 
+2026-06-13 — Diagnostics that read like Clang's. A new renderer
+(src/fe/bc_render.c) gives every phase the same shape: error[Ennn]:
+message, a --> file:line:col line, the offending source line, and a
+caret under the column, coloured when stderr is a terminal and plain
+when piped. main.c's eight per-phase error loops collapse to one
+bc_diag() call, and the parser now names the token it choked on (got
+';') instead of its kind (got IDENT).
+
 2026-06-06 — The scalar backends finish the job, and a real
 workload drags three old bugs into the light. Building on
 yesterday's arithmetic, `--cpu` and `--rv64` gain the direct-ISA

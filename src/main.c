@@ -2,6 +2,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "sema.h"
+#include "bc_render.h"
 #include "bir_lower.h"
 #include "bir_sroa.h"
 #include "bir_mem2reg.h"
@@ -666,16 +667,7 @@ int main(int argc, char *argv[])
         tn_lex_init(&tn_lex_state, source_buf, src_len,
                     tn_tok_buf, TN_MAX_TOKENS);
         int trc = tn_tokenize(&tn_lex_state);
-        if (tn_lex_state.num_errors > 0) {
-            for (int i = 0; i < tn_lex_state.num_errors; i++) {
-                fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
-                        file,
-                        tn_lex_state.errors[i].loc.line,
-                        tn_lex_state.errors[i].loc.col,
-                        tn_lex_state.errors[i].eid,
-                        tn_lex_state.errors[i].msg);
-            }
-        }
+        bc_diag(file, source_buf, tn_lex_state.errors, tn_lex_state.num_errors);
         if (mode_lex) {
             char text[256];
             for (uint32_t i = 0; i < tn_lex_state.num_tokens; i++) {
@@ -700,14 +692,7 @@ int main(int argc, char *argv[])
             }
             tn_parse_init(tnp, &tn_lex_state);
             int prc = tn_parse(tnp);
-            for (int i = 0; i < tnp->num_errors; i++) {
-                fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
-                        file,
-                        tnp->errors[i].loc.line,
-                        tnp->errors[i].loc.col,
-                        tnp->errors[i].eid,
-                        tnp->errors[i].msg);
-            }
+            bc_diag(file, source_buf, tnp->errors, tnp->num_errors);
             int want_backend = mode_amdgpu || mode_amdgpu_bin ||
                                mode_tensix || mode_nvidia ||
                                mode_metal || mode_intel || mode_cpu || mode_rv64;
@@ -720,14 +705,7 @@ int main(int argc, char *argv[])
                 }
                 tn_sema_init(tns, tnp);
                 int src_code = tn_sema(tns);
-                for (int i = 0; i < tns->num_errors; i++) {
-                    fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
-                            file,
-                            tns->errors[i].loc.line,
-                            tns->errors[i].loc.col,
-                            tns->errors[i].eid,
-                            tns->errors[i].msg);
-                }
+                bc_diag(file, source_buf, tns->errors, tns->num_errors);
                 if (mode_ir || want_backend) {
                     tn_lower_t *tnl = (tn_lower_t *)malloc(sizeof(tn_lower_t));
                     if (!tnl) {
@@ -743,14 +721,7 @@ int main(int argc, char *argv[])
                     }
                     tn_lower_init(tnl, tnp, tns, bir_module);
                     int lrc = tn_lower(tnl);
-                    for (int i = 0; i < tnl->num_errors; i++) {
-                        fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
-                                file,
-                                tnl->errors[i].loc.line,
-                                tnl->errors[i].loc.col,
-                                tnl->errors[i].eid,
-                                tnl->errors[i].msg);
-                    }
+                    bc_diag(file, source_buf, tnl->errors, tnl->num_errors);
 
                     int brc = BC_OK;
                     if (lrc == BC_OK && (mode_ir || want_backend)) {
@@ -860,13 +831,7 @@ int main(int argc, char *argv[])
 
         int prc = pp_process(pp);
 
-        if (pp->num_errors > 0) {
-            for (int i = 0; i < pp->num_errors; i++) {
-                fprintf(stderr, "%s:%u: E%03u: %s\n",
-                        file, pp->errors[i].loc.line,
-                        pp->errors[i].eid, pp->errors[i].msg);
-            }
-        }
+        bc_diag(file, source_buf, pp->errors, pp->num_errors);
 
         if (mode_pp) {
             fwrite(pp_out_buf, 1, pp->out_len, stdout);
@@ -883,13 +848,7 @@ int main(int argc, char *argv[])
     lexer_init(&L, lex_src, lex_len, token_buf, BC_MAX_TOKENS);
     int rc = lexer_tokenize(&L);
 
-    if (L.num_errors > 0) {
-        for (int i = 0; i < L.num_errors; i++) {
-            fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
-                    file, L.errors[i].loc.line, L.errors[i].loc.col,
-                    L.errors[i].eid, L.errors[i].msg);
-        }
-    }
+    bc_diag(file, lex_src, L.errors, L.num_errors);
 
     if (mode_lex) {
         dump_tokens(&L);
@@ -903,13 +862,7 @@ int main(int argc, char *argv[])
                     node_buf, BC_MAX_NODES);
         uint32_t root = parser_parse(&P);
 
-        if (P.num_errors > 0) {
-            for (int i = 0; i < P.num_errors; i++) {
-                fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
-                        file, P.errors[i].loc.line, P.errors[i].loc.col,
-                        P.errors[i].eid, P.errors[i].msg);
-            }
-        }
+        bc_diag(file, lex_src, P.errors, P.num_errors);
 
         if (mode_parse) {
             ast_dump(&P, root, 0);
@@ -932,15 +885,7 @@ int main(int argc, char *argv[])
             sema_init(sema_ctx, &P, root);
             sema_check(sema_ctx, root);
 
-            if (sema_ctx->num_errors > 0) {
-                for (int i = 0; i < sema_ctx->num_errors; i++) {
-                    fprintf(stderr, "%s:%u:%u: E%03u: %s\n",
-                            file, sema_ctx->errors[i].loc.line,
-                            sema_ctx->errors[i].loc.col,
-                            sema_ctx->errors[i].eid,
-                            sema_ctx->errors[i].msg);
-                }
-            }
+            bc_diag(file, lex_src, sema_ctx->errors, sema_ctx->num_errors);
 
             if (mode_sema) {
                 sema_dump(sema_ctx, root);

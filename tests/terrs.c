@@ -53,3 +53,20 @@ static void err_odir(void)
     PASS();
 }
 TH_REG("errors", err_odir)
+
+/* ---- errors: diagnostic rendering + real token text ----
+ * A missing semicolon should render Clang-style (id in brackets, location
+ * line, caret) and name the actual token it choked on, not the kind. */
+
+static void err_diag_render(void)
+{
+    int rc = th_run(BC_BIN " --parse tests/test_diag.cu", obuf, TH_BUFSZ);
+    (void)rc;
+    CHECK(strstr(obuf, "error[E020]") != NULL);   /* id in brackets   */
+    CHECK(strstr(obuf, "-->")         != NULL);   /* location line    */
+    CHECK(strstr(obuf, "^")           != NULL);   /* the caret        */
+    CHECK(strstr(obuf, "got 'p'")     != NULL);   /* real token text  */
+    CHECK(strstr(obuf, "got 'IDENT'") == NULL);   /* not the kind name */
+    PASS();
+}
+TH_REG("errors", err_diag_render)

@@ -72,6 +72,15 @@ typedef struct {
     char      extsym[CPU_EXTSYM_MAX][CPU_EXTSYM_LEN];
     int       n_extsym;
 
+    /* Device function calls. Every function lands in the same .text, so a
+     * call to one is a plain rel32 to where it starts -- no relocation, no
+     * symbol. func_off remembers where each landed; a forward call does not
+     * know its target's offset yet, so it leaves a hole noted here and a
+     * final pass fills every hole once all the offsets are known. */
+    uint32_t  func_off[BIR_MAX_FUNCS];
+    struct { uint32_t off; uint32_t func; } callfix[CPU_FIX_MAX];
+    int       n_callfix;
+
     int       n_errs;
 } cpu_mod_t;
 

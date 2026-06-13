@@ -91,6 +91,19 @@ static int cur_type(const parser_t *P)
     return cur(P)->type;
 }
 
+/* The current token's source text, for friendly "got '%s'" messages.
+ * Falls back to the token kind name for zero-length tokens like EOF. */
+static const char *cur_text(const parser_t *P, char *buf, size_t bufsz)
+{
+    const token_t *t = cur(P);
+    if (t->len == 0 || !P->src) return token_type_name(t->type);
+    uint32_t n = t->len;
+    if (n >= bufsz) n = (uint32_t)bufsz - 1;
+    memcpy(buf, P->src + t->offset, (size_t)n);
+    buf[n] = '\0';
+    return buf;
+}
+
 static int peek_type(const parser_t *P, int ahead)
 {
     uint32_t p = P->pos + (uint32_t)ahead;
@@ -129,8 +142,9 @@ static int match(parser_t *P, int type)
 static int expect(parser_t *P, int type)
 {
     if (cur_type(P) == type) { advance(P); return 1; }
+    char got[64];
     parse_error(P, BC_E020,
-                token_type_name(type), token_type_name(cur_type(P)));
+                token_type_name(type), cur_text(P, got, sizeof got));
     return 0;
 }
 
@@ -1299,6 +1313,13 @@ static uint32_t parse_declaration(parser_t *P)
             add_child(P, decl_node, init);
         }
 
+        /* Comma-separated declarators (float a, b, c;) chain off the
+         * first decl's next_sibling. add_child splices an entire
+         * next_sibling chain into the parent, so returning the HEAD pulls
+         * every declarator into the block. The old code returned the last
+         * link, so all but one silently vanished -- the footgun the Moa
+         * port tripped over. */
+        uint32_t decl_head = decl_node;
         while (match(P, TOK_COMMA)) {
             uint32_t extra = alloc_node(P, AST_VAR_DECL);
             P->nodes[extra].qualifiers = quals;
@@ -1306,7 +1327,16 @@ static uint32_t parse_declaration(parser_t *P)
             int ep = 0;
             while (cur_type(P) == TOK_STAR) { advance(P); ep++; }
             P->nodes[extra].d.oper.flags = ep;
-            add_child(P, extra, type_node);
+            /* Each declarator needs its OWN type node. type_node is built
+             * once, but add_child links a node's children through
+             * next_sibling, so sharing it across declarators chains every
+             * name off the single type node and collapses them all to the
+             * first. Copy the type info and reset next_sibling so this
+             * declarator's name links cleanly. */
+            uint32_t etype = alloc_node(P, P->nodes[type_node].type);
+            P->nodes[etype] = P->nodes[type_node];
+            P->nodes[etype].next_sibling = 0;
+            add_child(P, extra, etype);
             if (cur_type(P) == TOK_IDENT) {
                 uint32_t en = alloc_node(P, AST_IDENT);
                 P->nodes[en].d.text.offset = cur(P)->offset;
@@ -1331,7 +1361,7 @@ static uint32_t parse_declaration(parser_t *P)
 
         if (!expect(P, TOK_SEMI))
             sync_past_semi(P);
-        return decl_node; /* returns first in chain */
+        return decl_head; /* the whole comma chain, not just the last link */
     }
 
     match(P, TOK_SEMI);

@@ -25,7 +25,7 @@ LIBS    = -lm
 # Linux/ELF only: -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 
 SOURCES = src/main.c \
-          src/fe/bc_err.c src/fe/preproc.c src/fe/lexer.c src/fe/parser.c src/fe/sema.c \
+          src/fe/bc_err.c src/fe/bc_render.c src/fe/preproc.c src/fe/lexer.c src/fe/parser.c src/fe/sema.c \
           src/ir/bir.c src/ir/bir_print.c src/ir/bir_lower.c src/ir/bir_mem2reg.c src/ir/bir_cfold.c src/ir/bir_dce.c src/ir/bir_struct.c src/ir/bir_insert.c src/ir/bir_sroa.c \
           src/tdf/tdf.c src/tdf/tdf_lower.c src/tdf/tdf_fission.c src/tdf/tdf_place.c src/tdf/tdf_noc.c \
           src/amdgpu/amd_rplan.c src/amdgpu/isel.c src/amdgpu/emit.c src/amdgpu/ra_ssa.c src/amdgpu/encode.c src/amdgpu/enc_tab.c src/amdgpu/sched.c src/amdgpu/verify.c \
