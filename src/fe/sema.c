@@ -1423,21 +1423,11 @@ static void collect_enum_def(sema_ctx_t *S, uint32_t node)
     uint32_t c = ND(S, node)->first_child;
     if (c) c = ND(S, c)->next_sibling;
 
-    int64_t next_val = 0;
     while (c) {
         if (ND(S, c)->type == AST_ENUMERATOR) {
             char name[128];
             get_text(S, c, name, sizeof(name));
-
-            if (ND(S, c)->first_child) {
-                const ast_node_t *val_n = ND(S, ND(S, c)->first_child);
-                if (val_n->type == AST_INT_LIT)
-                    next_val = parse_int_value(S->src + val_n->d.text.offset,
-                                               (int)val_n->d.text.len);
-            }
-
             add_sym(S, name, st_int(S), c, SYM_ENUM_CONST, 0);
-            next_val++;
         }
         c = ND(S, c)->next_sibling;
     }
