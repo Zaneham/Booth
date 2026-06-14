@@ -3303,7 +3303,6 @@ static void scan_launches(lower_t *L, uint32_t node)
 
             /* For each function param, check if its type is a template param */
             /* Then look at the corresponding launch arg to deduce */
-            int arg_idx = 0;
             for (int i = 0; i < nfparams && arg; i++) {
                 uint32_t fpt = ND(L, fparam_nodes[i])->first_child;
                 if (fpt && ND(L, fpt)->type == AST_TYPE_SPEC
@@ -3341,7 +3340,6 @@ static void scan_launches(lower_t *L, uint32_t node)
                     }
                 }
                 arg = ND(L, arg)->next_sibling;
-                arg_idx++;
             }
         }
 

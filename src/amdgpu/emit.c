@@ -465,7 +465,7 @@ static uint32_t coalesce(amd_module_t *A, const mfunc_t *F)
     int changed = 1;
     int guard = 16;
     uint32_t n_coal = 0;
-    uint32_t n_intf = 0, n_cand = 0;
+    uint32_t n_cand = 0;
 
     while (changed && guard-- > 0) {
         changed = 0;
@@ -499,7 +499,7 @@ static uint32_t coalesce(amd_module_t *A, const mfunc_t *F)
                 uint32_t s2 = RA.intervals[dst].start;
                 uint32_t e2 = RA.intervals[dst].end;
 
-                if (s1 < e2 && s2 < e1) { n_intf++; continue; }
+                if (s1 < e2 && s2 < e1) { continue; }
 
                 /* Coalesce: src absorbs dst */
                 if (s2 < s1) RA.intervals[src].start = s2;
