@@ -92,7 +92,21 @@ src/runtime/%.o: src/runtime/%.c
 runtime/%.o: runtime/%.c
 	$(CC) $(TCFLAGS) -c $< -o $@
 
+wasm:
+	./build_wasm.sh
+
+wasm_test: wasm
+	./tests/test_wasm_build.sh
+	node ./tests/test_wasm_run.js
+	node ./tests/test_worker.js
+	node ./tests/test_app.js
+	node ./tests/test_e2e_web.js
+
+wasm_serve: wasm
+	@echo "Starting web server on http://localhost:8000"
+	@python3 -m http.server 8000 --directory web
+
 clean:
 	rm -f $(OBJECTS) $(TARGET) $(TARGET).exe trunner trunner.exe $(TOBJS) src/runtime/*.o runtime/*.o
 
-.PHONY: all clean test
+.PHONY: all clean test wasm wasm_test wasm_serve

@@ -180,11 +180,23 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             }
         }
         if (arc == BC_OK) {
-            if (cfg->mode_amdgpu_bin)
+            if (cfg->mode_amdgpu_bin) {
                 amdgpu_emit_elf(amd,
                     cfg->output_file ? cfg->output_file : "a.hsaco");
-            else
-                amdgpu_emit_asm(amd, stdout);
+            } else {
+                FILE *out = stdout;
+                if (cfg->output_file) {
+                    out = fopen(cfg->output_file, "w");
+                    if (!out) {
+                        fprintf(stderr, "error: could not open output file %s\n", cfg->output_file);
+                        out = stdout;
+                    }
+                }
+                amdgpu_emit_asm(amd, out);
+                if (out != stdout) {
+                    fclose(out);
+                }
+            }
         } else {
             if (arc != BC_ERR_VERIFY)
                 fprintf(stderr, "error: AMDGPU compilation failed\n");
