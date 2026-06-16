@@ -5,7 +5,7 @@
 set -e
 
 echo "Running WASM build..."
-./build_wasm.sh
+make wasm
 
 if [ -f "web/barracuda.js" ] && [ -f "web/barracuda.wasm" ]; then
     echo "WASM artifacts generated successfully."

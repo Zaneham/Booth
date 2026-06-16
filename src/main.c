@@ -188,15 +188,19 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
                     out = fopen(cfg->output_file, "w");
                     if (!out) {
                         fprintf(stderr, "error: could not open output file %s\n", cfg->output_file);
-                        out = stdout;
+                        arc = BC_ERR_IO;
                     }
                 }
-                amdgpu_emit_asm(amd, out);
-                if (out != stdout) {
-                    fclose(out);
+                if (arc == BC_OK) {
+                    amdgpu_emit_asm(amd, out);
+                    if (out != stdout) {
+                        fclose(out);
+                    }
                 }
             }
-        } else {
+        }
+        
+        if (arc != BC_OK) {
             if (arc != BC_ERR_VERIFY)
                 fprintf(stderr, "error: AMDGPU compilation failed\n");
             rc = arc;

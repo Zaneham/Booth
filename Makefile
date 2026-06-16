@@ -19,7 +19,7 @@ CFLAGS  = -std=c99 -Wall -Wextra -pedantic -O2 \
           -Wdouble-promotion -Wswitch-enum -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE $(CF_PROT) \
           $(GCC_ONLY) \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/runtime
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/runtime -Iruntime
 LDFLAGS = -pie
 LIBS    = -lm
 # Linux/ELF only: -Wl,-z,relro,-z,now -Wl,-z,noexecstack
@@ -92,14 +92,31 @@ src/runtime/%.o: src/runtime/%.c
 runtime/%.o: runtime/%.c
 	$(CC) $(TCFLAGS) -c $< -o $@
 
-wasm:
-	./build_wasm.sh
+WASM_OUT_DIR = web
+WASM_TARGET = $(WASM_OUT_DIR)/barracuda.js
+
+wasm: $(SOURCES)
+	@mkdir -p $(WASM_OUT_DIR)
+	emcc $(SOURCES) -O3 \
+	    -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/runtime -Iruntime \
+	    -s ALLOW_MEMORY_GROWTH=1 \
+	    -s EXPORTED_RUNTIME_METHODS='["FS","callMain"]' \
+	    -s INVOKE_RUN=0 \
+	    -s EXPORT_ES6=0 \
+	    -o $(WASM_TARGET)
+	@echo "WASM compilation successful. Output in $(WASM_OUT_DIR)/"
 
 wasm_test: wasm
 	./tests/test_wasm_build.sh
 	node ./tests/test_wasm_run.js
 	node ./tests/test_worker.js
 	node ./tests/test_app.js
+
+wasm_test_e2e: wasm
+	@if ! node -e "require('puppeteer')" > /dev/null 2>&1; then \
+		echo "Ensure puppeteer is installed via 'npm install puppeteer --no-save' before running this target."; \
+		exit 1; \
+	fi
 	node ./tests/test_e2e_web.js
 
 wasm_serve: wasm

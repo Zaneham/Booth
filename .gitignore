@@ -133,3 +133,5 @@ Thumbs.db
 .github/copilot/
 CLAUDE.md
 .aider*
+web/barracuda.wasm
+web/barracuda.js
