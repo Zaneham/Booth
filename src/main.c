@@ -303,6 +303,17 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
                 cfg->output_file ? cfg->output_file : "a_compute.cpp";
             tensix_analyze_datamov(bir, ttm, &ttm->dmov);
             tensix_emit_metalium(ttm, compute_path);
+            /* Raw Tensix machine code alongside the Metalium C++: the encoded
+             * 32-bit word stream, decodable by ttas/Kahu. */
+            {
+                char bin_path[BC_MAX_PATH];
+                const char *st2 = strstr(compute_path, "_compute");
+                int bp = st2 ? (int)(st2 - compute_path)
+                             : (int)strlen(compute_path);
+                snprintf(bin_path, sizeof(bin_path), "%.*s_compute.bin",
+                         bp, compute_path);
+                tensix_emit_binary(ttm, bin_path);
+            }
             char host_path[BC_MAX_PATH];
             char reader_path[BC_MAX_PATH];
             char writer_path[BC_MAX_PATH];

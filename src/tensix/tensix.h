@@ -259,6 +259,7 @@ int  tensix_compile(const bir_module_t *bir, tt_module_t *tt);
 void tensix_coarsen(tt_module_t *tt);
 void tensix_regalloc(tt_module_t *tt);
 int  tensix_emit_metalium(tt_module_t *tt, const char *path);
+int  tensix_emit_binary(tt_module_t *tt, const char *path);   /* raw Tensix words */
 /* Data movement — Tier 4 */
 void tensix_analyze_datamov(const bir_module_t *bir, const tt_module_t *tt,
                             tt_dmov_t *dmov);

@@ -478,6 +478,40 @@ static uint32_t encode_inst(const tt_minst_t *I)
     }
 }
 
+/* ---- Raw Tensix machine code ----
+ * The Metalium path emits C++ for Tenstorrent's toolchain to compile. This
+ * one emits the real thing: the encoded 32-bit Tensix words, little-endian,
+ * the same stream ttas assembles and Kahu decodes. Pseudo-ops (phi/copy/def)
+ * are gone after regalloc; anything the table does not know is skipped. */
+
+int tensix_emit_binary(tt_module_t *tt, const char *path)
+{
+    FILE    *fp;
+    uint32_t i, n = 0;
+
+    fp = fopen(path, "wb");
+    if (!fp) return BC_ERR_IO;
+
+    for (i = 0; i < tt->num_minsts; i++) {
+        const tt_minst_t *I = &tt->minsts[i];
+        uint32_t w;
+        uint8_t  b[4];
+
+        if (!enc_lookup(I->op)) continue;   /* pseudo-op, not real hardware */
+
+        w = encode_inst(I);
+        b[0] = (uint8_t)(w & 0xFF);
+        b[1] = (uint8_t)((w >> 8) & 0xFF);
+        b[2] = (uint8_t)((w >> 16) & 0xFF);
+        b[3] = (uint8_t)((w >> 24) & 0xFF);
+        if (fwrite(b, 1, 4, fp) != 4) { fclose(fp); return BC_ERR_IO; }
+        n++;
+    }
+
+    fclose(fp);
+    return (n > 0) ? BC_OK : BC_ERR_IO;
+}
+
 /* ---- Disassembly ---- */
 
 static void disasm_inst(const tt_minst_t *I, char *buf, size_t bufsz)
