@@ -512,6 +512,45 @@ int tensix_emit_binary(tt_module_t *tt, const char *path)
     return (n > 0) ? BC_OK : BC_ERR_IO;
 }
 
+/* ---- RISC-V .ttinsn stream ----
+ * The Tensix coprocessor never fetches its own instructions; a baby RISC-V
+ * core pushes each one by storing the 32-bit word to INSTRN_BUF_BASE
+ * (0xFFE40000). The .ttinsn custom instruction is the shorthand: a single
+ * RISC-V instruction whose encoding is the Tensix word rotated left by two
+ * bits (hardware rotates it back right and stores it). Valid because every
+ * real Tensix opcode is below 0xC0000000. Source: Wormhole B0 ISA docs,
+ * BabyRISCV/PushTensixInstruction. This is the math core's instruction
+ * stream: each word here issues one Tensix instruction. */
+
+int tensix_emit_ttinsn(tt_module_t *tt, const char *path)
+{
+    FILE    *fp;
+    uint32_t i, n = 0;
+
+    fp = fopen(path, "wb");
+    if (!fp) return BC_ERR_IO;
+
+    for (i = 0; i < tt->num_minsts; i++) {
+        const tt_minst_t *I = &tt->minsts[i];
+        uint32_t w, tti;
+        uint8_t  b[4];
+
+        if (!enc_lookup(I->op)) continue;
+
+        w   = encode_inst(I);
+        tti = (w << 2) | (w >> 30);     /* rotate left 2 = .ttinsn encoding */
+        b[0] = (uint8_t)(tti & 0xFF);
+        b[1] = (uint8_t)((tti >> 8) & 0xFF);
+        b[2] = (uint8_t)((tti >> 16) & 0xFF);
+        b[3] = (uint8_t)((tti >> 24) & 0xFF);
+        if (fwrite(b, 1, 4, fp) != 4) { fclose(fp); return BC_ERR_IO; }
+        n++;
+    }
+
+    fclose(fp);
+    return (n > 0) ? BC_OK : BC_ERR_IO;
+}
+
 /* ---- Disassembly ---- */
 
 static void disasm_inst(const tt_minst_t *I, char *buf, size_t bufsz)

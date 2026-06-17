@@ -313,6 +313,10 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
                 snprintf(bin_path, sizeof(bin_path), "%.*s_compute.bin",
                          bp, compute_path);
                 tensix_emit_binary(ttm, bin_path);
+                /* The math core's RISC-V .ttinsn stream that issues them. */
+                snprintf(bin_path, sizeof(bin_path), "%.*s_compute.ttinsn",
+                         bp, compute_path);
+                tensix_emit_ttinsn(ttm, bin_path);
             }
             char host_path[BC_MAX_PATH];
             char reader_path[BC_MAX_PATH];
