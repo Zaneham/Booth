@@ -1,36 +1,16 @@
-/* Triton frontend lexer: a tokenizer for the dialect of Python that
- * Triton kernels are written in. We do this entirely in C99, no
- * embedded Python, no shelled-out helper script, no third party
- * library, and no apologies. The grammar we have to handle is a
- * small subset of Python, the algorithm is a textbook recursive
- * descent over characters, and the only genuinely novel ingredient
- * is Python's indentation tokenizer, which maintains a stack of
- * column positions and emits INDENT and DEDENT tokens at the
- * boundaries of nested blocks. This is the same algorithm CPython
- * uses, written here in a more economical handful of lines because
- * we are doing less, do not have to retain bug-for-bug compatibility
- * with twenty years of CPython, and are not measured on how often we
- * occured in this morning's pandas trace.
- *
- * The historical irony is not lost on us. C was the language Python
- * was written in to begin with, and Python is the language OpenAI
- * decided every modern GPU kernel should be authored in, and now C
- * is the language we are using to parse the Python that produces
- * the GPU kernels. The wheel turns; the toolchain accumulates
- * layers of cake; somebody, somewhere, is eventually going to want
- * a Fortran frontend, and we will at least know how to type one. */
+/* Triton frontend lexer. Tokenises the Python subset that Triton
+ * kernels are written in: recursive descent over characters, plus
+ * Python's indentation tokeniser, which keeps a stack of column
+ * positions and emits INDENT/DEDENT at block boundaries. */
 
 #include "triton.h"
 
 #include <string.h>
 #include <stdio.h>
 
-/* ---- Character Classifiers ----
- * Inlined rather than calling out to ctype.h, because the project's
- * style is to keep the dependencies as close to zero as decency
- * allows, and isalpha is a surprisingly expensive function call on
- * some libc implementations once you start counting cache misses on
- * the locale data. */
+/* ---- Character classifiers ----
+ * Inlined rather than via ctype.h: isalpha can be a real call that
+ * touches locale data, and these run on every character. */
 
 static int tx_alph(int c)
 {
@@ -52,13 +32,10 @@ static int tx_hex(int c)
     return tx_dig(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
-/* ---- Keyword Lookup ----
- * After an identifier has been tokenized, we look it up here to see
- * whether it is a reserved word in Triton's Python subset. Triton
- * itself rejects most of Python's reserved words inside @triton.jit
- * functions, but the lexer's job is to recognise them so that the
- * parser or sema can complain about them in a more pleasant manner
- * than "unexpected garbage" further down the road. */
+/* ---- Keyword lookup ----
+ * Map a scanned identifier to its reserved-word kind, or TN_TOK_IDENT
+ * if it is none. Recognising keywords here lets the parser and sema
+ * report misuse with a clear message rather than a generic one. */
 
 typedef struct { const char *name; int kind; } tn_kw_t;
 
@@ -103,11 +80,10 @@ static int tn_kw_lookup(const char *s, uint32_t len)
     return TN_TOK_IDENT;
 }
 
-/* ---- Token Name Table ----
- * Used by --triton --lex and by diagnostic output. The order has to
- * match the enum, which is enforced by careful reading rather than by
- * the compiler, so anyone adding a token kind needs to add a name in
- * the same position or the diagnostics will print rubbish. */
+/* ---- Token name table ----
+ * For --triton --lex output and diagnostics. Order must match the
+ * token enum; nothing enforces that, so a new token kind needs its
+ * name added in the same position. */
 
 static const char *tn_tok_names[TN_TOK_COUNT] = {
     "NEWLINE", "INDENT", "DEDENT",
@@ -161,16 +137,11 @@ static void tn_emit(tn_lex_t *L, int kind, uint32_t off, uint32_t len)
     t->pad  = 0;
 }
 
-/* tn_emit_at is the variant that lets a scanner record the token's
- * position from the start of the literal rather than from the
- * lexer's current location. Multi-line scanners need it because by
- * the time they finish the scan, L->line and L->line_start have
- * moved past the token's beginning and the regular tn_emit would
- * produce a column number that has rolled under into the millions.
- * Column 65227 is technically a valid column on a sufficiently wide
- * editor but is rarely what the programmer meant, and your error
- * messages tend to lose the sympathy of the reader once they cross
- * the four digit threshold. */
+/* Variant of tn_emit that records the token's position from the start
+ * of the literal rather than the lexer's current location. Multi-line
+ * scanners need it: by the time they finish, L->line and L->line_start
+ * have moved past the token's start, so plain tn_emit would compute a
+ * bogus column. */
 
 static void tn_emit_at(tn_lex_t *L, int kind, uint32_t off, uint32_t len,
                        uint32_t line, uint32_t line_start)
@@ -185,29 +156,16 @@ static void tn_emit_at(tn_lex_t *L, int kind, uint32_t off, uint32_t len,
     t->pad  = 0;
 }
 
-/* ---- Indentation Handler ----
- * Called when the lexer is at the start of a logical line and is not
- * inside any parentheses or brackets. It counts the leading spaces,
- * advances past blank or comment-only lines without emitting
- * anything, then either emits INDENT, a run of DEDENTs, or nothing
- * at all depending on how the new indentation compares to the
- * current stack. Tabs are converted to one column each, which is
- * not strictly what CPython does but is good enough for Triton
- * kernels written by people who set their editors up sensibly.
- *
- * If you are reading this comment because you discovered that mixing
- * tabs and spaces broke your file, the correct response is to pick
- * one and stick with it for the rest of your career, rather than to
- * file a bug. PEP 8 has been suggesting this for over twenty years,
- * and CPython has been getting progressively less patient with
- * people who refuse to listen, so the trajectory is clear. */
+/* ---- Indentation handler ----
+ * Called at the start of a logical line when not inside parens or
+ * brackets. Counts leading spaces, skips blank and comment-only lines,
+ * then emits INDENT, a run of DEDENTs, or nothing depending on how the
+ * indentation compares to the stack. Tabs count as one column each. */
 
 static int tn_indent(tn_lex_t *L)
 {
-    /* Skip blank and comment-only lines without taking them into
-     * account for the indentation calculation. CPython does the same
-     * thing for the same reason: a blank line is a typographical
-     * convenience, not a structural statement. */
+    /* Skip blank and comment-only lines: they do not affect the
+     * indentation calculation. */
     for (;;) {
         uint32_t start = L->pos;
         int col = 0;
@@ -226,11 +184,9 @@ static int tn_indent(tn_lex_t *L)
 
         char c = L->src[L->pos];
         if (c == '\r') {
-            /* Carriage return on its own (typically the first half of
-             * a CRLF line ending) is just inline whitespace. We skip
-             * it and re-look at the next character; if it is '\n'
-             * the blank-line handler below picks it up, otherwise
-             * normal scanning resumes. */
+            /* Lone carriage return (usually the first half of CRLF) is
+             * inline whitespace. Skip it; a following '\n' is handled
+             * by the blank-line case below. */
             L->pos++;
             continue;
         }
@@ -295,13 +251,11 @@ static void tn_scan_ident(tn_lex_t *L)
     tn_emit(L, kind, start, len);
 }
 
-/* ---- Numeric Literal Scan ----
- * Python accepts 0x/0o/0b prefixes for non-decimal integers, a decimal
- * with optional fractional and exponent parts for floats, and
- * underscores as digit separators (which we accept silently and
- * ignore for now, on the grounds that none of the literals we will
- * meet in early Triton kernels will use them, and the day we do meet
- * one is the day we add proper parsing in the sema). */
+/* ---- Numeric literal scan ----
+ * Handles 0x/0o/0b integer prefixes, decimal integers, and floats with
+ * optional fraction and exponent. Underscore digit separators are
+ * accepted and ignored for now; sema can parse them if a kernel ever
+ * uses one. */
 
 static void tn_scan_num(tn_lex_t *L)
 {
@@ -332,17 +286,10 @@ static void tn_scan_num(tn_lex_t *L)
            (tx_dig(L->src[L->pos]) || L->src[L->pos] == '_'))
         L->pos++;
 
-    /* Fractional dot, greedy. The main loop only enters this function
-     * with a leading digit or with a dot already known to be followed
-     * by a digit, so any dot we meet here belongs to the float and
-     * cannot possibly be the dot of a member access. This is also
-     * how CPython's tokenizer treats `5.foo`, which it splits into
-     * the float literal `5.` and the identifier `foo` rather than
-     * into an integer followed by member access. The reasoning, if
-     * you ask CPython about it definately enough, is that nobody
-     * writes `5.foo` on purpose, and anyone who does is going to
-     * get a syntax error from the parser shortly after this point
-     * anyway, so we may as well decide here. */
+    /* Fractional dot, greedy. This function is only entered on a
+     * leading digit, or on a dot already known to precede a digit, so a
+     * dot here belongs to the float and is never member access. Matches
+     * CPython, which lexes `5.foo` as `5.` then `foo`. */
     if (L->pos < L->src_len && L->src[L->pos] == '.') {
         is_float = 1;
         L->pos++;
@@ -362,10 +309,9 @@ static void tn_scan_num(tn_lex_t *L)
             L->pos++;
     }
 
-    /* Imaginary suffix and the float-only j literal are accepted as
-     * part of the number but the rest of the compiler does not know
-     * what to do with them; we tokenize them as FLOAT and let sema
-     * shrug at the suffix later. */
+    /* Imaginary 'j' suffix: accepted as part of the number and lexed as
+     * FLOAT. The rest of the compiler ignores the suffix; sema handles
+     * it later. */
     if (L->pos < L->src_len &&
         (L->src[L->pos] == 'j' || L->src[L->pos] == 'J')) {
         is_float = 1;
@@ -375,39 +321,20 @@ static void tn_scan_num(tn_lex_t *L)
     tn_emit(L, is_float ? TN_TOK_FLOAT : TN_TOK_INT, start, L->pos - start);
 }
 
-/* ---- String Literal Scan ----
- * Single-line strings can be either single or double quoted, on the
- * principle that the people who designed Python could not seperate
- * the two camps in good conscience and decided the user could
- * choose. Triple quoted strings span multiple lines and exist
- * primarily to host the docstring at the top of every well behaved
- * Triton kernel, in which the author apologises in advance for what
- * is about to happen to the GPU in the rest of the function.
- *
- * String prefixes (r, b, f, u, plus any one of those followed by
- * another letter) are detected before the scan begins and folded
- * into the STRING token's length so that the parser sees one token
- * per literal regardless of how the user dressed it up that
- * morning. The actual semantic effect of the prefix (raw, bytes,
- * formatted, unicode) is deferred to sema, which is the natural
- * place to decide what to do about it because sema is the only
- * pass that has the time and the equanimity.
- *
- * We accept f-strings syntactically here without parsing the
- * embedded expressions, on the entirely reasonable grounds that
- * the kernels we are likely to meet do not actually use them and
- * the rare ones that do can be greeted with a polite diagnostic
- * when sema notices. F-strings are, for the record, a parser's
- * revenge for several centuries of being treated like an unfussy
- * filing clerk: the price of letting users write {x:.4f} inside a
- * string and have the runtime format it is that somebody now has
- * to parse that mess, and that somebody is not us, not today. */
+/* ---- String literal scan ----
+ * Single-line strings are single or double quoted; triple-quoted
+ * strings span lines and hold docstrings. String prefixes (r, b, f, u,
+ * or two of them) are detected first and folded into the STRING token
+ * length so the parser sees one token per literal; the prefix's
+ * meaning (raw, bytes, formatted, unicode) is left to sema. f-strings
+ * are accepted syntactically without parsing the embedded expressions;
+ * sema diagnoses them if a kernel uses one. */
 
 static void tn_scan_str_at(tn_lex_t *L, uint32_t start)
 {
-    /* Snapshot the line position at the start of the literal so that
-     * triple-quoted strings can still report a sensible line and
-     * column when the closing quote arrives many lines later. */
+    /* Snapshot the line position at the start of the literal so a
+     * triple-quoted string reports a sensible line and column when the
+     * closing quote arrives many lines later. */
     uint32_t start_line       = L->line;
     uint32_t start_line_start = L->line_start;
 
@@ -483,18 +410,11 @@ static void tn_scan_str(tn_lex_t *L)
     tn_scan_str_at(L, L->pos);
 }
 
-/* String prefix detection. Returns the prefix length in characters
- * (1 or 2) if the next char after the prefix is a quote, otherwise
- * zero. We accept any combination of one or two letters from the
- * Python prefix set: r/R, b/B, f/F, u/U.
- *
- * Python's actual grammar forbids certain combinations (for
- * instance, fb is not legal, only bf or rb) but we are deliberately
- * permissive in the lexer and let sema complain about wierd
- * combinations later. This is consistent with the rest of the
- * error recovery in the compiler, which would rather keep
- * tokenising and tell you about three problems than die at the
- * first one and leave you guessing about the other two. */
+/* String prefix detection. Returns the prefix length (1 or 2) when the
+ * character after the prefix is a quote, else zero. Accepts any one or
+ * two of r/R, b/B, f/F, u/U. Python forbids some combinations (fb is
+ * invalid, bf is not); the lexer stays permissive and lets sema reject
+ * the odd ones, in keeping with the compiler's keep-going recovery. */
 
 static int tn_is_str_prefix(const tn_lex_t *L)
 {
@@ -516,12 +436,10 @@ static int tn_is_str_prefix(const tn_lex_t *L)
     return n;
 }
 
-/* ---- Operator and Punctuation Scan ----
- * Multi-character operators come first because of the maximum munch
- * principle: we want ** before *, // before /, == before =, and so
- * on. The structure is a sequence of small decisions on the current
- * character followed by lookahead for any second-character extension
- * that might be present. */
+/* ---- Operator and punctuation scan ----
+ * Maximum munch: multi-character operators are matched before their
+ * prefixes, ** before *, // before /, == before =. Each case tests the
+ * current character then looks ahead for a second-character extension. */
 
 static int tn_match2(tn_lex_t *L, char c2)
 {
@@ -643,8 +561,8 @@ static void tn_scan_op(tn_lex_t *L)
         tn_emit_op(L, TN_TOK_ASSIGN, 1); return;
     case '!':
         if (tn_match2(L, '=')) { tn_emit_op(L, TN_TOK_NE, 2); return; }
-        /* A bare ! is not valid Python. Emit something so we make
-         * forward progress and let the parser complain about it. */
+        /* A bare ! is not valid Python. Report it and advance so the
+         * parser can keep going. */
         tn_err(L, 53, "unexpected character '!'");
         L->pos++;
         return;
@@ -675,7 +593,7 @@ void tn_lex_init(tn_lex_t *L, const char *src, uint32_t len,
     L->at_line_start = 1;
 }
 
-/* ---- Top Level Tokenize Loop ---- */
+/* ---- Top-level tokenise loop ---- */
 
 int tn_tokenize(tn_lex_t *L)
 {
@@ -736,11 +654,10 @@ int tn_tokenize(tn_lex_t *L)
         }
 
         if (tx_alph(c)) {
-            /* String prefixes (r, b, f, u, plus two-letter combinations
-             * like rb or fr) want to take the whole literal as a single
-             * STRING token even though they begin with an identifier
-             * letter. Detect those before falling into the normal
-             * identifier scan. */
+            /* String prefixes (r, b, f, u, or two-letter combinations
+             * like rb or fr) take the whole literal as one STRING token
+             * even though they start with an identifier letter. Detect
+             * them before the normal identifier scan. */
             int pre = tn_is_str_prefix(L);
             if (pre > 0) {
                 uint32_t start = L->pos;
@@ -753,11 +670,10 @@ int tn_tokenize(tn_lex_t *L)
         }
         if (tx_dig(c)) { tn_scan_num(L); continue; }
 
-        /* A dot followed directly by a digit is a float literal of the
-         * `.5` variety. We have to spot it here because tn_scan_num is
-         * otherwise only entered on a leading digit, and we want to
-         * keep the bare dot meaning member access in every other
-         * context. */
+        /* A dot followed by a digit is a `.5`-style float. Spotted here
+         * because tn_scan_num is otherwise only entered on a leading
+         * digit, and a bare dot must stay member access everywhere
+         * else. */
         if (c == '.' && L->pos + 1 < L->src_len &&
             tx_dig(L->src[L->pos + 1])) {
             tn_scan_num(L);
@@ -769,11 +685,10 @@ int tn_tokenize(tn_lex_t *L)
         tn_scan_op(L);
     }
 
-    /* End of source. Emit a final NEWLINE if we are not already on
-     * a fresh line, then close any remaining indent levels with
-     * DEDENT tokens before the EOF, so the parser receives the same
-     * shape regardless of whether the file ended with a trailing
-     * newline. */
+    /* End of source. Emit a final NEWLINE unless already on a fresh
+     * line, then close remaining indent levels with DEDENTs before EOF,
+     * so the parser sees the same shape whether or not the file ended
+     * with a trailing newline. */
     if (L->num_tokens > 0 &&
         L->tokens[L->num_tokens - 1].kind != TN_TOK_NEWLINE) {
         tn_emit(L, TN_TOK_NEWLINE, L->pos, 0);

@@ -1,33 +1,16 @@
-/* Triton frontend parser, sitting one: statements scaffold with
- * opaque expression spans.
- *
- * The shape of the deal in this sitting is that every Python
- * statement Triton kernels actually use gets its own AST node with
- * its own structural fields, while expressions are captured as flat
- * token ranges. That defers the expression parser to a later sitting
- * without preventing the rest of the compiler from getting structural
- * work done in the meantime: sema can still walk function defs and
- * see their parameters, and lowering can still ask which statements
- * are inside which functions.
- *
- * Recursive descent over the token stream. No left recursion, no
- * backtracking past one token of lookahead, no tables. The grammar
- * follows the Python language reference closely enough that anyone
- * with the spec open can read along, departing from it only where
- * Triton forbids something Python allows or where the parser will
- * cope better tomorrow if we keep going past a tokeniser-level
- * error today. */
+/* Triton frontend parser. Recursive descent over the token stream:
+ * one token of lookahead, no backtracking, no tables. Each Python
+ * statement Triton kernels use gets its own AST node; expressions
+ * parse to a full precedence ladder. Follows Python's grammar,
+ * departing only where Triton forbids something Python allows. */
 
 #include "triton.h"
 
 #include <string.h>
 #include <stdio.h>
 
-/* ---- Token Helpers ----
- * The parser does most of its work through a small handful of token
- * predicates and consumers, defined here once so the grammar
- * functions can read like grammar functions and not like a forest
- * of pointer arithmetic. */
+/* ---- Token helpers ----
+ * Token predicates and consumers used by the grammar functions. */
 
 static const tn_tok_t *p_peek(tn_parse_t *P, int delta)
 {
@@ -73,12 +56,11 @@ static int p_expect(tn_parse_t *P, int kind, const char *msg)
     return 0;
 }
 
-/* ---- Node Helpers ----
- * Node allocation, child attachment, and the overflow trick for the
- * rare node that has more than six children. The overflow case is
- * almost entirely block nodes containing many statements, and the
- * extra_kids pool catches them without inflating the inline storage
- * for the common case. */
+/* ---- Node helpers ----
+ * Node allocation, child attachment, and overflow handling for nodes
+ * with more than the inline kid count. Overflow nodes are almost all
+ * blocks holding many statements; the extra_kids pool catches them
+ * without inflating inline storage for the common case. */
 
 static uint32_t p_alloc(tn_parse_t *P, int kind)
 {
@@ -114,15 +96,12 @@ static void p_push_kid(tn_parse_t *P, uint32_t kid_idx)
 }
 
 /* Commit the scratch range [scratch_base, kid_scratch_top) as the
- * children of node_idx, either into the inline kids array for small
- * nodes or into a contiguous extra_kids range for nodes that have
- * grown past the inline limit. The scratch stack is rewound to
- * scratch_base afterwards so the caller's own scratch state is
- * untouched. This is the central trick that fixes the interleaving
- * bug the incremental add_kid implementation suffered from: by the
- * time we are writing this node's children into extra_kids, every
- * nested node that needed extra_kids has already done its writes
- * and bumped num_extra past them. */
+ * children of node_idx: into the inline kids array for small nodes,
+ * or a contiguous extra_kids range for nodes past the inline limit.
+ * The scratch stack is rewound to scratch_base afterwards. Committing
+ * children all at once (rather than incrementally) avoids interleaving
+ * in extra_kids: by the time this node writes, every nested node that
+ * needed extra_kids has already written and bumped num_extra past. */
 
 static void p_set_kids(tn_parse_t *P, uint32_t node_idx,
                        uint32_t scratch_base)
@@ -176,24 +155,22 @@ static uint32_t tn_node_nkids(const tn_node_t *n)
            : n->num_kids;
 }
 
-/* ---- NEWLINE Drain ----
- * Python's tokenizer produces NEWLINE tokens between most logical
- * lines, and the parser does not care about them once it has
- * decided which statement it is parsing. The helper below eats any
- * run of NEWLINEs in one go, which is the cheap way to avoid
- * scattering NEWLINE checks through every grammar function. */
+/* ---- NEWLINE drain ----
+ * The tokeniser emits NEWLINE between most logical lines, but the
+ * parser does not care about them once it has chosen a statement.
+ * Eat any run of NEWLINEs in one go rather than scattering NEWLINE
+ * checks through every grammar function. */
 
 static void p_skip_newlines(tn_parse_t *P)
 {
     while (p_at(P, TN_TOK_NEWLINE)) P->cur++;
 }
 
-/* ---- Augmented Assignment Lookup ----
- * Maps a token kind onto the augmented-assignment subcode used as
- * the flags field of a TN_NK_AUG_ASSIGN node, or returns -1 if the
- * token is not an augmented assignment. The parser consults this
- * after it has consumed a target expression and is trying to decide
- * whether what follows is `=`, `op=`, or nothing in particular. */
+/* ---- Augmented assignment lookup ----
+ * Maps a token kind to the augmented-assignment subcode stored in the
+ * flags field of a TN_NK_AUG_ASSIGN node, or -1 if the token is not an
+ * augmented assignment. Consulted after a target expression to decide
+ * whether what follows is `=`, `op=`, or neither. */
 
 static int p_aug_kind(int tok)
 {
@@ -215,26 +192,21 @@ static int p_aug_kind(int tok)
     }
 }
 
-/* ---- Real Expression Parser ----
- * Precedence-climbing recursive descent that follows Python's
- * operator precedence table from the language reference. Each
- * function handles one level of binding strength and recurses into
- * the next-higher level for its operands. The wrapping public
- * entry points are p_expr (allows top-level tuple folding via
- * trailing commas), p_expr_no_tuple (single expression, no comma
- * folding), and p_expr_no_in (single expression that stops at the
- * `in` keyword, used by for-loop targets where `in` is the
- * statement-level separator).
+/* ---- Expression parser ----
+ * Precedence-climbing recursive descent following Python's operator
+ * precedence table. Each function handles one binding level and
+ * recurses into the next-higher level for its operands. Entry points:
+ * p_expr (folds top-level tuples on trailing commas), p_expr_no_tuple
+ * (single expression, no comma folding), and p_expr_no_in (single
+ * expression stopping at the `in` keyword, for for-loop targets where
+ * `in` is the statement-level separator).
  *
- * Sitting two scope: full operator ladder, function calls with
- * positional and keyword arguments, attribute access, subscripts
- * including slicing, parenthesised expressions and tuples, list
- * displays, conditional expressions. Things we knowingly skip and
- * leave for future sittings: comprehensions, lambdas, walrus,
- * await, yield, starred unpacking targets, set and dict displays
- * beyond the empty literal. None of these appear in mainstream
- * Triton kernels and the rare kernel that uses one can be greeted
- * with a polite diagnostic when the day comes. */
+ * Handles the full operator ladder, calls with positional and keyword
+ * arguments, attribute access, subscripts including slicing, parens
+ * and tuples, list displays, conditional expressions. Not handled:
+ * comprehensions, lambdas, walrus, await, yield, starred unpacking
+ * targets, set and dict displays beyond the empty literal. None appear
+ * in mainstream Triton kernels; a kernel using one gets a diagnostic. */
 
 static uint32_t p_expr(tn_parse_t *P);
 static uint32_t p_expr_no_tuple(tn_parse_t *P);
@@ -304,13 +276,11 @@ static int p_tok_to_cmp(tn_parse_t *P, int *consume_extra)
     }
 }
 
-/* ---- Top: Tuple Folding ----
- * The top-level expression call lets a comma at the same level fold
- * its left and right operands into a tuple. This is what makes
- * `a, b = c, d` legal as an assignment and `return a, b` produce a
- * tuple-valued return. Sub-expressions inside parens, brackets, or
- * a function call argument list use the no-tuple variant so commas
- * there separate their respective constructs instead. */
+/* ---- Top: tuple folding ----
+ * A comma at the top level folds its operands into a tuple, which is
+ * what makes `a, b = c, d` legal and `return a, b` tuple-valued.
+ * Sub-expressions inside parens, brackets, or a call argument list use
+ * the no-tuple variant so commas there separate their own constructs. */
 
 static uint32_t p_expr(tn_parse_t *P)
 {
@@ -343,15 +313,13 @@ static uint32_t p_expr_no_tuple(tn_parse_t *P)
 
 static uint32_t p_expr_no_in(tn_parse_t *P)
 {
-    /* For-loop targets stop at the IN keyword. Routing through p_or
-     * or any level at or above the comparison level would let p_cmp
-     * happily eat the `in` as a comparison operator, leaving the
-     * `for` parser without its expected separator. So we bypass the
-     * comparison level entirely and start the ladder at p_bor, which
-     * is the level immediately below it. For-loop targets in
-     * Triton kernels are names, names with subscripts, or tuples
-     * thereof, which never contain comparisons anyway. We also fold
-     * top-level commas into a tuple so `for i, j in ...` works. */
+    /* For-loop targets stop at the IN keyword. Starting at or above the
+     * comparison level would let p_cmp eat the `in` as a comparison
+     * operator, leaving the `for` parser without its separator, so the
+     * ladder starts at p_bor, the level just below. For-loop targets in
+     * Triton kernels are names, subscripted names, or tuples of those,
+     * which never contain comparisons. Top-level commas fold into a
+     * tuple so `for i, j in ...` works. */
     uint32_t first = p_bor(P);
     if (!p_at(P, TN_TOK_COMMA)) return first;
 
@@ -368,9 +336,8 @@ static uint32_t p_expr_no_in(tn_parse_t *P)
     return node;
 }
 
-/* ---- Conditional Expression ----
- * x if cond else y. Right-associative. The if/else keywords are
- * already known to the lexer. */
+/* ---- Conditional expression ----
+ * x if cond else y. Right-associative. */
 
 static uint32_t p_ifexpr(tn_parse_t *P)
 {
@@ -394,11 +361,10 @@ static uint32_t p_ifexpr(tn_parse_t *P)
     return node;
 }
 
-/* ---- Boolean Operators ----
- * Left-associative `or` and `and`. We fold a chain of the same
- * operator into a single BoolOp with N operands, which is what
- * Python's own AST does and matches how short-circuit semantics
- * would naturally lower. */
+/* ---- Boolean operators ----
+ * Left-associative `or` and `and`. A chain of the same operator folds
+ * into a single BoolOp with N operands, matching Python's own AST and
+ * how short-circuit semantics lower. */
 
 static uint32_t p_or(tn_parse_t *P)
 {
@@ -438,10 +404,10 @@ static uint32_t p_and(tn_parse_t *P)
     return node;
 }
 
-/* ---- Boolean Not ----
- * Unary, right-associative. Note that this level sits BETWEEN `and`
- * and `cmp` in Python's precedence table, which is the only reason
- * `not a < b` parses as `not (a < b)` rather than `(not a) < b`. */
+/* ---- Boolean not ----
+ * Unary, right-associative. This level sits between `and` and `cmp`
+ * in Python's precedence table, which is why `not a < b` parses as
+ * `not (a < b)` rather than `(not a) < b`. */
 
 static uint32_t p_not(tn_parse_t *P)
 {
@@ -462,12 +428,11 @@ static uint32_t p_not(tn_parse_t *P)
 }
 
 /* ---- Comparisons ----
- * Python comparison chains (a < b < c) bind left-to-right but have
- * implicit AND semantics that we are not yet honouring. For sitting
- * two we accept a single comparison and treat any second one in a
- * chain as a fresh comparison on the previous result, which is
- * wrong semantically but at least parses to a well-formed tree. A
- * future sitting can lower chains to their proper N-ary form. */
+ * Python comparison chains (a < b < c) bind left-to-right with
+ * implicit AND semantics, not yet honoured here: a single comparison
+ * is accepted and any second in a chain is treated as a fresh
+ * comparison on the previous result. Semantically wrong but parses to
+ * a well-formed tree; chains can later lower to their N-ary form. */
 
 static uint32_t p_cmp(tn_parse_t *P)
 {
@@ -483,11 +448,10 @@ static uint32_t p_cmp(tn_parse_t *P)
     return p_binop(P, left, op, right, start, TN_NK_COMPARE);
 }
 
-/* ---- Bitwise / Shift / Arithmetic ----
- * All left-associative, all parse a chain of operands separated by
- * their own operator class. The pattern below is repeated four
- * times because the operator sets differ and inlining is clearer
- * than a parameterised helper that has to look up tokens. */
+/* ---- Bitwise / shift / arithmetic ----
+ * All left-associative, each parsing a chain of operands separated by
+ * its own operator class. The pattern repeats per level because the
+ * operator sets differ. */
 
 static uint32_t p_bor(tn_parse_t *P)
 {
@@ -575,8 +539,7 @@ static uint32_t p_muldiv(tn_parse_t *P)
 }
 
 /* ---- Unary +x -x ~x ----
- * Right-associative. Stacking is rare in real code but legal, so
- * we recurse into ourselves to handle it. */
+ * Right-associative. Stacking is rare but legal, handled by recursing. */
 
 static uint32_t p_unary(tn_parse_t *P)
 {
@@ -602,10 +565,9 @@ static uint32_t p_unary(tn_parse_t *P)
 }
 
 /* ---- Power ----
- * Right-associative: a ** b ** c parses as a ** (b ** c). The
- * idiosyncratic bit is that the LEFT operand of ** comes from a
- * unary-or-postfix expression (one above), but the RIGHT operand
- * comes from unary (one below), which lets `2 ** -3` work. */
+ * Right-associative: a ** b ** c parses as a ** (b ** c). The left
+ * operand of ** comes from a unary-or-postfix expression (one above),
+ * the right from unary (one below), which lets `2 ** -3` work. */
 
 static uint32_t p_pow(tn_parse_t *P)
 {
@@ -659,9 +621,9 @@ static uint32_t p_postfix(tn_parse_t *P)
 }
 
 /* Call arguments handle the mix of positional and keyword (name=value)
- * forms. We detect a keyword arg by looking ahead one token: if the
- * current is an IDENT and the next is ASSIGN, we treat it as
- * keyword. Otherwise it is a positional expression. */
+ * forms. A keyword arg is detected by one token of lookahead: IDENT
+ * followed by ASSIGN. Otherwise the argument is a positional
+ * expression. */
 
 static uint32_t p_call_args(tn_parse_t *P, uint32_t callee, uint32_t start)
 {
@@ -701,11 +663,11 @@ static uint32_t p_call_args(tn_parse_t *P, uint32_t callee, uint32_t start)
     return node;
 }
 
-/* Subscript handles both single-index `a[i]` and slicing `a[i:j:k]`,
- * plus comma-separated tuples inside brackets `a[i, j]` which Triton
- * uses extensively (offs_m[:, None] and friends). We parse each
- * comma-separated subscript element as either a slice or a regular
- * expression, then attach them all as children of SUBSCRIPT. */
+/* Subscript handles single-index `a[i]`, slicing `a[i:j:k]`, and the
+ * comma-separated tuples inside brackets `a[i, j]` that Triton uses
+ * extensively (offs_m[:, None] and friends). Each comma-separated
+ * element parses as a slice or a regular expression, all attached as
+ * children of SUBSCRIPT. */
 
 static uint32_t p_slice_or_expr(tn_parse_t *P)
 {
@@ -780,9 +742,9 @@ static uint32_t p_subscript(tn_parse_t *P, uint32_t base, uint32_t start)
 }
 
 /* ---- Atom ----
- * The base case of the precedence ladder: names, literals, paren
- * groups, tuples, list displays, and the bare names True / False /
- * None which the lexer hands us as their own keyword tokens. */
+ * Base case of the precedence ladder: names, literals, paren groups,
+ * tuples, list displays, and the bare names True / False / None, which
+ * the lexer emits as their own keyword tokens. */
 
 static uint32_t p_atom(tn_parse_t *P)
 {
@@ -804,10 +766,9 @@ static uint32_t p_atom(tn_parse_t *P)
                                                                 TN_LIT_STRING);
         p_advance(P);
         p_finish(P, node);
-        /* Adjacent string literals concatenate at the lexical level
-         * in Python. We accept the common form of two adjacent
-         * strings producing a single literal node, which lets
-         * docstring-ish multi-piece strings parse. */
+        /* Adjacent string literals concatenate at the lexical level in
+         * Python. Runs of adjacent strings collapse into a single
+         * literal node, so multi-piece strings parse. */
         while (p_at(P, TN_TOK_STRING)) {
             p_advance(P);
             P->nodes[node].tok_len = P->cur - P->nodes[node].tok_off;
@@ -869,9 +830,8 @@ static uint32_t p_atom(tn_parse_t *P)
         return node;
     }
 
-    /* Anything else is something this sitting does not yet handle.
-     * Produce an EXPR_SPAN as a graceful fallback so the parser
-     * continues making progress and a diagnostic is emitted. */
+    /* Anything else is unhandled. Emit a diagnostic and produce an
+     * EXPR_SPAN fallback so the parser keeps making progress. */
     p_err(P, 71, "unrecognised expression");
     uint32_t node = p_alloc(P, TN_NK_EXPR_SPAN);
     P->nodes[node].tok_off = start;
@@ -881,11 +841,9 @@ static uint32_t p_atom(tn_parse_t *P)
     return node;
 }
 
-/* p_expr_span is kept as a compatibility shim: anywhere the old
- * statement-level code asked for an opaque span, the new
- * tuple-folding p_expr is the right replacement. The two extra
- * flags it took (allow_comma, allow_in) are now expressed by
- * choosing between p_expr, p_expr_no_tuple, and p_expr_no_in. */
+/* Dispatches to the right expression entry point based on its
+ * allow_comma and allow_in flags: p_expr, p_expr_no_tuple, or
+ * p_expr_no_in. */
 
 static uint32_t p_expr_span(tn_parse_t *P, int allow_comma, int allow_in)
 {
@@ -894,11 +852,10 @@ static uint32_t p_expr_span(tn_parse_t *P, int allow_comma, int allow_in)
     return p_expr(P);
 }
 
-/* ---- Dotted Name ----
+/* ---- Dotted name ----
  * A run of identifiers connected by dots, used by import statements
- * and decorators. We record the first and last token and leave the
- * interior structure flat, because nothing downstream actually needs
- * to walk the dots one by one. */
+ * and decorators. The structure stays flat (first and last token
+ * only); nothing downstream walks the dots one by one. */
 
 static uint32_t p_dotted_name(tn_parse_t *P)
 {
@@ -925,12 +882,10 @@ static uint32_t p_dotted_name(tn_parse_t *P)
 }
 
 /* ---- Suite ----
- * A statement block as Python understands it: a NEWLINE, then an
- * INDENT, then one or more statements, then a DEDENT. The simple
- * single-line form (`if cond: pass`) is not supported in sitting
- * one because Triton kernels almost never use it and supporting it
- * properly requires the full statement grammar to be reachable in
- * two distinct contexts. */
+ * A statement block: NEWLINE, INDENT, one or more statements, DEDENT.
+ * The single-line form (`if cond: pass`) is not supported: Triton
+ * kernels rarely use it, and supporting it needs the full statement
+ * grammar reachable in two distinct contexts. */
 
 static uint32_t p_stmt(tn_parse_t *P);
 
@@ -958,7 +913,7 @@ static uint32_t p_suite(tn_parse_t *P)
     return node;
 }
 
-/* ---- Compound Statements ---- */
+/* ---- Compound statements ---- */
 
 static uint32_t p_if_stmt(tn_parse_t *P)
 {
@@ -1023,24 +978,22 @@ static uint32_t p_while_stmt(tn_parse_t *P)
     return node;
 }
 
-/* ---- Function Definition ----
- * The full Python form is `def NAME ( params ) [ -> ret ] : suite`,
- * where each parameter is `NAME [: anno] [= default]`. Triton
- * grants us the simplification that kernels are top-level functions
- * and that the only decorator we will see in practice is
- * @triton.jit. We still parse arbitrary decorators because the
- * grammar gets cleaner that way and the cost is a single dotted
- * name plus an optional parenthesised argument span. */
+/* ---- Function definition ----
+ * Full Python form: `def NAME ( params ) [ -> ret ] : suite`, where
+ * each parameter is `NAME [: anno] [= default]`. Arbitrary decorators
+ * are parsed (not just @triton.jit) because the grammar is cleaner
+ * that way and the cost is one dotted name plus an optional
+ * parenthesised argument span. */
 
 static uint32_t p_param(tn_parse_t *P)
 {
     uint32_t sb = P->kid_scratch_top;
     uint32_t node = p_alloc(P, TN_NK_PARAM);
 
-    /* Skip any leading '*' or '**' for var-positional and var-keyword
-     * parameters. We do not produce a separate AST shape for them in
-     * sitting one; they are rare in Triton kernels and the parser
-     * just records them as part of the param's token range. */
+    /* Skip leading '*' or '**' for var-positional and var-keyword
+     * parameters. No separate AST shape for them: they are rare in
+     * Triton kernels, so they are just recorded as part of the param's
+     * token range. */
     if (p_at(P, TN_TOK_STAR) || p_at(P, TN_TOK_DSTAR)) p_advance(P);
 
     if (!p_at(P, TN_TOK_IDENT)) {
@@ -1052,9 +1005,9 @@ static uint32_t p_param(tn_parse_t *P)
     p_advance(P);
 
     /* Optional `: anno` and `= default`. The default goes through the
-     * real expression parser so sema can read a constexpr literal
-     * (BLOCK_M: tl.constexpr = 128) out of it. The annotation stays
-     * an opaque span; sema only cares whether it mentions constexpr. */
+     * expression parser so sema can read a constexpr literal
+     * (BLOCK_M: tl.constexpr = 128) out of it. The annotation stays an
+     * opaque span; sema only cares whether it mentions constexpr. */
     if (p_at(P, TN_TOK_COLON)) {
         p_advance(P);
         p_push_kid(P, p_expr_span(P, 0, 1));
@@ -1112,9 +1065,8 @@ static uint32_t p_decorator(tn_parse_t *P)
     p_advance(P);  /* consume '@' */
     p_push_kid(P, p_dotted_name(P));
 
-    /* Optional call args. We parse them as an opaque expression
-     * span between the parens so the actual argument list waits
-     * its turn until the real expression parser shows up. */
+    /* Optional call args, parsed as an opaque expression span between
+     * the parens. */
     if (p_at(P, TN_TOK_LPAREN)) {
         p_advance(P);
         if (!p_at(P, TN_TOK_RPAREN)) {
@@ -1128,12 +1080,11 @@ static uint32_t p_decorator(tn_parse_t *P)
     return node;
 }
 
-/* ---- Import Statements ----
- * Two flavours: the bare `import X [as Y]` and the qualified
- * `from X import Y, Z` form. Both parse into the same broad shape
- * with the dotted name on one side and the imported names on the
- * other, and we keep them as separate node kinds because sema is
- * going to want to treat them differently. */
+/* ---- Import statements ----
+ * Two flavours: bare `import X [as Y]` and qualified
+ * `from X import Y, Z`. Both share the same broad shape (dotted name
+ * on one side, imported names on the other) but parse to separate node
+ * kinds, since sema treats them differently. */
 
 static uint32_t p_import_stmt(tn_parse_t *P)
 {
@@ -1181,12 +1132,11 @@ static uint32_t p_from_import_stmt(tn_parse_t *P)
     return node;
 }
 
-/* ---- Simple Statements ----
- * Assignment vs expression-statement is disambiguated by looking at
- * what follows the first expression: an `=` makes it an assignment,
- * an augmented-assign token makes it AUG_ASSIGN, and anything else
- * (newline, semi) means the expression was a statement in its own
- * right. We rely on the fact that p_expr_span stops at any
+/* ---- Simple statements ----
+ * Assignment vs expression-statement is disambiguated by what follows
+ * the first expression: `=` makes it an assignment, an augmented-assign
+ * token makes it AUG_ASSIGN, anything else (newline, semi) leaves it an
+ * expression statement. Relies on p_expr_span stopping at any
  * assignment token. */
 
 static uint32_t p_assign_or_expr_stmt(tn_parse_t *P)
@@ -1244,11 +1194,10 @@ static uint32_t p_return_stmt(tn_parse_t *P)
     return node;
 }
 
-/* ---- Top-Level Statement Dispatcher ----
- * Decides what kind of statement we are looking at and delegates to
- * the appropriate grammar function. Recovery on error advances at
- * least one token and skips to the next NEWLINE so we do not get
- * stuck on the same problem twice. */
+/* ---- Top-level statement dispatcher ----
+ * Decides the statement kind and delegates to the matching grammar
+ * function. Error recovery advances at least one token and skips to
+ * the next NEWLINE to avoid getting stuck on the same problem twice. */
 
 static uint32_t p_stmt(tn_parse_t *P)
 {
@@ -1273,15 +1222,14 @@ static uint32_t p_stmt(tn_parse_t *P)
     }
 }
 
-/* ---- Public Entry Points ---- */
+/* ---- Public entry points ---- */
 
 void tn_parse_init(tn_parse_t *P, const tn_lex_t *L)
 {
     memset(P, 0, sizeof(*P));
     P->lex = L;
-    /* Reserve node index 0 as a sentinel "no node" so that zero
-     * initialisation of a parent's kids[] does not accidentally
-     * point at a real child. */
+    /* Reserve node index 0 as a "no node" sentinel so zero-initialised
+     * kids[] entries do not point at a real child. */
     uint32_t sentinel = p_alloc(P, TN_NK_PASS);
     (void)sentinel;
 }
@@ -1304,10 +1252,9 @@ int tn_parse(tn_parse_t *P)
     return (P->num_errors > 0) ? BC_ERR_TRITON : BC_OK;
 }
 
-/* ---- AST Dump ----
- * Indented walk of the tree, one node per line. The point of this
- * is the human eye, not any downstream consumer, so the format is
- * deliberately readable rather than machine parseable. */
+/* ---- AST dump ----
+ * Indented walk of the tree, one node per line. For human reading,
+ * not machine parsing. */
 
 static const char *tn_nk_names[TN_NK_COUNT] = {
     "Module", "Import", "ImportFrom", "FuncDef", "Decorator",
@@ -1356,8 +1303,7 @@ static void tn_ast_dump_node(const tn_parse_t *P, uint32_t idx,
     fprintf(out, "%s", tn_nk_name(n->kind));
 
     /* For nodes that wrap a single named identity (function defs,
-     * params, modules, names), print the first identifier token so
-     * the dump is not just a row of bracket-faced node kinds. */
+     * params, modules, names), print the first identifier token. */
     if (n->kind == TN_NK_FUNCDEF || n->kind == TN_NK_PARAM ||
         n->kind == TN_NK_DOTTED_NAME || n->kind == TN_NK_NAME) {
         uint32_t tok = n->tok_off;

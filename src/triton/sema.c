@@ -1,30 +1,26 @@
-/* Triton frontend semantic analysis, sitting one.
+/* Triton frontend semantic analysis.
  *
- * The pass walks the AST the parser produces and, for every name
- * reference it can find, decides what that name actually means: a
- * parameter, a local variable, an imported module alias, or a tl.*
- * intrinsic. Anything that does not bind gets a polite diagnostic
- * and the pass keeps going, so a kernel with three unbound names
- * yields three messages rather than just the first.
+ * Walks the AST the parser produces and, for every name reference,
+ * decides what that name means: a parameter, a local variable, an
+ * imported module alias, or a tl.* intrinsic. Anything that does not
+ * bind gets a diagnostic and the pass keeps going, so a kernel with
+ * three unbound names yields three messages rather than just the first.
  *
- * What we deliberately defer to a later sitting: tile shape
- * inference, constexpr value propagation, type checking of
- * intrinsic call sites, error reporting for arity mismatches, and
- * the full module-resolution rules Python uses (we get away with a
- * single hardcoded set of import aliases because real Triton
- * kernels only use a handful). */
+ * Deferred: full constexpr value propagation, type checking of
+ * intrinsic call sites, arity-mismatch reporting, and the full Python
+ * module-resolution rules. A single hardcoded set of import aliases
+ * suffices because real Triton kernels only use a handful. */
 
 #include "triton.h"
 
 #include <string.h>
 #include <stdio.h>
 
-/* ---- Intrinsic Table ----
- * The hardcoded list of tl.* names sema knows about. New
- * intrinsics arrive as one entry per line. The lookup is a linear
- * scan, which is fine when the table is a hundred entries and the
- * kernel touches a dozen of them; if it ever gets unweildy a
- * sorted-binary-search lookup is the obvious upgrade. */
+/* ---- Intrinsic table ----
+ * Hardcoded list of tl.* names sema knows about, one entry per line.
+ * Lookup is a linear scan; fine at a hundred entries with a dozen
+ * touched per kernel. A sorted binary search is the upgrade if it
+ * ever grows unwieldy. */
 
 typedef struct {
     const char *name;
@@ -76,9 +72,8 @@ static const tn_intrinsic_entry_t tn_intrinsics[] = {
     {"device_assert",   TN_TLI_DEVICE_ASSERT, 0},
     {"device_print",    TN_TLI_DEVICE_PRINT,  0},
 
-    /* The constexpr marker is technically a type but we list it
-     * here because it shows up wherever a parameter annotation
-     * would. */
+    /* The constexpr marker is technically a type but listed here
+     * because it shows up wherever a parameter annotation would. */
     {"constexpr",       TN_TLI_CONSTEXPR,     1},
 
     /* Numeric types. */
@@ -111,8 +106,8 @@ static int tn_intrinsic_lookup(const char *name, uint32_t len, int *is_type)
     return TN_TLI_NONE;
 }
 
-/* Intrinsic name table, for the AST dump. The simple linear scan
- * over a known-small set is good enough; nothing here is hot. */
+/* Intrinsic name table, for the AST dump. Linear scan over a
+ * known-small set; nothing here is hot. */
 
 static const char *tn_intrinsic_names[TN_TLI_COUNT] = {0};
 
@@ -136,7 +131,7 @@ const char *tn_intrinsic_name(int id)
     return n ? n : "?";
 }
 
-/* ---- Symbol Kind Names (for diagnostics) ---- */
+/* ---- Symbol kind names (for diagnostics) ---- */
 
 static const char *tn_sym_kind_names[TN_SYM_KIND_COUNT] = {
     "unbound", "param", "local", "loopvar", "module",
@@ -149,12 +144,11 @@ const char *tn_sym_kind_name(int kind)
     return tn_sym_kind_names[kind];
 }
 
-/* ---- Scope Stack ----
- * Each scope tracks the range of symbol indices it owns. Lookup
- * walks scopes from innermost (top) to outermost (bottom). When we
- * pop a scope, the symbols belonging to it stay in the array but
- * become unreachable through lookup; this is cheaper than shrinking
- * and we never run out of slots in practice. */
+/* ---- Scope stack ----
+ * Each scope tracks the range of symbol indices it owns. Lookup walks
+ * scopes from innermost (top) to outermost (bottom). Popping a scope
+ * leaves its symbols in the array but unreachable through lookup;
+ * cheaper than shrinking, and slots never run out in practice. */
 
 static void s_push_scope(tn_sema_t *S)
 {
@@ -168,8 +162,8 @@ static void s_pop_scope(tn_sema_t *S)
 {
     if (S->num_scopes == 0) return;
     /* Roll back the symbol cursor so the outer scope can reuse the
-     * indices. This keeps symbol storage bounded over the whole
-     * program even for kernels with many local variables. */
+     * indices. Keeps symbol storage bounded over the whole program
+     * even for kernels with many local variables. */
     S->num_syms = S->scopes[S->num_scopes - 1].start;
     S->num_scopes--;
 }
@@ -189,11 +183,9 @@ static void s_bind(tn_sema_t *S, uint32_t name_off, uint16_t name_len,
     S->scopes[S->num_scopes - 1].end = S->num_syms;
 }
 
-/* Python builtins that real Triton kernels legitimately reach for,
- * even though kernels live in a heavily restricted Python subset.
- * `range` is the obvious one (every for-loop uses it), the type
- * constructors come up in conversions, and the small numeric
- * helpers appear here and there. Treated as a fixed table the
+/* Python builtins that Triton kernels reach for despite the
+ * restricted subset: `range` (every for-loop), the type constructors
+ * (conversions), and the small numeric helpers. A fixed table the
  * lookup consults before falling back to user-declared symbols. */
 
 typedef struct { const char *name; uint8_t kind; uint32_t aux; }
@@ -244,7 +236,7 @@ static const tn_sym_t *s_lookup(const tn_sema_t *S,
     return NULL;
 }
 
-/* ---- Diagnostic Helper ---- */
+/* ---- Diagnostic helper ---- */
 
 static void s_err(tn_sema_t *S, uint16_t eid, const tn_tok_t *t,
                   const char *msg)
@@ -257,7 +249,7 @@ static void s_err(tn_sema_t *S, uint16_t eid, const tn_tok_t *t,
     snprintf(e->msg, sizeof(e->msg), "%s", msg);
 }
 
-/* ---- Per-Node Annotation ---- */
+/* ---- Per-node annotation ---- */
 
 static void s_annotate(tn_sema_t *S, uint32_t node_idx,
                        int kind, uint32_t aux)
@@ -267,18 +259,18 @@ static void s_annotate(tn_sema_t *S, uint32_t node_idx,
     S->node_sym_aux[node_idx]  = aux;
 }
 
-/* ---- AST Walk ----
- * The walk handles each node kind it cares about and recurses into
- * children for everything else. Statements that introduce bindings
- * (Assign, For target, function parameters) call s_bind to add
- * symbols to the current scope; expressions that reference names
- * (Name, Attr-on-module) call s_lookup or the intrinsic table. */
+/* ---- AST walk ----
+ * Handles each node kind it cares about and recurses into children
+ * for everything else. Statements that introduce bindings (Assign,
+ * For target, function parameters) call s_bind to add symbols to the
+ * current scope; expressions that reference names (Name,
+ * Attr-on-module) call s_lookup or the intrinsic table. */
 
 static void s_walk(tn_sema_t *S, uint32_t node_idx);
 static int  s_const_int(const tn_sema_t *S, uint32_t node_idx);
 
 /* Read a child index regardless of inline/overflow storage. Mirrors
- * the parser's helper of the same shape. */
+ * the parser's helper of the same name. */
 
 static uint32_t s_kid(const tn_sema_t *S, uint32_t node_idx, uint32_t i)
 {
@@ -296,9 +288,8 @@ static uint32_t s_nkids(const tn_node_t *n)
            : n->num_kids;
 }
 
-/* Return a pointer to the source identifier text for a Name (or
- * other naming node) by walking from tok_off until we find an
- * IDENT token. */
+/* Pointer to the source identifier text for a Name (or other naming
+ * node), found by walking from tok_off to the first IDENT token. */
 
 static const tn_tok_t *s_name_tok(const tn_sema_t *S, uint32_t node_idx)
 {
@@ -323,10 +314,9 @@ static void s_handle_import(tn_sema_t *S, uint32_t node_idx)
 {
     const tn_parse_t *P = S->parser;
     const tn_node_t *n = &P->nodes[node_idx];
-    /* Walk the token range looking for IDENT runs separated by `.`
-     * and watching for `as` keywords. For each dotted-name we hit,
-     * decide whether the binding is the leading IDENT or the
-     * trailing alias after `as`. */
+    /* Walk the token range for IDENT runs separated by `.`, watching
+     * for `as` keywords. For each dotted name, the binding is either
+     * the leading IDENT or the trailing alias after `as`. */
     uint32_t t = n->tok_off;
     uint32_t end = n->tok_off + n->tok_len;
     while (t < end) {
@@ -373,8 +363,8 @@ static void s_handle_import(tn_sema_t *S, uint32_t node_idx)
             }
         }
 
-        /* Bind. The name we bind is either the leading IDENT of the
-         * dotted name (top-level alias) or the explicit `as` alias. */
+        /* Bind. The name is either the leading IDENT of the dotted
+         * name (top-level alias) or the explicit `as` alias. */
         const tn_tok_t *bind_tok = alias_tok
                                    ? alias_tok
                                    : &P->lex->tokens[first_ident];
@@ -430,9 +420,8 @@ static void s_resolve_attr(tn_sema_t *S, uint32_t node_idx)
                (uint32_t)id);
 }
 
-/* For an Assign, the LHS is a target. In sitting one we only handle
- * single-Name targets, which is what real Triton kernels overwhelmingly
- * use. Tuple unpacking (a, b = ...) gets the polite TODO treatment. */
+/* For an Assign, the LHS is a target. Single-Name and tuple targets
+ * are handled; subscript and attribute targets do not bind. */
 
 static void s_bind_assign_target(tn_sema_t *S, uint32_t target_idx,
                                   uint32_t assign_node)
@@ -445,9 +434,9 @@ static void s_bind_assign_target(tn_sema_t *S, uint32_t target_idx,
         const tn_tok_t *tk = s_name_tok(S, target_idx);
         if (!tk) return;
         /* Bind the local with aux = the assign node that introduced
-         * it. The lowering pass uses aux to find the BIR value the
-         * RHS produced, so this has to point at the declaring node
-         * even on a re-assign. */
+         * it. Lowering uses aux to find the BIR value the RHS
+         * produced, so it must point at the declaring node even on a
+         * re-assign. */
         if (!s_lookup(S, P->lex->src, tk->off, (uint16_t)tk->len)) {
             s_bind(S, tk->off, (uint16_t)tk->len,
                    TN_SYM_LOCAL, assign_node, assign_node);
@@ -512,10 +501,10 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
                     s_walk(S, s_kid(S, kid, j));
                 }
                 /* `: tl.constexpr = <int>` -> stash the value on the
-                 * param node so name refs and shape inference can
-                 * pick it up. Constexpr-ness comes from any annotation
-                 * child whose sema resolved to TN_TLI_CONSTEXPR; the
-                 * default is the last child if it's an int literal. */
+                 * param node so name refs and shape inference can pick
+                 * it up. Constexpr-ness comes from any annotation child
+                 * resolved to TN_TLI_CONSTEXPR; the default is the last
+                 * child if it is an int literal. */
                 int is_constexpr = 0;
                 int default_val = -1;
                 for (uint32_t j = 0; j < pkn; j++) {
@@ -567,9 +556,9 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
 
     case TN_NK_ASSIGN: {
         /* kids[0] = target, kids[1] = value. Walk value first so the
-         * RHS resolves against the OUTER scope (Python rebinds at
-         * the next statement boundary, not at the assignment
-         * point), then bind the target. */
+         * RHS resolves against the outer scope (Python rebinds at the
+         * next statement boundary, not at the assignment point), then
+         * bind the target. */
         uint32_t target = s_kid(S, node_idx, 0);
         uint32_t value  = (nk > 1) ? s_kid(S, node_idx, 1) : 0;
         if (value) s_walk(S, value);
@@ -578,8 +567,8 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
     }
 
     case TN_NK_AUG_ASSIGN:
-        /* a += b: a must already be bound (Python's rule), so we
-         * walk both sides without introducing a new binding. */
+        /* a += b: a must already be bound (Python's rule), so walk
+         * both sides without introducing a new binding. */
         for (uint32_t i = 0; i < nk; i++) {
             s_walk(S, s_kid(S, node_idx, i));
         }
@@ -629,9 +618,8 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
     case TN_NK_NAME: {
         const tn_tok_t *tk = s_name_tok(S, node_idx);
         if (!tk) return;
-        /* Check user-declared symbols first so a kernel can legitimately
-         * shadow a builtin if it wants to. Then fall back to the
-         * Python builtin table. */
+        /* Check user-declared symbols first so a kernel can shadow a
+         * builtin, then fall back to the Python builtin table. */
         const tn_sym_t *sym = s_lookup(S, P->lex->src,
                                        tk->off, (uint16_t)tk->len);
         if (sym) {
@@ -664,7 +652,7 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
 
     case TN_NK_ATTR:
         /* Walk the base first so its resolution is in place before
-         * we decide whether this Attr is an intrinsic reference. */
+         * deciding whether this Attr is an intrinsic reference. */
         for (uint32_t i = 0; i < nk; i++) {
             s_walk(S, s_kid(S, node_idx, i));
         }
@@ -680,11 +668,11 @@ static void s_walk(tn_sema_t *S, uint32_t node_idx)
     }
 }
 
-/* ---- Tile Shape Inference ----
- * Post-order walk over expression nodes. Separate from the sym-
- * resolution walk because that one is top-down for scoping. Constexpr
- * value propagation is deferred to a later sitting; constexpr params
- * in tile-size contexts yield dynamic dims (-1) for now. */
+/* ---- Tile shape inference ----
+ * Post-order walk over expression nodes. Separate from the symbol-
+ * resolution walk, which is top-down for scoping. Full constexpr value
+ * propagation is deferred; constexpr params in tile-size contexts yield
+ * dynamic dims (-1) for now. */
 
 static tn_shape_t s_scalar(int dtype)
 {
@@ -713,9 +701,9 @@ static tn_shape_t s_mat(int outer, int inner, int dtype)
     return sh;
 }
 
-/* Compile-time integer value, or -1 if dynamic. Resolves int
- * literals directly and follows Name refs to their constexpr param
- * default when one is recorded. */
+/* Compile-time integer value, or -1 if dynamic. Resolves int literals
+ * directly and follows Name refs to their constexpr param default when
+ * one is recorded. */
 
 static int s_const_int(const tn_sema_t *S, uint32_t node_idx)
 {
@@ -787,8 +775,8 @@ static int s_promote_dtype(int a, int b)
     int ra = s_dtype_rank(a);
     int rb = s_dtype_rank(b);
     if (ra != rb) return ra > rb ? a : b;
-    /* Equal rank: bf16 beats f16 (wider exponent), uint wins
-     * over signed (lowerer's float-vs-int dispatch is signedness-agnostic). */
+    /* Equal rank: bf16 beats f16 (wider exponent), uint beats signed
+     * (lowerer's float-vs-int dispatch is signedness-agnostic). */
     if (a == TN_TLI_BFLOAT16 || b == TN_TLI_BFLOAT16) return TN_TLI_BFLOAT16;
     if (a == TN_TLI_UINT8  || b == TN_TLI_UINT8)  return TN_TLI_UINT8;
     if (a == TN_TLI_UINT16 || b == TN_TLI_UINT16) return TN_TLI_UINT16;
@@ -1065,8 +1053,8 @@ static tn_shape_t s_call_shape(tn_sema_t *S, uint32_t call_idx, int id)
     }
 
     case TN_TLI_DOT: {
-        /* [M, K] @ [K, N] -> [M, N]; K is the kernel author's
-         * problem to get right. */
+        /* [M, K] @ [K, N] -> [M, N]; K matching is the kernel
+         * author's responsibility. */
         if (nk < 3) return s_scalar(0);
         tn_shape_t a = s_infer_expr(S, s_kid(S, call_idx, 1));
         tn_shape_t b = s_infer_expr(S, s_kid(S, call_idx, 2));
@@ -1087,8 +1075,8 @@ static tn_shape_t s_call_shape(tn_sema_t *S, uint32_t call_idx, int id)
 
     case TN_TLI_SUM: case TN_TLI_MAX: case TN_TLI_MIN:
     case TN_TLI_ARGMAX: case TN_TLI_ARGMIN: {
-        /* Reductions drop one axis. Resolving an axis= kw statically
-         * is for a later sitting; for now rank-2 collapses to vec[?]. */
+        /* Reductions drop one axis. Static axis= kw resolution is
+         * deferred; for now rank-2 collapses to vec[?]. */
         if (nk < 2) return s_scalar(0);
         tn_shape_t base = s_infer_expr(S, s_kid(S, call_idx, 1));
         if (base.rank == 0) return base;
@@ -1100,7 +1088,7 @@ static tn_shape_t s_call_shape(tn_sema_t *S, uint32_t call_idx, int id)
 
     case TN_TLI_LOAD: {
         /* Shape follows the pointer expr; pointee dtype defaults to
-         * f32 until we have a real pointer-type system. */
+         * f32 until a real pointer-type system exists. */
         if (nk < 2) return s_scalar(0);
         tn_shape_t base = s_infer_expr(S, s_kid(S, call_idx, 1));
         if (base.dtype == 0) base.dtype = TN_TLI_FLOAT32;
@@ -1377,10 +1365,9 @@ int tn_sema(tn_sema_t *S)
     s_push_scope(S);
 
     /* Python builtins are looked up via the tn_py_builtins table at
-     * Name resolution time, not pre-seeded into the symbol table.
-     * The table-based lookup avoids the awkwardness of fabricating
-     * source-buffer offsets for names that do not appear in the
-     * input. See s_lookup_builtin above. */
+     * Name resolution time, not pre-seeded into the symbol table. This
+     * avoids fabricating source-buffer offsets for names that do not
+     * appear in the input. See s_lookup_builtin above. */
 
     if (S->parser->root != 0) {
         s_walk(S, S->parser->root);
@@ -1391,12 +1378,11 @@ int tn_sema(tn_sema_t *S)
     return (S->num_errors > 0) ? BC_ERR_TRITON : BC_OK;
 }
 
-/* ---- AST + Annotation Dump ----
- * Same shape as the parser's tn_ast_dump but adds the resolution
- * info next to every Name and intrinsic-bound Attr. The point is
- * the human reader: a kernel author can run --triton --sema and
- * confirm at a glance that every name they wrote actually bound to
- * what they expected. */
+/* ---- AST + annotation dump ----
+ * Same shape as the parser's tn_ast_dump but adds resolution info next
+ * to every Name and intrinsic-bound Attr. A kernel author can run
+ * --triton --sema and confirm that every name bound to what they
+ * expected. */
 
 static void s_dump_node(const tn_sema_t *S, uint32_t idx,
                         int depth, FILE *out)

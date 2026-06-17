@@ -1,34 +1,27 @@
 /* Triton frontend BIR lowering.
  *
  * Walks the sema-annotated AST and produces BIR, the same target the
- * CUDA frontend lowers into. The whole point: once a Triton kernel
- * reaches BIR, every backend (AMD, NVIDIA, Tensix, Metal, Intel, and
- * now plain x86 CPU) eats it without caring which Python decorator was
- * sitting at the top of the file.
+ * CUDA frontend lowers into. Once a Triton kernel reaches BIR, every
+ * backend (AMD, NVIDIA, Tensix, Metal, Intel, x86 CPU) consumes it.
  *
- * This started life as a humble "sitting one" that could barely add two
- * scalars together. It has since grown teeth. What works now:
+ * Handled:
  *   - Module skeleton: each @triton.jit FuncDef becomes a __global__
- *     function with one BIR_PARAM per parameter and a tidy BIR_RET.
- *   - Statements: Assign, ExprStmt, Return, AugAssign, and the big one,
- *     `for k in range(...)` as a real counted loop.
- *   - Scalar expressions: int/float literals, params and locals, the
- *     usual BinOp arithmetic, unary negation, comparisons, and the
- *     scalar intrinsics (program_id, num_programs, arange, cdiv).
+ *     function with one BIR_PARAM per parameter and a BIR_RET.
+ *   - Statements: Assign, ExprStmt, Return, AugAssign, and
+ *     `for k in range(...)` as a counted loop.
+ *   - Scalar expressions: int/float literals, params and locals, BinOp
+ *     arithmetic, unary negation, comparisons, and the scalar
+ *     intrinsics (program_id, num_programs, arange, cdiv).
  *   - Tiles: 2-D shapes from [:,None]/[None,:] broadcasts, tl.load,
  *     tl.store, tl.zeros, and tl.dot. A kernel with rank-2 tiles
- *     materialises and unrolls them, and a K-loop sweeps an arbitrary
- *     contraction. Which is to say: a Triton matmul compiles and runs
- *     on a laptop CPU with no GPU and no LLVM in sight. Woop woop.
+ *     materialises and unrolls them; a K-loop sweeps the contraction.
  *
- * Still on the bench: multi-block grids (one block per call for now),
- * tl.load mask=, while loops, if/else, and rank-2 reductions. They will
- * get their turn.
+ * Not yet: multi-block grids (one block per call), tl.load mask=, while
+ * loops, if/else, rank-2 reductions.
  *
- * Type policy is still cheerfully crude: a param whose name ends in
- * _ptr is f32*, a tl.constexpr param is i32, everything else is i32,
- * and float literals are f32. Real use-site type inference is a job for
- * another day. */
+ * Type policy is crude: a param whose name ends in _ptr is f32*, a
+ * tl.constexpr param is i32, everything else is i32, float literals are
+ * f32. Use-site type inference comes later. */
 
 #include "triton.h"
 
@@ -36,7 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* ---- Helpers: Diagnostic ---- */
+/* ---- Helpers: diagnostic ---- */
 
 static void l_err(tn_lower_t *L, uint16_t eid,
                   const tn_tok_t *t, const char *msg)
@@ -58,7 +51,7 @@ static const tn_tok_t *l_tok(tn_lower_t *L, uint32_t node_idx)
     return &P->lex->tokens[t];
 }
 
-/* ---- Helpers: BIR Construction ---- */
+/* ---- Helpers: BIR construction ---- */
 
 static uint32_t l_kid(const tn_lower_t *L, uint32_t node_idx, uint32_t i)
 {
@@ -79,8 +72,8 @@ static uint32_t l_nkids(const tn_node_t *n)
 /* Emit a BIR instruction with the given opcode, subop, and result
  * type. Operands are appended via l_op afterwards. Returns the BIR
  * value reference for the instruction's result, or BIR_VAL_NONE on
- * overflow. The block's instruction count is bumped so block
- * scanners pick up the new instruction immediately. */
+ * overflow. The block's instruction count is bumped so block scanners
+ * pick up the new instruction immediately. */
 
 static uint32_t l_emit(tn_lower_t *L, int op, uint32_t type, int subop)
 {
@@ -100,8 +93,8 @@ static uint32_t l_emit(tn_lower_t *L, int op, uint32_t type, int subop)
 }
 
 /* Append an operand to the last-emitted instruction. Inline up to
- * BIR_OPERANDS_INLINE slots; sitting one does not handle overflow
- * because the operand counts we encounter stay well below six. */
+ * BIR_OPERANDS_INLINE slots; overflow is not handled because operand
+ * counts here stay well below six. */
 
 static void l_op(tn_lower_t *L, uint32_t inst_val, uint32_t operand)
 {
@@ -115,9 +108,7 @@ static void l_op(tn_lower_t *L, uint32_t inst_val, uint32_t operand)
     }
 }
 
-/* Look up or create a new BIR block as a child of the current
- * function. Sitting one only creates the entry block, but the API
- * keeps the door open for sittings that add control flow. */
+/* Create a new BIR block as a child of the current function. */
 
 static uint32_t l_new_block(tn_lower_t *L)
 {
@@ -134,7 +125,7 @@ static uint32_t l_new_block(tn_lower_t *L)
     return idx;
 }
 
-/* ---- Type Bootstrap ---- */
+/* ---- Type bootstrap ---- */
 
 static void l_types_init(tn_lower_t *L)
 {
@@ -146,13 +137,12 @@ static void l_types_init(tn_lower_t *L)
     L->t_ptr_f32 = bir_type_ptr(M, L->t_f32, BIR_AS_GLOBAL);
 }
 
-/* ---- Literal Parsing ----
- * The token text for a literal is whatever the source spelled.
- * For sitting one we accept the common forms: decimal integers
- * with optional underscores, hex / octal / binary integers with
- * the corresponding prefix, and simple floats with optional
- * exponent. Anything fancier (imaginary suffix, big literals
- * that overflow int64) falls back to zero. */
+/* ---- Literal parsing ----
+ * The token text for a literal is whatever the source spelled. Accepts
+ * decimal integers with optional underscores, hex/octal/binary integers
+ * with the corresponding prefix, and floats with optional exponent.
+ * Anything fancier (imaginary suffix, literals that overflow int64)
+ * falls back to zero. */
 
 static int64_t l_parse_int(const char *s, uint32_t len)
 {
@@ -182,9 +172,8 @@ static int64_t l_parse_int(const char *s, uint32_t len)
 
 static double l_parse_float(const char *s, uint32_t len)
 {
-    /* Use a small stack buffer to feed strtod a null-terminated
-     * string without copying through malloc. Anything longer than
-     * the buffer is highly unusual and gets zero by default. */
+    /* Small stack buffer to feed strtod a null-terminated string
+     * without malloc. Anything longer than the buffer gets zero. */
     char buf[64];
     uint32_t n = len < 63 ? len : 63;
     memcpy(buf, s, n);
@@ -198,20 +187,18 @@ static double l_parse_float(const char *s, uint32_t len)
     return strtod(buf, NULL);
 }
 
-/* ---- Expression Lowering ----
- * Each expression node either yields a BIR value or, for the
- * constructs sitting one does not yet handle, emits a diagnostic
- * and returns BIR_VAL_NONE. The walker is recursive over child
- * nodes; the recursion is shallow because Triton kernels are
- * shallow trees by design. */
+/* ---- Expression lowering ----
+ * Each expression node either yields a BIR value or, for constructs not
+ * yet handled, emits a diagnostic and returns BIR_VAL_NONE. The walker
+ * recurses over child nodes; recursion stays shallow because Triton
+ * kernels are shallow trees. */
 
 static uint32_t l_expr(tn_lower_t *L, uint32_t node_idx);
 
-/* Refuse to lower expressions whose inferred shape is rank-2 or
- * higher. The shape annotation comes from sema; what's missing is
- * the matrix-instruction codegen (MFMA on AMD, mma.sync on NVIDIA).
- * Until those exist, lowering a rank-2 tile would produce silent
- * wrong code. */
+/* Refuse to lower expressions whose inferred shape is rank-2 or higher.
+ * The shape annotation comes from sema; matrix-instruction codegen
+ * (MFMA on AMD, mma.sync on NVIDIA) does not yet exist, so lowering a
+ * rank-2 tile would produce silent wrong code. */
 
 static int l_shape_supported(tn_lower_t *L, uint32_t node_idx)
 {
@@ -264,11 +251,11 @@ static uint32_t l_name(tn_lower_t *L, uint32_t node_idx)
 
     switch (kind) {
     case TN_SYM_PARAM: {
-        /* The parameter's BIR value was emitted when we lowered the
-         * function header. Look it up by its position relative to
-         * cur_param_base. Constexpr params with a default folded into
-         * a literal during the header (no BIR_PARAM was emitted), so
-         * we hand back the constant directly. */
+        /* The parameter's BIR value was emitted when the function
+         * header was lowered. Look it up by its position relative to
+         * cur_param_base. Constexpr params with a default folded into a
+         * literal during the header (no BIR_PARAM emitted), so the
+         * constant is handed back directly. */
         if (aux < 32 && L->param_remap[aux] == 0xFF) {
             return BIR_MAKE_CONST(bir_const_int(L->bir, L->t_i32,
                                                 L->param_const[aux]));
@@ -293,9 +280,8 @@ static uint32_t l_name(tn_lower_t *L, uint32_t node_idx)
     case TN_SYM_INTRINSIC:
     case TN_SYM_TYPE:
         /* Bare module / intrinsic / type names should not appear as
-         * value expressions on their own; if they do it usually
-         * means the kernel author wrote something we do not yet
-         * lower. Report and continue. */
+         * value expressions on their own; usually means the kernel
+         * uses something not yet lowered. Report and continue. */
         l_err(L, 92, l_tok(L, node_idx),
               "bare module or intrinsic name in expression position");
         return BIR_VAL_NONE;
@@ -305,11 +291,10 @@ static uint32_t l_name(tn_lower_t *L, uint32_t node_idx)
     }
 }
 
-/* Look up the BIR type of a value reference. For constants we read
- * the type out of the consts pool; for instructions we read it from
- * the instruction's result type slot. Sitting two needs this so
- * BinOp can dispatch between integer and floating-point operations
- * and so pointer-plus-integer can lower as a GEP. */
+/* Look up the BIR type of a value reference. Constants read the type
+ * from the consts pool; instructions read it from the result type slot.
+ * Lets BinOp dispatch between integer and floating-point operations and
+ * lets pointer-plus-integer lower as a GEP. */
 
 static uint32_t l_val_type(const tn_lower_t *L, uint32_t v)
 {
@@ -637,13 +622,13 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
                                  int intrinsic_id)
 {
     uint32_t nk = l_nkids(&L->parser->nodes[call_idx]);
-    /* kids[0] is the callee (the Attr). Real positional args start
-     * at index 1. Keyword args appear as TN_NK_KEYWORD nodes. */
+    /* kids[0] is the callee (the Attr). Positional args start at index
+     * 1. Keyword args appear as TN_NK_KEYWORD nodes. */
     switch (intrinsic_id) {
     case TN_TLI_PROGRAM_ID: {
-        /* tl.program_id(axis=N) -> BIR_BLOCK_ID with subop=N. The
-         * axis can be positional or keyword; either way we look for
-         * an integer literal child to read the value. */
+        /* tl.program_id(axis=N) -> BIR_BLOCK_ID with subop=N. The axis
+         * is positional or keyword; read the value from an integer
+         * literal child either way. */
         int axis = 0;
         for (uint32_t i = 1; i < nk; i++) {
             uint32_t kid = l_kid(L, call_idx, i);
@@ -686,18 +671,16 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
 
     case TN_TLI_ARANGE: {
         /* tl.arange(start, stop) produces the lane-relative tile of
-         * indices. The Triton-to-CUDA mapping every backend already
-         * understands is "one thread per lane", so each thread
-         * sees its own lane id. Lower as BIR_THREAD_ID(0). We
-         * ignore the start/stop values for sitting two; they
-         * become tile-shape metadata in a later sitting. */
+         * indices. The Triton-to-CUDA mapping is one thread per lane,
+         * so each thread sees its own lane id; lower as
+         * BIR_THREAD_ID(0). start/stop are ignored here and become
+         * tile-shape metadata later. */
         return l_emit(L, BIR_THREAD_ID, L->t_i32, 0);
     }
 
     case TN_TLI_LOAD: {
-        /* tl.load(ptr, mask=..., other=...). Sitting two does not
-         * honour the mask; it is recorded in a diagnostic so the
-         * kernel author knows the lowering is conservative. */
+        /* tl.load(ptr, mask=..., other=...). The mask is not honoured;
+         * a diagnostic records that the lowering is conservative. */
         uint32_t ptr_val = BIR_VAL_NONE;
         int saw_mask = 0;
         for (uint32_t i = 1; i < nk; i++) {
@@ -753,10 +736,9 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
     }
 
     case TN_TLI_CDIV: {
-        /* cdiv(a, b) is the ceiling division (a + b - 1) / b. We
-         * inline that arithmetic rather than introduce a dedicated
-         * BIR op, on the basis that the existing optimisation
-         * passes happily fold it. */
+        /* cdiv(a, b) is ceiling division (a + b - 1) / b. Inlined
+         * rather than given a dedicated BIR op; the existing
+         * optimisation passes fold it. */
         if (nk < 3) return BIR_VAL_NONE;
         uint32_t a = l_expr(L, l_kid(L, call_idx, 1));
         uint32_t b = l_expr(L, l_kid(L, call_idx, 2));
@@ -789,9 +771,8 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
     case TN_TLI_FDIV:    return l_math2(L, call_idx, BIR_FDIV);
 
     default: {
-        /* Everything else waits its turn. The diagnostic includes
-         * the intrinsic name so the kernel author can tell at a
-         * glance what is missing. */
+        /* Everything else is not yet lowered. The diagnostic includes
+         * the intrinsic name so the missing one is clear. */
         char msg[128];
         snprintf(msg, sizeof(msg),
                  "intrinsic tl.%s not yet lowered in sitting one",
@@ -804,14 +785,13 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
 
 /* ---- Rank-2 / tile materialisation (the tl.dot path) ----
  *
- * The moment a kernel touches a 2-D tile we stop pretending each lane is
- * a thread and just unroll the lot. Block sizes are compile-time
- * constants, so a tile is nothing fancier than an array of per-element
- * BIR values: arange hands back literal indices, [:,None]/[None,:]
- * reshape, the usual ops fan out with broadcasting, and tl.dot is a flat
- * sum of products. It all runs on one thread, since nothing in here ever
- * asks what thread_id is. Tiles are capped at TN_TILE_MAX elements;
- * past that we bail rather than emit a wall of instructions. */
+ * Once a kernel touches a 2-D tile, the lane-as-thread model is dropped
+ * and the tile is unrolled. Block sizes are compile-time constants, so a
+ * tile is an array of per-element BIR values: arange yields literal
+ * indices, [:,None]/[None,:] reshape, ops fan out with broadcasting, and
+ * tl.dot is a flat sum of products. It runs on one thread, since nothing
+ * here reads thread_id. Tiles are capped at TN_TILE_MAX elements; past
+ * that, lowering bails rather than emit a wall of instructions. */
 
 static int l_tile(tn_lower_t *L, uint32_t node, int *out);
 
@@ -871,7 +851,7 @@ static int l_tile(tn_lower_t *L, uint32_t node, int *out){
     }
     case TN_NK_SUBSCRIPT: {
         /* offs[:,None] / offs[None,:]: same elements as the child vec,
-         * reshaped to the column/row shape sema already inferred. */
+         * reshaped to the column/row shape sema inferred. */
         int ci; if (l_tile(L, l_kid(L,node,0), &ci)) return -1;
         int ne = l_tile_elems(&L->tile_pool[ci]);
         int ti = l_tile_alloc(L); if (ti<0) return -1;
@@ -997,7 +977,7 @@ static void l_store_tile(tn_lower_t *L, uint32_t call_node){
 }
 
 /* Does any node in this subtree carry a rank-2 shape? Decides whether
- * the kernel uses the tile (materialize/unroll) lowering path. */
+ * the kernel uses the tile (materialise/unroll) lowering path. */
 static int l_subtree_has_rank2(tn_lower_t *L, uint32_t node){
     if (node==0 || node>=L->parser->num_nodes) return 0;
     if (L->sema->node_shape[node].rank >= 2) return 1;
@@ -1056,14 +1036,14 @@ static uint32_t l_expr(tn_lower_t *L, uint32_t node_idx)
     }
 }
 
-/* ---- Statement Lowering ---- */
+/* ---- Statement lowering ---- */
 
 static void l_stmt(tn_lower_t *L, uint32_t node_idx);
 
 static void l_assign(tn_lower_t *L, uint32_t node_idx)
 {
     uint32_t value_node = l_kid(L, node_idx, 1);
-    /* In a tile kernel, a rank>=1 RHS materializes into a tile bound to
+    /* In a tile kernel, a rank>=1 RHS materialises into a tile bound to
      * this Assign node; Name references resolve through node_tile. */
     if (L->tile_mode && L->sema->node_shape[value_node].rank >= 1){
         int ti;
@@ -1094,14 +1074,13 @@ static void l_block(tn_lower_t *L, uint32_t node_idx)
 
 /* Lower `for k in range(start, stop, step)` as a counted loop.
  *
- * The counter is a phi, built by hand, not an alloca. The tidy move
- * would be to stash k in an alloca and let mem2reg lift it to a phi,
- * the way the CUDA loops do it. But mem2reg takes one look at this loop,
- * decides the counter never changes, folds it to its start value, and
- * the loop runs forever. Emitting the phi ourselves dodges that, and the
- * backends already know how to copy a phi's value in along each edge.
- * Bodies are straight-line only for now, which is all the matmul K-loop
- * asks for. */
+ * The counter is a phi built by hand, not an alloca. Stashing k in an
+ * alloca and letting mem2reg lift it to a phi (as the CUDA loops do)
+ * fails here: mem2reg decides the counter never changes, folds it to its
+ * start value, and the loop runs forever. Emitting the phi directly
+ * avoids that, and the backends already copy a phi's value in along each
+ * edge. Bodies are straight-line only, which is all the matmul K-loop
+ * needs. */
 static void l_for(tn_lower_t *L, uint32_t node_idx)
 {
     uint32_t nk = l_nkids(&L->parser->nodes[node_idx]);
@@ -1117,7 +1096,7 @@ static void l_for(tn_lower_t *L, uint32_t node_idx)
     else { start=l_expr(L,l_kid(L,iter,1)); stop=l_expr(L,l_kid(L,iter,2)); step=l_expr(L,l_kid(L,iter,3)); }
     if (start==BIR_VAL_NONE||stop==BIR_VAL_NONE||step==BIR_VAL_NONE) return;
 
-    /* Counter is a real phi (no alloca), so mem2reg can't fold it; the
+    /* Counter is a real phi (no alloca), so mem2reg cannot fold it; the
      * backend's phi edge-copies carry start in on the preheader edge and
      * the increment in on the back-edge. */
     uint32_t pre = L->cur_block;
@@ -1154,11 +1133,9 @@ static void l_stmt(tn_lower_t *L, uint32_t node_idx)
         if (l_nkids(n) > 0) {
             uint32_t expr = l_kid(L, node_idx, 0);
             const tn_node_t *en = &L->parser->nodes[expr];
-            /* Bare string expression as a statement is a Python
-             * docstring. Triton kernels routinely open with one
-             * and they have no runtime meaning, so we eat them
-             * silently rather than complain about strings being
-             * unlowerable. */
+            /* Bare string expression statement is a Python docstring.
+             * Triton kernels routinely open with one; they have no
+             * runtime meaning, so skip them silently. */
             if (en->kind == TN_NK_LITERAL && en->flags == TN_LIT_STRING) {
                 break;
             }
@@ -1179,17 +1156,15 @@ static void l_stmt(tn_lower_t *L, uint32_t node_idx)
     case TN_NK_PASS:
     case TN_NK_BREAK:
     case TN_NK_CONTINUE:
-        /* No-ops at the BIR level until SSA-flavoured loops show up
-         * in sitting three. */
+        /* No-ops at the BIR level until SSA-flavoured loops exist. */
         break;
     case TN_NK_BLOCK:    l_block(L, node_idx);    break;
     case TN_NK_AUG_ASSIGN: {
-        /* Lower `x op= rhs` as `x = x op rhs`. We need to find the
-         * declaring node of x so the resulting BIR value replaces
-         * the old one in the node_val map. Only single-Name
-         * targets are handled here; sitting three takes on
-         * attribute and subscript targets, which require seperate
-         * machinery to address the LHS slot rather than read it. */
+        /* Lower `x op= rhs` as `x = x op rhs`. Find the declaring node
+         * of x so the resulting BIR value replaces the old one in the
+         * node_val map. Only single-Name targets are handled; attribute
+         * and subscript targets need separate machinery to address the
+         * LHS slot rather than read it. */
         if (l_nkids(n) < 2) break;
         uint32_t target_idx = l_kid(L, node_idx, 0);
         uint32_t rhs_idx    = l_kid(L, node_idx, 1);
@@ -1200,8 +1175,9 @@ static void l_stmt(tn_lower_t *L, uint32_t node_idx)
             break;
         }
 
-        /* Tile accumulator: acc += <tile>. acc is scratch-backed, so this
-         * is a read-add-write per element and persists across the loop. */
+        /* Tile accumulator: acc += <tile>. acc is scratch-backed, so
+         * this is read-add-write per element and persists across the
+         * loop. */
         if (L->tile_mode && n->flags == TN_AUG_ADD){
             int tk=L->sema->node_sym_kind[target_idx];
             uint32_t aux=L->sema->node_sym_aux[target_idx];
@@ -1227,10 +1203,9 @@ static void l_stmt(tn_lower_t *L, uint32_t node_idx)
         uint32_t rhs_val = l_expr(L, rhs_idx);
         if (old_val == BIR_VAL_NONE || rhs_val == BIR_VAL_NONE) break;
 
-        /* Map TN_AUG_* onto TN_BOP_* so we can reuse l_bop_int /
-         * l_bop_float. The codes happen to line up for the common
-         * arithmetic ops because we deliberately chose the same
-         * order. */
+        /* Map TN_AUG_* onto TN_BOP_* to reuse l_bop_int / l_bop_float.
+         * The codes line up for the common arithmetic ops because the
+         * enums share the same order. */
         int bop = -1;
         switch (n->flags) {
         case TN_AUG_ADD:  bop = TN_BOP_ADD;  break;
@@ -1290,7 +1265,7 @@ static void l_stmt(tn_lower_t *L, uint32_t node_idx)
     }
 }
 
-/* ---- Function Lowering ---- */
+/* ---- Function lowering ---- */
 
 static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
 {
@@ -1313,11 +1288,11 @@ static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
     }
 
     /* Collect parameters: each PARAM child becomes a BIR_PARAM unless
-     * it is a constexpr-with-default, in which case it gets folded to a
-     * literal at lower time and dropped from the runtime signature.
-     * param_remap maps source-position to BIR-position; the source-
-     * position matches the kid index because params come before the
-     * body, so sema's TN_SYM_PARAM aux lands in the same slot. */
+     * it is a constexpr-with-default, which is folded to a literal at
+     * lower time and dropped from the runtime signature. param_remap
+     * maps source-position to BIR-position; source-position matches the
+     * kid index because params come before the body, so sema's
+     * TN_SYM_PARAM aux lands in the same slot. */
     uint32_t nk = l_nkids(n);
     uint32_t param_types[32];
     int num_params = 0;
@@ -1328,13 +1303,10 @@ static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
     for (uint32_t i = 0; i < nk && i < 32 && num_params < 32; i++) {
         uint32_t kid = l_kid(L, node_idx, i);
         if (P->nodes[kid].kind == TN_NK_PARAM) {
-            /* Sitting two default: a parameter whose name ends in
-             * "_ptr" or starts with the conventional `x_/y_/out_`
-             * gets f32*, scalar params with a tl.constexpr
-             * annotation stay as i32, and everything else gets
-             * f32* on the assumption that Triton kernels are
-             * mostly floating-point. A real type-inference pass
-             * arrives in sitting three. */
+            /* Default type policy: a parameter whose name ends in
+             * "_ptr" gets f32*, a tl.constexpr-annotated scalar stays
+             * i32, everything else is treated as i32. Real type
+             * inference comes later. */
             uint32_t pname_tok = P->nodes[kid].tok_off;
             while (pname_tok < P->lex->num_tokens &&
                    P->lex->tokens[pname_tok].kind != TN_TOK_IDENT)
@@ -1405,7 +1377,7 @@ static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
     for (uint32_t i = 0; i < nk; i++) {
         uint32_t kid = l_kid(L, node_idx, i);
         if (P->nodes[kid].kind == TN_NK_BLOCK) {
-            /* A kernel with any rank-2 tile uses the materialize/unroll
+            /* A kernel with any rank-2 tile uses the materialise/unroll
              * path for its whole body; otherwise the scalar lane path. */
             L->tile_mode = l_subtree_has_rank2(L, kid);
             L->n_tiles = 0;
@@ -1431,10 +1403,9 @@ static void l_funcdef(tn_lower_t *L, uint32_t node_idx, int is_kernel)
         F->total_insts += M->blocks[F->first_block + bi].num_insts;
 }
 
-/* Look at the decorators that precede a FuncDef in the AST and
- * decide whether the function is annotated @triton.jit. Sitting
- * one only lowers JIT-decorated functions; everything else is
- * skipped because we have no reason to compile it. */
+/* Inspect the decorators preceding a FuncDef and decide whether the
+ * function is annotated @triton.jit. Only JIT-decorated functions are
+ * lowered; everything else is skipped. */
 
 static int l_is_jit(const tn_lower_t *L, uint32_t module_idx, uint32_t func_pos)
 {
@@ -1443,9 +1414,9 @@ static int l_is_jit(const tn_lower_t *L, uint32_t module_idx, uint32_t func_pos)
         uint32_t sib = l_kid(L, module_idx, func_pos - back);
         const tn_node_t *sn = &L->parser->nodes[sib];
         if (sn->kind == TN_NK_DECORATOR) {
-            /* The first child is a DottedName. If it contains
-             * `triton.jit` we consider it a kernel; we accept the
-             * bare `jit` form too in case anyone aliased. */
+            /* The first child is a DottedName. Containing `triton.jit`
+             * marks a kernel; the bare `jit` form is accepted too in
+             * case of an alias. */
             if (l_nkids(sn) > 0) {
                 uint32_t dn = l_kid(L, sib, 0);
                 const tn_node_t *dnn = &L->parser->nodes[dn];
@@ -1486,9 +1457,8 @@ int tn_lower(tn_lower_t *L)
     l_types_init(L);
 
     /* Walk the module's top-level statements and lower each FuncDef.
-     * Anything else (imports, decorators on their own, expression
-     * statements) is ignored by lowering, since they do not produce
-     * machine code. */
+     * Anything else (imports, bare decorators, expression statements)
+     * is ignored: it produces no machine code. */
     uint32_t root = L->parser->root;
     if (root == 0 || root >= L->parser->num_nodes) return BC_OK;
     uint32_t nk = l_nkids(&L->parser->nodes[root]);
