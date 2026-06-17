@@ -5,35 +5,20 @@
 #include "bir.h"
 #include <stdio.h>
 
-/* Triton frontend, by which we mean the part of BarraCUDA that accepts
- * the dialect of Python that OpenAI saw fit to bolt a GPU compiler onto
- * and translates it into BIR, the same way our existing frontend
- * translates CUDA. Triton is the lingua franca of contemporary AI
- * kernel work, and the cost of admission to that conversation is that
- * we now have to parse Python, a language which decided that
- * whitespace ought to be load bearing and that the resulting world
- * would be a better place. We disagree, but we are not in charge of
- * what the world has settled on, and so here we are.
+/* Triton frontend: accepts the Triton dialect of Python and translates
+ * it into BIR, the same way the CUDA frontend translates CUDA.
  *
- * The frontend is deliberately self contained. We do not embed CPython,
- * we do not call out to a Python process at build time, and we do not
- * vendor in any third party Python parser. We write our own tokenizer
- * and our own recursive descent parser in C99, in the same shape as the
- * existing C99 frontend, because that is what every other part of the
- * compiler does and the project's character is consistency. The subset
- * of Python that Triton accepts is small enough to make this tractable:
- * no classes inside kernels, no exceptions, no generators, no async,
- * no lambdas, no decorators other than @triton.jit, and almost none of
- * Python's enormous standard library. What survives is closer to
- * ALGOL with colons than to Python the language. */
+ * Own tokeniser and recursive descent parser, in the same shape as the
+ * C99 frontend. The accepted subset is small: no classes inside
+ * kernels, no exceptions, no generators, no async, no lambdas, no
+ * decorators other than @triton.jit, and almost none of the standard
+ * library. */
 
 #define BC_ERR_TRITON   -10
 
 /* ---- Limits ----
- * Fixed pools, no malloc on the hot path. The Triton kernels people
- * actually write fit comfortably inside these. The numbers are sized
- * the same way the C99 frontend's are: liberal enough to never trip
- * on real code, mean enough that an attacker cannot waste our day. */
+ * Fixed pools, no malloc on the hot path. Sized like the C99
+ * frontend's: liberal enough for real code, bounded against abuse. */
 
 #define TN_MAX_TOKENS       (1 << 18)
 #define TN_MAX_NODES        (1 << 18)
@@ -41,26 +26,23 @@
 #define TN_MAX_PAREN_DEPTH  64
 #define TN_MAX_STRINGS      (1 << 16)
 
-/* ---- Token Kinds ----
- * Python tokens, with our own naming to keep them clear of the C99
- * token enum living next door in fe/token.h. The four indentation
- * related kinds (NEWLINE, INDENT, DEDENT, EOF) are how the lexer
- * tells the parser about block structure, because Python decided
- * curly braces were vulgar. */
+/* ---- Token kinds ----
+ * Python tokens, named to stay clear of the C99 token enum in
+ * fe/token.h. NEWLINE, INDENT, DEDENT and EOF carry block structure
+ * from the lexer to the parser. */
 
 typedef enum {
     TN_TOK_NEWLINE = 0,         /* end of a logical line */
     TN_TOK_INDENT,              /* block opens, deeper indentation */
     TN_TOK_DEDENT,              /* block closes, shallower indentation */
 
-    TN_TOK_IDENT,               /* names and reserved words live here */
+    TN_TOK_IDENT,               /* names and reserved words */
     TN_TOK_INT,                 /* decimal, hex 0x, octal 0o, binary 0b */
     TN_TOK_FLOAT,               /* 1.5, 1.5e10, .5, 5. */
     TN_TOK_STRING,              /* "...", '...', simple form only for now */
 
-    /* Reserved words. We tokenize identifiers and then look them up in
-     * the keyword table during the same pass, which keeps the token
-     * count down and the parser case statements honest. */
+    /* Reserved words. Identifiers are looked up in the keyword table
+     * during the same pass that scans them. */
     TN_TOK_KW_DEF, TN_TOK_KW_RETURN, TN_TOK_KW_PASS,
     TN_TOK_KW_IF, TN_TOK_KW_ELIF, TN_TOK_KW_ELSE,
     TN_TOK_KW_FOR, TN_TOK_KW_WHILE, TN_TOK_KW_BREAK, TN_TOK_KW_CONTINUE,
@@ -113,15 +95,12 @@ typedef struct {
     uint16_t    pad;
 } tn_tok_t;
 
-/* ---- Lexer State ----
- * The Python tokenizer keeps a stack of column positions for the
- * currently open indentation levels, plus a separate count of paren
- * depth because lines inside brackets or parens are joined together
- * across newlines without emitting NEWLINE tokens, on the grounds
- * that the programmer evidently has not finished saying what they
- * meant to say. The pending_dedents counter handles the case where
- * dedenting closes several block levels at once and we need to emit
- * a run of DEDENT tokens before the next real token shows up. */
+/* ---- Lexer state ----
+ * Keeps a stack of column positions for the open indentation levels,
+ * plus a paren depth count: lines inside brackets or parens join across
+ * newlines without emitting NEWLINE tokens. pending_dedents handles a
+ * dedent that closes several block levels at once, emitting a run of
+ * DEDENT tokens before the next real token. */
 
 typedef struct {
     const char *src;
@@ -144,7 +123,7 @@ typedef struct {
     int         num_errors;
 } tn_lex_t;
 
-/* ---- Public API: Lexer ---- */
+/* ---- Public API: lexer ---- */
 
 void        tn_lex_init(tn_lex_t *L, const char *src, uint32_t len,
                         tn_tok_t *tokens, uint32_t max_tokens);
@@ -153,14 +132,12 @@ const char *tn_tok_name(int kind);
 int         tn_tok_text(const tn_lex_t *L, const tn_tok_t *tok,
                         char *buf, int bufsize);
 
-/* ---- AST Node Kinds ----
- * The shape of the tree the parser builds. Function definitions,
- * statements, parameters, dotted names, and the opaque expression
- * span used by sitting one to defer the real expression parser to a
- * later visit. Anything that does not have a more specific node kind
- * arrives at the sema stage as a TN_NK_EXPR_SPAN, which records the
- * first and last tokens of an expression and trusts the next pass
- * to do something more interesting with them. */
+/* ---- AST node kinds ----
+ * The shape of the tree the parser builds: function definitions,
+ * statements, parameters, dotted names, and the opaque expression span.
+ * A node without a more specific kind is a TN_NK_EXPR_SPAN, recording
+ * the first and last tokens of an expression for a later pass to
+ * parse. */
 
 typedef enum {
     TN_NK_MODULE = 0,       /* program root */
@@ -183,11 +160,9 @@ typedef enum {
     TN_NK_DOTTED_NAME,      /* ident (.ident)* with no further structure */
     TN_NK_EXPR_SPAN,        /* opaque expression: tok_off..tok_off+tok_len */
 
-    /* Expression nodes added in parser sitting two. They live below
-     * EXPR_SPAN in the enum so dump tables stay readable in numeric
-     * order. The expression parser produces these instead of opaque
-     * spans wherever the syntax is one of the forms a sane Triton
-     * kernel would actually contain. */
+    /* Expression nodes. Ordered below EXPR_SPAN so dump tables stay
+     * readable in numeric order. The expression parser produces these
+     * instead of opaque spans where the syntax is a recognised form. */
     TN_NK_NAME,             /* identifier reference; tok_off names it */
     TN_NK_LITERAL,          /* int / float / string / None / True / False */
     TN_NK_TUPLE,            /* (a, b, c) or top-level a, b, c */
@@ -258,14 +233,12 @@ enum {
     TN_AUG_COUNT
 };
 
-/* ---- AST Node ----
- * Fixed 32 bytes, six inline child indices, overflow flag for the
- * rare case (function bodies with more than six statements, mainly)
- * which redirects children into an external pool the same way BIR
- * handles instructions with more than six operands. The pattern is
- * deliberate: it keeps the common-case node small and cache-friendly
- * while still letting the unusual node spend extra space when it
- * really has to. */
+/* ---- AST node ----
+ * Fixed 32 bytes, six inline child indices, plus an overflow flag for
+ * nodes with more than six children (mainly function bodies). Overflow
+ * children redirect into an external pool, like BIR instructions with
+ * more than six operands. Keeps the common-case node small and
+ * cache-friendly. */
 
 #define TN_NODE_INLINE_KIDS    6
 #define TN_NODE_KIDS_OVERFLOW  0xFF
@@ -282,21 +255,18 @@ typedef struct {
 #define TN_MAX_EXTRA_KIDS  (1 << 18)
 #define TN_MAX_KID_SCRATCH (1 << 16)
 
-/* ---- Parser State ----
- * Heap-allocated so the embedded arrays do not blow main's stack
- * frame. The shape follows the same convention as sema_ctx_t in the
- * C99 frontend: one big context struct, freed at the end of the
- * pass, no internal allocations during parsing.
+/* ---- Parser state ----
+ * Heap-allocated so the embedded arrays do not blow main's stack frame.
+ * One big context struct, freed at the end of the pass, no internal
+ * allocations during parsing.
  *
- * kid_scratch is a stack of child indices used during parsing. Each
- * grammar function records kid_scratch_top on entry, pushes its
- * children onto the scratch as it parses them, then commits the
- * whole contiguous range into either the node's inline kids slots
- * or into the extra_kids overflow pool at the end. The pattern
- * stops nested nodes from interleaving their overflow writes with
- * one another, which is the bug that the simpler incremental
- * add_kid had: a child node's overflow could happily scribble
- * inside its parent's reserved overflow range. */
+ * kid_scratch is a stack of child indices. Each grammar function
+ * records kid_scratch_top on entry, pushes its children onto the
+ * scratch as it parses them, then commits the contiguous range into
+ * the node's inline kids slots or the extra_kids overflow pool. This
+ * stops nested nodes interleaving their overflow writes: a child
+ * node's overflow could otherwise scribble inside its parent's
+ * reserved overflow range. */
 
 typedef struct {
     const tn_lex_t *lex;
@@ -317,18 +287,16 @@ typedef struct {
     uint32_t        root;                       /* module node index */
 } tn_parse_t;
 
-/* ---- Public API: Parser ---- */
+/* ---- Public API: parser ---- */
 
 void        tn_parse_init(tn_parse_t *P, const tn_lex_t *L);
 int         tn_parse(tn_parse_t *P);
 const char *tn_nk_name(int kind);
 void        tn_ast_dump(const tn_parse_t *P, FILE *out);
 
-/* ---- Sema: Symbol Kinds ----
- * The categories of thing a Name node can resolve to. UNBOUND is
- * the sentinel for names that did not bind, which is reported as a
- * diagnostic but does not stop the pass (we keep going so later
- * names can still be checked). */
+/* ---- Sema: symbol kinds ----
+ * What a Name node can resolve to. UNBOUND is the sentinel for names
+ * that did not bind; it is reported but does not stop the pass. */
 
 typedef enum {
     TN_SYM_UNBOUND = 0,
@@ -341,9 +309,9 @@ typedef enum {
     TN_SYM_KIND_COUNT
 } tn_sym_kind_t;
 
-/* ---- Sema: Builtin Module Ids ----
- * The handful of modules a Triton kernel imports. We do not run the
- * import statements; we just recognise the canonical aliases. */
+/* ---- Sema: builtin module ids ----
+ * The modules a Triton kernel imports. Import statements are not run;
+ * only the canonical aliases are recognised. */
 
 enum {
     TN_MOD_NONE = 0,
@@ -353,11 +321,9 @@ enum {
     TN_MOD_COUNT
 };
 
-/* ---- Sema: tl.* Intrinsic Ids ----
- * Hardcoded enumeration of the Triton language functions and types
- * the sema knows about. The list covers the intrinsics that appear
- * in real Triton kernels in the wild and the canonical numeric
- * dtypes; adding more is a one-line table entry away. */
+/* ---- Sema: tl.* intrinsic ids ----
+ * The Triton language functions and types sema knows about: the
+ * intrinsics seen in real kernels plus the canonical numeric dtypes. */
 
 typedef enum {
     TN_TLI_NONE = 0,
@@ -415,7 +381,7 @@ typedef enum {
     TN_TLI_COUNT
 } tn_intrinsic_t;
 
-/* ---- Sema: Symbol Table Entry ---- */
+/* ---- Sema: symbol table entry ---- */
 
 typedef struct {
     uint32_t name_off;      /* source offset of the name token */
@@ -434,7 +400,7 @@ typedef struct {
 #define TN_MAX_SYMBOLS  8192
 #define TN_MAX_SCOPES   128
 
-/* ---- Sema: Tile Shape ----
+/* ---- Sema: tile shape ----
  * rank 0 = scalar, rank 1 = vec[dims[0]], rank 2 = mat[dims[0],
  * dims[1]]. dim = -1 means dynamic. dtype is a tn_intrinsic_t code
  * (tl.float32 etc.), or 0 if not yet inferred. */
@@ -446,7 +412,7 @@ typedef struct {
     int32_t  dims[2];
 } tn_shape_t;                                       /* 12 bytes */
 
-/* ---- Sema: Per-Node Annotation ----
+/* ---- Sema: per-node annotation ----
  * Parallel arrays over the parser node pool. node_sym_kind +
  * node_sym_aux carry the resolved symbol for Name / Attr. node_shape
  * carries the inferred tile shape; non-expression nodes leave it
@@ -470,7 +436,7 @@ typedef struct {
     int             num_errors;
 } tn_sema_t;
 
-/* ---- Public API: Sema ---- */
+/* ---- Public API: sema ---- */
 
 void        tn_sema_init(tn_sema_t *S, const tn_parse_t *P);
 int         tn_sema(tn_sema_t *S);
@@ -482,24 +448,23 @@ const char *tn_intrinsic_name(int id);
  * optional :dtype suffix. ? appears where a dim is dynamic. */
 int         tn_shape_format(tn_shape_t sh, char *buf, int bufsize);
 
-/* ---- Lowering Context ----
+/* ---- Lowering context ----
  * Walks the sema-annotated AST and produces BIR. Heap-allocated to
  * keep the embedded node-to-value map off main's stack frame. The
  * per-node map records, for any AST node whose lowering yielded a
  * BIR value, the value reference (with the BIR_VAL_CONST_BIT flag
- * for constants). Subsequent references through that node can read
- * the value back in one lookup. */
+ * for constants), so later references resolve in one lookup. */
 
-/* A materialized tile: per-element BIR value refs, row-major. vec[N]
- * is stored as rank 1, d0=N, d1=1. Capped at 32x32 for the first cut. */
+/* A materialised tile: per-element BIR value refs, row-major. vec[N]
+ * is stored as rank 1, d0=N, d1=1. Capped at 32x32. */
 #define TN_TILE_MAX  1024
 #define TN_TILE_POOL 128
 
 typedef struct {
     int      rank;
     int      d0, d1;
-    int      mem;               /* 1 = elem[] holds element ADDRESSES (a
-                                 * scratch-backed accumulator that persists
+    int      mem;               /* 1 = elem[] holds element addresses (a
+                                 * scratch-backed accumulator persisting
                                  * across a loop); 0 = elem[] holds values. */
     uint32_t elem[TN_TILE_MAX];
 } tn_tile_t;
@@ -522,13 +487,13 @@ typedef struct {
     uint8_t         param_remap[32];
     int32_t         param_const[32];
 
-    /* Map from AST node index to BIR value reference, BIR_VAL_NONE
-     * if not yet produced. Used to resolve Name references back to
-     * the value their declaring node generated. */
+    /* AST node index to BIR value reference, BIR_VAL_NONE if not yet
+     * produced. Resolves Name references back to the value their
+     * declaring node generated. */
     uint32_t        node_val[TN_MAX_NODES];
 
     /* Rank-2 (and rank-1) tiles in a kernel that uses tl.dot are
-     * materialized and fully unrolled: each tile is an array of
+     * materialised and fully unrolled: each tile is an array of
      * per-element BIR scalar values. tile_mode turns the whole kernel
      * onto this path (arange becomes constants, not thread_id, and the
      * launch runs one thread). node_tile maps a binding node (Assign)
@@ -538,8 +503,8 @@ typedef struct {
     tn_tile_t       tile_pool[TN_TILE_POOL];
     int32_t         node_tile[TN_MAX_NODES];
 
-    /* Common types, looked up once per module so we are not building
-     * the same type entry over and over. */
+    /* Common types, looked up once per module to avoid rebuilding the
+     * same type entry repeatedly. */
     uint32_t        t_i32;
     uint32_t        t_f32;
     uint32_t        t_ptr_i32;
@@ -550,7 +515,7 @@ typedef struct {
     int             num_errors;
 } tn_lower_t;
 
-/* ---- Public API: Lowering ---- */
+/* ---- Public API: lowering ---- */
 
 void tn_lower_init(tn_lower_t *L, const tn_parse_t *P,
                    const tn_sema_t *S, bir_module_t *M);
