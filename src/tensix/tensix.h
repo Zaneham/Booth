@@ -35,6 +35,7 @@ typedef enum {
     TT_FMT_C,          /* [op:8][imm16:16][dst:4][mod1:4] */
     TT_FMT_D,          /* [op:8][lreg:4][mod0:4][addr_mode:2][dest_addr:14] */
     TT_FMT_E,          /* [op:8][lreg:4][mod0:4][imm16:16] */
+    TT_FMT_SYNC,       /* Sync Unit ops; per-opcode field layout (see emit.c) */
     TT_FMT_PSEUDO,
     TT_FMT_COUNT
 } tt_fmt_t;
@@ -96,6 +97,12 @@ typedef enum {
 
     TT_SFPNOP           = 0x02,
     TT_SFPWNOP          = 0x8F,
+
+    /* Sync Unit (semaphores / stalls), opcodes from ttas/sfpi-binutils */
+    TT_STALLWAIT        = 0xA2,
+    TT_SEMINIT          = 0xA3,
+    TT_SEMPOST          = 0xA4,
+    TT_SEMWAIT          = 0xA6,
 
     TT_PSEUDO_PHI,
     TT_PSEUDO_COPY,

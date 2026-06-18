@@ -72,6 +72,13 @@ static const tt_enc_entry_t enc_table_sparse[] = {
     /* Control */
     { TT_FMT_C, 0x02, "sfpnop"     },  /* TT_SFPNOP     */
     { TT_FMT_C, 0x8F, "sfpwnop"    },  /* TT_SFPWNOP    */
+
+    /* Sync Unit (semaphores / stalls). Field layouts from ttas/sfpi-binutils,
+     * cross-checked against the Kahu decoder. */
+    { TT_FMT_SYNC, 0xA2, "stallwait" },  /* TT_STALLWAIT */
+    { TT_FMT_SYNC, 0xA3, "seminit"   },  /* TT_SEMINIT   */
+    { TT_FMT_SYNC, 0xA4, "sempost"   },  /* TT_SEMPOST   */
+    { TT_FMT_SYNC, 0xA6, "semwait"   },  /* TT_SEMWAIT   */
 };
 
 #define ENC_TABLE_SPARSE_LEN \
@@ -79,7 +86,7 @@ static const tt_enc_entry_t enc_table_sparse[] = {
 
 static const tt_enc_entry_t *enc_lookup(uint16_t op)
 {
-    if (op >= 0x02 && op <= 0x99) {
+    if (op >= 0x02 && op <= 0xA6) {
         int guard = 256;
         for (uint32_t i = 0; i < ENC_TABLE_SPARSE_LEN && guard > 0;
              i++, guard--) {
@@ -473,6 +480,27 @@ static uint32_t encode_inst(const tt_minst_t *I)
         return op | ((lreg & 0xF) << 20) | ((mod0 & 0xF) << 16)
                   | (imm & 0xFFFF);
     }
+    case TT_FMT_SYNC: {
+        /* Per-opcode Sync Unit field layout. Operand order matches the
+         * disassembly: the fields named in each case below. */
+        int a = (int)get_imm(&I->operands[0]);
+        int b = (int)get_imm(&I->operands[1]);
+        int c = (int)get_imm(&I->operands[2]);
+        switch (enc->hw_opcode) {
+        case 0xA2:  /* stallwait: wait_res[0:14], stall_res[15:23] */
+            return op | ((b & 0x1FF) << 15) | (a & 0x7FFF);
+        case 0xA3:  /* seminit: sem_sel[2:15], init[16:19], max[20:23] */
+            return op | ((c & 0xF) << 20) | ((b & 0xF) << 16)
+                      | ((a & 0x3FFF) << 2);
+        case 0xA4:  /* sempost: sem_sel[2:23] */
+            return op | ((a & 0x3FFFFF) << 2);
+        case 0xA6:  /* semwait: cond[0:1], sem_sel[2:14], stall_res[15:23] */
+            return op | ((c & 0x1FF) << 15) | ((a & 0x1FFF) << 2)
+                      | (b & 0x3);
+        default:
+            return op;
+        }
+    }
     default:
         return op;
     }
@@ -484,7 +512,40 @@ static uint32_t encode_inst(const tt_minst_t *I)
  * the same stream ttas assembles and Kahu decodes. Pseudo-ops (phi/copy/def)
  * are gone after regalloc; anything the table does not know is skipped. */
 
-int tensix_emit_binary(tt_module_t *tt, const char *path)
+/* Build and encode one Sync Unit instruction (all operands are immediates). */
+static uint32_t sync_word(uint16_t op, int a, int b, int c)
+{
+    tt_minst_t I;
+    memset(&I, 0, sizeof(I));
+    I.op = op;
+    I.operands[0].kind = TT_MOP_IMM; I.operands[0].imm = a;
+    I.operands[1].kind = TT_MOP_IMM; I.operands[1].imm = b;
+    I.operands[2].kind = TT_MOP_IMM; I.operands[2].imm = c;
+    return encode_inst(&I);
+}
+
+static int wr_word(FILE *fp, uint32_t w)
+{
+    uint8_t b[4];
+    b[0] = (uint8_t)(w & 0xFF);
+    b[1] = (uint8_t)((w >> 8) & 0xFF);
+    b[2] = (uint8_t)((w >> 16) & 0xFF);
+    b[3] = (uint8_t)((w >> 24) & 0xFF);
+    return fwrite(b, 1, 4, fp) == 4;
+}
+
+static uint32_t xf_raw(uint32_t w)    { return w; }
+static uint32_t xf_ttinsn(uint32_t w) { return (w << 2) | (w >> 30); }
+
+/* Write the compute word stream with a conservative circular-buffer sync
+ * bracket. xform leaves the words raw (.bin) or .ttinsn-encodes them.
+ *
+ * The bracket is the first cut: SEMINIT sets up the semaphores, SEMWAIT blocks
+ * compute until the input tile is available, SEMPOST signals the output tile.
+ * The *encoding* of every word is validated against the Kahu decoder; the
+ * semaphore-to-circular-buffer mapping is the provisional protocol and is the
+ * piece that still needs confirmation on real hardware. */
+static int emit_stream(tt_module_t *tt, const char *path, uint32_t (*xform)(uint32_t))
 {
     FILE    *fp;
     uint32_t i, n = 0;
@@ -492,24 +553,30 @@ int tensix_emit_binary(tt_module_t *tt, const char *path)
     fp = fopen(path, "wb");
     if (!fp) return BC_ERR_IO;
 
+    if (!wr_word(fp, xform(sync_word(TT_SEMINIT, 0, 0, 1)))) goto io; /* sem0: val 0, max 1 */
+    if (!wr_word(fp, xform(sync_word(TT_SEMWAIT, 0, 1, 0)))) goto io; /* wait sem0, cond 1 */
+    n += 2;
+
     for (i = 0; i < tt->num_minsts; i++) {
         const tt_minst_t *I = &tt->minsts[i];
-        uint32_t w;
-        uint8_t  b[4];
-
         if (!enc_lookup(I->op)) continue;   /* pseudo-op, not real hardware */
-
-        w = encode_inst(I);
-        b[0] = (uint8_t)(w & 0xFF);
-        b[1] = (uint8_t)((w >> 8) & 0xFF);
-        b[2] = (uint8_t)((w >> 16) & 0xFF);
-        b[3] = (uint8_t)((w >> 24) & 0xFF);
-        if (fwrite(b, 1, 4, fp) != 4) { fclose(fp); return BC_ERR_IO; }
+        if (!wr_word(fp, xform(encode_inst(I)))) goto io;
         n++;
     }
 
+    if (!wr_word(fp, xform(sync_word(TT_SEMPOST, 1, 0, 0)))) goto io; /* signal sem1 */
+    n++;
+
     fclose(fp);
     return (n > 0) ? BC_OK : BC_ERR_IO;
+io:
+    fclose(fp);
+    return BC_ERR_IO;
+}
+
+int tensix_emit_binary(tt_module_t *tt, const char *path)
+{
+    return emit_stream(tt, path, xf_raw);
 }
 
 /* ---- RISC-V .ttinsn stream ----
@@ -524,31 +591,7 @@ int tensix_emit_binary(tt_module_t *tt, const char *path)
 
 int tensix_emit_ttinsn(tt_module_t *tt, const char *path)
 {
-    FILE    *fp;
-    uint32_t i, n = 0;
-
-    fp = fopen(path, "wb");
-    if (!fp) return BC_ERR_IO;
-
-    for (i = 0; i < tt->num_minsts; i++) {
-        const tt_minst_t *I = &tt->minsts[i];
-        uint32_t w, tti;
-        uint8_t  b[4];
-
-        if (!enc_lookup(I->op)) continue;
-
-        w   = encode_inst(I);
-        tti = (w << 2) | (w >> 30);     /* rotate left 2 = .ttinsn encoding */
-        b[0] = (uint8_t)(tti & 0xFF);
-        b[1] = (uint8_t)((tti >> 8) & 0xFF);
-        b[2] = (uint8_t)((tti >> 16) & 0xFF);
-        b[3] = (uint8_t)((tti >> 24) & 0xFF);
-        if (fwrite(b, 1, 4, fp) != 4) { fclose(fp); return BC_ERR_IO; }
-        n++;
-    }
-
-    fclose(fp);
-    return (n > 0) ? BC_OK : BC_ERR_IO;
+    return emit_stream(tt, path, xf_ttinsn);
 }
 
 /* ---- Disassembly ---- */
