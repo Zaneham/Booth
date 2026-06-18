@@ -553,8 +553,10 @@ static int emit_stream(tt_module_t *tt, const char *path, uint32_t (*xform)(uint
     fp = fopen(path, "wb");
     if (!fp) return BC_ERR_IO;
 
-    if (!wr_word(fp, xform(sync_word(TT_SEMINIT, 0, 0, 1)))) goto io; /* sem0: val 0, max 1 */
-    if (!wr_word(fp, xform(sync_word(TT_SEMWAIT, 0, 1, 0)))) goto io; /* wait sem0, cond 1 */
+    /* SemaphoreMask is an 8-bit mask, not an index: sem 0 = 0x1 (input tile
+     * available), sem 1 = 0x2 (output tile produced). Init both, max 1. */
+    if (!wr_word(fp, xform(sync_word(TT_SEMINIT, 0x3, 0, 1)))) goto io; /* init sem 0 and 1 */
+    if (!wr_word(fp, xform(sync_word(TT_SEMWAIT, 0x1, 1, 0)))) goto io; /* wait input sem */
     n += 2;
 
     for (i = 0; i < tt->num_minsts; i++) {
@@ -564,7 +566,7 @@ static int emit_stream(tt_module_t *tt, const char *path, uint32_t (*xform)(uint
         n++;
     }
 
-    if (!wr_word(fp, xform(sync_word(TT_SEMPOST, 1, 0, 0)))) goto io; /* signal sem1 */
+    if (!wr_word(fp, xform(sync_word(TT_SEMPOST, 0x2, 0, 0)))) goto io; /* post output sem */
     n++;
 
     fclose(fp);
