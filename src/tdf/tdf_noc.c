@@ -1,4 +1,6 @@
 #include "tdf.h"
+#include "rv_buf.h"
+#include "noc.h"
 #include <stdio.h>
 
 /*
@@ -88,4 +90,57 @@ int td_noc_orchestrate(td_mod_t *M)
         a->length = len;
     }
     return BC_OK;
+}
+
+/*
+ * CB-arc emitter: lower one circular-buffer synchronisation arc to baby-core
+ * RISC-V, using the primitives in tensix/noc.c. This is the RV32IM emitter the
+ * comments above kept deferring, for the four CB arc kinds. RD/WR arcs need
+ * runtime DRAM addresses and a per-tile loop and are emitted elsewhere.
+ *
+ * The two counters live in the channel's FIFO header (the 8 bytes placement
+ * reserves right after the tile-data buffer): recv at +0 counts pages the
+ * producer has supplied, free at +4 counts pages the consumer has released.
+ * Each region polls the counter it owns (local spin) and bumps the one its
+ * partner owns (NoC atomic to the partner's coordinates).
+ *
+ * This targets the single-Tensix model the placer produces today: producer and
+ * consumer are different baby cores sharing one L1, so both counters sit in
+ * that L1 and the atomic targets the tile's own coordinates (permitted per
+ * NoC/Atomics.md). Cross-tile counter placement lands with multi-core placement.
+ */
+int td_emit_cb_arc(td_mod_t *M, const td_arc_t *a, rv_buf_t *code)
+{
+    const td_chan_t *c;
+    uint32_t data_b, recv, freec;
+
+    if (a->chan >= M->ncha) {
+        fprintf(stderr, "tdf: CB arc references unknown channel %u\n", a->chan);
+        return BC_ERR_TDF;
+    }
+    c = &M->chans[a->chan];
+    data_b = td_tile_bytes(c->tag) * (uint32_t)c->depth;
+    recv   = c->l1_off + data_b;          /* pages produced */
+    freec  = c->l1_off + data_b + 4u;     /* pages free      */
+
+    switch (a->kind) {
+    case TD_AR_RSV:     /* producer blocks until the consumer has freed slots */
+        return tt_cb_reserve_back(code, freec, a->cnt);
+    case TD_AR_WAIT:    /* consumer blocks until the producer has supplied tiles */
+        return tt_cb_wait_front(code, recv, a->cnt);
+    case TD_AR_PUSH: {  /* producer bumps the consumer's recv counter */
+        const td_rgn_t *cons = &M->rgns[c->cons];
+        uint64_t na = td_noc_addr((uint8_t)cons->x, (uint8_t)cons->y, recv);
+        return tt_cb_push_back(code, (uint32_t)na, (uint32_t)(na >> 32), a->cnt);
+    }
+    case TD_AR_POP: {   /* consumer bumps the producer's free counter */
+        const td_rgn_t *prod = &M->rgns[c->prod];
+        uint64_t na = td_noc_addr((uint8_t)prod->x, (uint8_t)prod->y, freec);
+        return tt_cb_pop_front(code, (uint32_t)na, (uint32_t)(na >> 32), a->cnt);
+    }
+    default:
+        fprintf(stderr, "tdf: td_emit_cb_arc given non-CB arc kind %u\n",
+                a->kind);
+        return BC_ERR_TDF;
+    }
 }

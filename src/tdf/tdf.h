@@ -3,6 +3,7 @@
 
 #include "barracuda.h"
 #include "bir.h"
+#include "rv_buf.h"     /* rv_buf_t, for the CB-arc emitter */
 
 /*
  * Tile DataFlow IR.
@@ -366,6 +367,7 @@ int       td_place_l1(td_mod_t *M);
  */
 uint64_t  td_noc_addr(uint8_t x, uint8_t y, uint64_t local);
 int       td_noc_orchestrate(td_mod_t *M);
+int       td_emit_cb_arc(td_mod_t *M, const td_arc_t *a, rv_buf_t *code);
 
 /* ---- Inspection ---- */
 

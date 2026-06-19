@@ -3,8 +3,21 @@
 
 #include "tharns.h"
 #include "tdf.h"
+#include "noc.h"
+#include "rv_enc.h"
 
 static char obuf[TH_BUFSZ];
+
+/* CB-arc emit comparison buffers. Each rv_buf_t is 16 KiB, so keep them in
+ * BSS rather than on MinGW's lazily-committed stack. */
+static rv_buf_t EA, EB;
+
+static int bufs_eq(const rv_buf_t *a, const rv_buf_t *b)
+{
+    uint32_t n = rv_buf_n_words(a);
+    if (n != rv_buf_n_words(b)) return 0;
+    return memcmp(rv_buf_data(a), rv_buf_data(b), n * 4u) == 0;
+}
 
 /* bir_module_t is a multi-megabyte arena and absolutely will not fit
  * on the stack. We never dereference this in the lowering, the
@@ -666,3 +679,69 @@ static void tdf_region_overflow(void)
     PASS();
 }
 TH_REG("tdf", tdf_region_overflow);
+
+/* ---- CB-arc emit lowers each kind to the right primitive at placed addrs ---- */
+
+static void tdf_emit_cb_arcs(void)
+{
+    td_init(&M, TD_TGT_TENSIX);
+    uint16_t rdr = td_mkrgn(&M, TD_RG_RDR);
+    uint16_t cmp = td_mkrgn(&M, TD_RG_CMP);
+    td_tag_t  tag = tile_f32(32, 32, TD_LAY_INTRL);
+    uint16_t  ch  = td_link(&M, rdr, cmp, tag, /*depth=*/2);
+    CHEQ(td_place_l1(&M), BC_OK);
+
+    /* counters sit in the FIFO header right after the tile-data buffer. */
+    uint32_t data_b = td_tile_bytes(M.chans[ch].tag) * (uint32_t)M.chans[ch].depth;
+    uint32_t recv   = M.chans[ch].l1_off + data_b;
+    uint32_t freec  = recv + 4u;
+    /* producer and consumer share the tile (coords 0,0), so the NoC address
+     * the atomic targets equals the bare L1 address. */
+
+    /* RSV -> reserve_back(free): producer waits on the free counter. */
+    uint16_t a_rsv = td_mkarc(&M, rdr, TD_AR_RSV, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_rsv], &EA), BC_OK);
+    tt_cb_reserve_back(&EB, freec, 1);
+    CHECK(bufs_eq(&EA, &EB));
+
+    /* WAIT -> wait_front(recv): consumer waits on the recv counter. */
+    uint16_t a_wait = td_mkarc(&M, cmp, TD_AR_WAIT, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_wait], &EA), BC_OK);
+    tt_cb_wait_front(&EB, recv, 1);
+    CHECK(bufs_eq(&EA, &EB));
+
+    /* PUSH -> sem_inc(recv): producer bumps the consumer's recv counter. */
+    uint16_t a_push = td_mkarc(&M, rdr, TD_AR_PUSH, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_push], &EA), BC_OK);
+    tt_cb_push_back(&EB, recv, 0, 1);
+    CHECK(bufs_eq(&EA, &EB));
+
+    /* POP -> sem_inc(free): consumer bumps the producer's free counter. */
+    uint16_t a_pop = td_mkarc(&M, cmp, TD_AR_POP, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_pop], &EA), BC_OK);
+    tt_cb_pop_front(&EB, freec, 0, 1);
+    CHECK(bufs_eq(&EA, &EB));
+    PASS();
+}
+TH_REG("tdf", tdf_emit_cb_arcs);
+
+/* ---- the CB emitter refuses NoC arcs (those are emitted elsewhere) ---- */
+
+static void tdf_emit_cb_rejects_noc(void)
+{
+    td_init(&M, TD_TGT_TENSIX);
+    uint16_t rdr = td_mkrgn(&M, TD_RG_RDR);
+    uint16_t cmp = td_mkrgn(&M, TD_RG_CMP);
+    td_tag_t  tag = tile_f32(32, 32, TD_LAY_INTRL);
+    uint16_t  ch  = td_link(&M, rdr, cmp, tag, 2);
+    td_place_l1(&M);
+    uint16_t a_rd = td_mkarc(&M, rdr, TD_AR_RD, ch, 1, 0);
+    rv_buf_init(&EA);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_rd], &EA), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("tdf", tdf_emit_cb_rejects_noc);
