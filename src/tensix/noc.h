@@ -35,4 +35,14 @@ int tt_cb_wait_front  (rv_buf_t *code, uint32_t recv_addr, uint32_t n);
 int tt_cb_pop_front   (rv_buf_t *code, uint32_t free_lo, uint32_t free_mid,
                        uint32_t n);
 
+/* Materialise a 32-bit value into a register (lui+addi). */
+void tt_li32(rv_buf_t *code, uint8_t reg, uint32_t v);
+
+/* Register-sourced transfer (low addresses come from treg/rreg so a loop can
+ * advance them) and a completion barrier that spins until issued transfers
+ * have landed. is_write picks the write path (marked, ack-tracked). */
+int tt_noc_xfer_reg(rv_buf_t *code, int is_write, uint8_t treg, uint8_t rreg,
+                    uint32_t targ_mid, uint32_t ret_mid, uint32_t len);
+int tt_noc_barrier (rv_buf_t *code, int is_write);
+
 #endif /* BARRACUDA_TENSIX_NOC_H */

@@ -1,5 +1,7 @@
 #include "tdf.h"
 #include "rv_buf.h"
+#include "rv_enc.h"
+#include "rt_args.h"
 #include "noc.h"
 #include <stdio.h>
 
@@ -143,4 +145,85 @@ int td_emit_cb_arc(td_mod_t *M, const td_arc_t *a, rv_buf_t *code)
                 a->kind);
         return BC_ERR_TDF;
     }
+}
+
+/*
+ * Tile-transfer loop: the machine-code form of a Metalium reader or writer
+ * kernel. Reads the DRAM base address and the tile count from the runtime-args
+ * slab the host populates, then loops once per tile:
+ *
+ *   reader: reserve a CB slot, NoC-read one tile DRAM -> L1, wait for it to
+ *           land, push the slot to the consumer.
+ *   writer: wait for a produced tile, NoC-write it L1 -> DRAM, wait for the
+ *           ack, pop the slot back to the producer.
+ *
+ * Loop state lives in a-registers the called primitives never touch (they only
+ * use t0/t1/t2): a3 = DRAM pointer, a4 = L1 ring pointer, a5 = tile counter,
+ * a6 = tile_bytes, a7 = L1 ring end. The L1 pointer wraps to the buffer base
+ * after `depth` tiles, which is the circular buffer doing its job.
+ *
+ * Contiguous DRAM layout: the DRAM pointer advances by one tile each step and
+ * `dram_mid` is fixed. Interleaved bank addressing (where consecutive tiles
+ * live in different DRAM banks with different coordinates) is a later pass.
+ */
+int td_emit_dma_loop(rv_buf_t *code, int is_write,
+                     uint32_t dram_arg_slot, uint32_t ntiles_arg_slot,
+                     uint32_t l1_buf, uint32_t depth,
+                     uint32_t dram_mid, uint32_t l1_mid,
+                     uint32_t tile_bytes,
+                     uint32_t recv_addr, uint32_t free_addr)
+{
+    uint32_t loop, br_exit, br_wrap, jback, nowrap, done;
+    uint32_t ring_end = l1_buf + depth * tile_bytes;
+
+    /* prologue: pull args from L1, set up the loop registers. */
+    tt_li32(code, RV_T0, TD_L1_RTARG_BASE);
+    rv_buf_emit(code, rv_lw(RV_A3, RV_T0,
+                            (int16_t)RT_ARG_OFF_KARG(dram_arg_slot)));
+    rv_buf_emit(code, rv_lw(RV_A5, RV_T0,
+                            (int16_t)RT_ARG_OFF_KARG(ntiles_arg_slot)));
+    tt_li32(code, RV_A4, l1_buf);
+    tt_li32(code, RV_A6, tile_bytes);
+    tt_li32(code, RV_A7, ring_end);
+
+    /* loop: exit once the tile counter hits zero (offset patched below). */
+    loop    = rv_buf_n_words(code);
+    br_exit = (uint32_t)rv_buf_emit(code, 0u);
+
+    /* pre-transfer CB gate. */
+    if (is_write) tt_cb_wait_front(code, recv_addr, 1u);
+    else          tt_cb_reserve_back(code, free_addr, 1u);
+
+    /* the transfer. reader: DRAM(a3) -> L1(a4); writer: L1(a4) -> DRAM(a3). */
+    if (is_write)
+        tt_noc_xfer_reg(code, 1, RV_A4, RV_A3, l1_mid, dram_mid, tile_bytes);
+    else
+        tt_noc_xfer_reg(code, 0, RV_A3, RV_A4, dram_mid, l1_mid, tile_bytes);
+    tt_noc_barrier(code, is_write);
+
+    /* post-transfer CB signal. */
+    if (is_write) tt_cb_pop_front(code, free_addr, 0u, 1u);
+    else          tt_cb_push_back(code, recv_addr, 0u, 1u);
+
+    /* advance both pointers; wrap the L1 ring pointer at its end. */
+    rv_buf_emit(code, rv_add(RV_A3, RV_A3, RV_A6));
+    rv_buf_emit(code, rv_add(RV_A4, RV_A4, RV_A6));
+    br_wrap = (uint32_t)rv_buf_emit(code, 0u);  /* bltu a4,a7,nowrap (patched) */
+    tt_li32(code, RV_A4, l1_buf);               /* wrap: reset to ring base    */
+    nowrap = rv_buf_n_words(code);
+    rv_buf_patch(code, br_wrap,
+                 rv_bltu(RV_A4, RV_A7,
+                         (int16_t)rv_buf_offset(code, br_wrap, nowrap)));
+
+    /* decrement and loop. */
+    rv_buf_emit(code, rv_addi(RV_A5, RV_A5, -1));
+    jback = rv_buf_n_words(code);
+    rv_buf_emit(code, rv_jal(RV_ZERO, rv_buf_offset(code, jback, loop)));
+
+    /* done: patch the exit branch now that we know where here is. */
+    done = rv_buf_n_words(code);
+    rv_buf_patch(code, br_exit,
+                 rv_beq(RV_A5, RV_ZERO,
+                        (int16_t)rv_buf_offset(code, br_exit, done)));
+    return BC_OK;
 }

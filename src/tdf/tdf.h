@@ -368,6 +368,12 @@ int       td_place_l1(td_mod_t *M);
 uint64_t  td_noc_addr(uint8_t x, uint8_t y, uint64_t local);
 int       td_noc_orchestrate(td_mod_t *M);
 int       td_emit_cb_arc(td_mod_t *M, const td_arc_t *a, rv_buf_t *code);
+int       td_emit_dma_loop(rv_buf_t *code, int is_write,
+                           uint32_t dram_arg_slot, uint32_t ntiles_arg_slot,
+                           uint32_t l1_buf, uint32_t depth,
+                           uint32_t dram_mid, uint32_t l1_mid,
+                           uint32_t tile_bytes,
+                           uint32_t recv_addr, uint32_t free_addr);
 
 /* ---- Inspection ---- */
 

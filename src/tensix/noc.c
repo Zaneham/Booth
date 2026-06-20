@@ -24,10 +24,19 @@
 #define NOC_AT_DATA     0x24
 #define NOC_CMD_CTRL    0x28
 
-/* NOC_CTRL request type (bits [1:0]). */
+/* NOC_CTRL request type (bits [1:0]) and the marked-response flag (bit 4). */
 #define NOC_CMD_RD      0u
 #define NOC_CMD_AT      1u
 #define NOC_CMD_WR      2u
+#define NOC_CMD_RESP_MARKED (1u << 4)
+
+/* NIU counters (read-only) at NIU_BASE + 0x200, one 32-bit word each. The few
+ * we need to barrier on: reads issued vs completed, writes issued vs acked. */
+#define NIU_CNT_BASE    0xFFB20200u
+#define CNT_WR_ACK      (1u * 4u)    /* NIU_MST_WR_ACK_RECEIVED      */
+#define CNT_RD_RESP     (2u * 4u)    /* NIU_MST_RD_RESP_RECEIVED     */
+#define CNT_RD_REQ      (5u * 4u)    /* NIU_MST_RD_REQ_SENT          */
+#define CNT_WR_SENT     (10u * 4u)   /* NIU_MST_NONPOSTED_WR_REQ_SENT */
 
 /* NOC_AT_LEN_BE for an atomic increment (NoC/Atomics.md): op selector in
  * [15:12] (1 = increment), IntWidth in [6:2], Ofs in [1:0]. IntWidth=31 is a
@@ -161,4 +170,59 @@ int
 tt_cb_pop_front(rv_buf_t *c, uint32_t free_lo, uint32_t free_mid, uint32_t n)
 {
     return tt_sem_inc(c, free_lo, free_mid, n);
+}
+
+/* Expose the 32-bit materialiser; the tile-loop emitter needs it too. */
+void
+tt_li32(rv_buf_t *c, uint8_t reg, uint32_t v)
+{
+    li32(c, reg, v);
+}
+
+/* ---- Register-sourced transfer + completion barrier ----
+ *
+ * tt_noc_read/write take immediate addresses, which is all a fixed transfer
+ * needs. A tile loop instead keeps the source/destination addresses in
+ * registers and bumps them each iteration, so it needs a transfer whose low
+ * addresses come from registers. mid (the high address bits + X/Y coords) and
+ * the length stay immediate. Clobbers t0/t1; treg and rreg must be neither.
+ */
+int
+tt_noc_xfer_reg(rv_buf_t *c, int is_write, uint8_t treg, uint8_t rreg,
+                uint32_t tmid, uint32_t rmid, uint32_t len)
+{
+    uint32_t ctrl = is_write ? (NOC_CMD_WR | NOC_CMD_RESP_MARKED) : NOC_CMD_RD;
+    li32(c, RV_T0, NIU_BASE);
+    rv_buf_emit(c, rv_sw(treg, RV_T0, NOC_TARG_LO));   /* target low from reg */
+    store_reg(c, tmid, NOC_TARG_MID);
+    rv_buf_emit(c, rv_sw(rreg, RV_T0, NOC_RET_LO));    /* return low from reg */
+    store_reg(c, rmid, NOC_RET_MID);
+    store_reg(c, len,  NOC_AT_LEN_BE);
+    store_reg(c, ctrl, NOC_CTRL);
+    store_reg(c, 1u,   NOC_CMD_CTRL);                  /* fire */
+    return BC_OK;
+}
+
+/* Spin until every transfer issued so far has completed: for reads, until the
+ * responses-received counter catches the requests-sent counter; for writes,
+ * until acks catch the (marked) requests sent. The docs require reading
+ * NOC_CMD_CTRL back before the first counter read so the fire and the poll are
+ * not reordered, so we do that first. Clobbers t0/t1/t2. */
+int
+tt_noc_barrier(rv_buf_t *c, int is_write)
+{
+    uint32_t sent = is_write ? CNT_WR_SENT : CNT_RD_REQ;
+    uint32_t got  = is_write ? CNT_WR_ACK  : CNT_RD_RESP;
+    uint32_t loop;
+    int32_t  off;
+
+    li32(c, RV_T0, NIU_BASE);
+    rv_buf_emit(c, rv_lw(RV_T1, RV_T0, NOC_CMD_CTRL));   /* ordering read-back */
+    li32(c, RV_T0, NIU_CNT_BASE);
+    loop = rv_buf_n_words(c);
+    rv_buf_emit(c, rv_lw(RV_T1, RV_T0, (int16_t)sent));
+    rv_buf_emit(c, rv_lw(RV_T2, RV_T0, (int16_t)got));
+    off = rv_buf_offset(c, rv_buf_n_words(c), loop);
+    rv_buf_emit(c, rv_bne(RV_T1, RV_T2, (int16_t)off));  /* sent != got ? loop */
+    return BC_OK;
 }

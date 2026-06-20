@@ -19,6 +19,14 @@ static int bufs_eq(const rv_buf_t *a, const rv_buf_t *b)
     return memcmp(rv_buf_data(a), rv_buf_data(b), n * 4u) == 0;
 }
 
+static int has_word(const rv_buf_t *b, uint32_t w)
+{
+    uint32_t n = rv_buf_n_words(b);
+    const uint32_t *d = rv_buf_data(b);
+    for (uint32_t i = 0; i < n; i++) if (d[i] == w) return 1;
+    return 0;
+}
+
 /* bir_module_t is a multi-megabyte arena and absolutely will not fit
  * on the stack. We never dereference this in the lowering, the
  * lowering just compares pointers, so one BSS sentinel is enough
@@ -745,3 +753,47 @@ static void tdf_emit_cb_rejects_noc(void)
     PASS();
 }
 TH_REG("tdf", tdf_emit_cb_rejects_noc);
+
+/* ---- reader loop: DRAM -> L1, read barrier, back-jump ---- */
+
+static void tdf_reader_loop_shape(void)
+{
+    rv_buf_init(&EA);
+    CHEQ(td_emit_dma_loop(&EA, /*is_write=*/0,
+                          /*dram_slot=*/0, /*ntiles_slot=*/1,
+                          /*l1_buf=*/0x8100u, /*depth=*/2u,
+                          /*dram_mid=*/0u, /*l1_mid=*/0u,
+                          /*tile_bytes=*/4096u,
+                          /*recv=*/0xA100u, /*free=*/0xA104u), BC_OK);
+    uint32_t n = rv_buf_n_words(&EA);
+    CHECK(n > 40u);
+    /* DRAM(a3) -> L1(a4): target-low from a3, return-low from a4. */
+    CHECK(has_word(&EA, rv_sw(RV_A3, RV_T0, 0x00)));
+    CHECK(has_word(&EA, rv_sw(RV_A4, RV_T0, 0x0C)));
+    /* read barrier polls RD_REQ_SENT (0x14) vs RD_RESP_RECEIVED (0x08). */
+    CHECK(has_word(&EA, rv_lw(RV_T1, RV_T0, 0x14)));
+    CHECK(has_word(&EA, rv_lw(RV_T2, RV_T0, 0x08)));
+    /* loop closes with a back jump: jal zero, <negative>. */
+    uint32_t last = rv_buf_data(&EA)[n - 1u];
+    CHEQ(last & 0x7fu, 0x6fu);          /* JAL opcode      */
+    CHEQ((last >> 7) & 0x1fu, 0u);      /* rd == zero      */
+    PASS();
+}
+TH_REG("tdf", tdf_reader_loop_shape);
+
+/* ---- writer loop: L1 -> DRAM, write-ack barrier ---- */
+
+static void tdf_writer_loop_shape(void)
+{
+    rv_buf_init(&EA);
+    CHEQ(td_emit_dma_loop(&EA, /*is_write=*/1,
+                          0, 1, 0x8100u, 2u, 0u, 0u, 4096u,
+                          0xA100u, 0xA104u), BC_OK);
+    /* L1(a4) -> DRAM(a3): target-low from a4, return-low from a3. */
+    CHECK(has_word(&EA, rv_sw(RV_A4, RV_T0, 0x00)));
+    CHECK(has_word(&EA, rv_sw(RV_A3, RV_T0, 0x0C)));
+    /* write barrier polls WR_ACK_RECEIVED (0x04), reader's never does. */
+    CHECK(has_word(&EA, rv_lw(RV_T2, RV_T0, 0x04)));
+    PASS();
+}
+TH_REG("tdf", tdf_writer_loop_shape);
