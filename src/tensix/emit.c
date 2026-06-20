@@ -622,6 +622,11 @@ tensix_emit_compute_rv(tt_module_t *tt, rv_buf_t *code,
 {
     uint32_t i, loop, br_exit, jback, done;
 
+    /* seed the counters this core acquires: its input starts empty (no tiles
+     * produced yet), its output ring starts full of free slots. */
+    tt_sem_init(code, s->in_recv_addr, 0u);
+    tt_sem_init(code, s->out_free_addr, s->out_depth);
+
     /* prologue: load the tile count into a5. */
     tt_li32(code, RV_T0, s->ntiles_addr);
     rv_buf_emit(code, rv_lw(RV_A5, RV_T0, 0));

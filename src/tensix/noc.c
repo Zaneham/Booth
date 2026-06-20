@@ -143,15 +143,39 @@ tt_sem_wait_ge(rv_buf_t *c, uint32_t sem_addr, uint32_t threshold)
     return BC_OK;
 }
 
-/* The four CB ops are just the wait/signal pair under their pipeline names.
- * `recv` counts pages the producer has supplied; `free` counts pages the
- * consumer has released. Each side polls the counter it owns and bumps the
- * one its partner owns. */
+/* Seed a local counter to `val` (one store; done once before the loop). */
+int
+tt_sem_init(rv_buf_t *c, uint32_t sem_addr, uint32_t val)
+{
+    li32(c, RV_T0, sem_addr);
+    li32(c, RV_T1, val);
+    rv_buf_emit(c, rv_sw(RV_T1, RV_T0, 0));
+    return BC_OK;
+}
+
+/* Acquire `n` credits from the local counter: spin until it holds at least n,
+ * then atomically subtract n. The subtract goes through the NoC atomic unit
+ * (incrementing by -n) rather than a plain load-store, so it cannot lose a
+ * concurrent remote increment from the partner core returning credits. */
+int
+tt_sem_acquire(rv_buf_t *c, uint32_t sem_addr, uint32_t n)
+{
+    tt_sem_wait_ge(c, sem_addr, n);
+    tt_sem_inc(c, sem_addr, 0u, (uint32_t)(0u - n));   /* atomic -= n (local) */
+    return BC_OK;
+}
+
+/* The four CB ops over the counting-semaphore pair. `free` counts empty slots
+ * (seeded to the ring depth), `recv` counts filled slots (seeded to zero). The
+ * acquiring ops (reserve_back, wait_front) wait then consume a credit; the
+ * signalling ops (push_back, pop_front) hand a credit to the partner over the
+ * NoC. Constant counts are correct because the counters track what is available
+ * right now, not a running total. */
 
 int
 tt_cb_reserve_back(rv_buf_t *c, uint32_t free_addr, uint32_t credits)
 {
-    return tt_sem_wait_ge(c, free_addr, credits);
+    return tt_sem_acquire(c, free_addr, credits);
 }
 
 int
@@ -163,7 +187,7 @@ tt_cb_push_back(rv_buf_t *c, uint32_t recv_lo, uint32_t recv_mid, uint32_t n)
 int
 tt_cb_wait_front(rv_buf_t *c, uint32_t recv_addr, uint32_t n)
 {
-    return tt_sem_wait_ge(c, recv_addr, n);
+    return tt_sem_acquire(c, recv_addr, n);
 }
 
 int

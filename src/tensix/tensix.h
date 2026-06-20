@@ -283,6 +283,7 @@ typedef struct {
     uint32_t out_free_addr;     /* local: output free-counter (reserve_back)   */
     uint32_t out_recv_lo;       /* remote: output produced-counter (push_back) */
     uint32_t out_recv_mid;
+    uint32_t out_depth;         /* output CB ring depth (seeds out_free)       */
 } tt_compute_sync_t;
 
 /* Weave the compute body into a baby-core RISC-V program: a per-tile loop that

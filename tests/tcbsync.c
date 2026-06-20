@@ -90,19 +90,37 @@ static void cb_push_is_sem_inc(void)
 }
 TH_REG("tensix", cb_push_is_sem_inc);
 
-static void cb_wait_front_is_wait_ge(void)
+static void cb_wait_front_is_acquire(void)
 {
     static rv_buf_t A;
     rv_buf_init(&A);
     rv_buf_init(&B);
+    /* wait_front acquires a credit: spin until >= n, then atomic -= n. */
     tt_cb_wait_front(&A, 0x9000u, 3u);
-    tt_sem_wait_ge  (&B, 0x9000u, 3u);
+    tt_sem_acquire  (&B, 0x9000u, 3u);
     uint32_t n = rv_buf_n_words(&A);
     CHEQ(n, rv_buf_n_words(&B));
     CHECK(memcmp(rv_buf_data(&A), rv_buf_data(&B), n * 4u) == 0);
     PASS();
 }
-TH_REG("tensix", cb_wait_front_is_wait_ge);
+TH_REG("tensix", cb_wait_front_is_acquire);
+
+/* ---- acquire = wait_ge followed by an atomic decrement ---- */
+
+static void acquire_waits_then_decrements(void)
+{
+    static rv_buf_t A;
+    rv_buf_init(&A);
+    rv_buf_init(&B);
+    tt_sem_acquire(&A, 0x9000u, 1u);
+    tt_sem_wait_ge(&B, 0x9000u, 1u);
+    tt_sem_inc    (&B, 0x9000u, 0u, 0xFFFFFFFFu);   /* atomic -1 */
+    uint32_t n = rv_buf_n_words(&A);
+    CHEQ(n, rv_buf_n_words(&B));
+    CHECK(memcmp(rv_buf_data(&A), rv_buf_data(&B), n * 4u) == 0);
+    PASS();
+}
+TH_REG("tensix", acquire_waits_then_decrements);
 
 /* ---- compute weave brackets the issue stream with the CB handshake ---- */
 
@@ -125,6 +143,7 @@ static void compute_weave_brackets_issue(void)
     s.in_free_lo    = 0x9000u;
     s.out_free_addr = 0xB100u;
     s.out_recv_lo   = 0x9100u;
+    s.out_depth     = 2u;
 
     rv_buf_init(&B);
     CHEQ(tensix_emit_compute_rv(m, &B, &s), BC_OK);

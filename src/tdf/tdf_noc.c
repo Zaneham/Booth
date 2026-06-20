@@ -176,6 +176,11 @@ int td_emit_dma_loop(rv_buf_t *code, int is_write,
     uint32_t loop, br_exit, br_wrap, jback, nowrap, done;
     uint32_t ring_end = l1_buf + depth * tile_bytes;
 
+    /* seed the counter this core acquires: a reader waits on free slots (start
+     * full = depth), a writer waits on produced tiles (start empty = 0). */
+    if (is_write) tt_sem_init(code, recv_addr, 0u);
+    else          tt_sem_init(code, free_addr, depth);
+
     /* prologue: pull args from L1, set up the loop registers. */
     tt_li32(code, RV_T0, TD_L1_RTARG_BASE);
     rv_buf_emit(code, rv_lw(RV_A3, RV_T0,

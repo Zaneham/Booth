@@ -27,6 +27,8 @@ int tt_noc_write(rv_buf_t *code, uint32_t targ_lo, uint32_t targ_mid,
 int tt_sem_inc    (rv_buf_t *code, uint32_t sem_lo, uint32_t sem_mid,
                    uint32_t incr);
 int tt_sem_wait_ge(rv_buf_t *code, uint32_t sem_addr, uint32_t threshold);
+int tt_sem_init   (rv_buf_t *code, uint32_t sem_addr, uint32_t val);
+int tt_sem_acquire(rv_buf_t *code, uint32_t sem_addr, uint32_t n);
 
 int tt_cb_reserve_back(rv_buf_t *code, uint32_t free_addr, uint32_t credits);
 int tt_cb_push_back   (rv_buf_t *code, uint32_t recv_lo, uint32_t recv_mid,
