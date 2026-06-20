@@ -402,6 +402,8 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         case BIR_ADD: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x01);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;
         case BIR_SUB: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x29);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;
         case BIR_MUL: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);eb(X,0x48);eb(X,0x0F);eb(X,0xAF);modrm(X,3,X_RAX,X_RCX);st_slot(X,X_RAX,s);break;
+        /* mul-hi: one-operand widening mul (48 F7 /4) puts high 64 in RDX */
+        case BIR_UMULHI: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);eb(X,0x48);eb(X,0xF7);modrm(X,3,4,X_RCX);st_slot(X,X_RDX,s);break;
 
         /* ---- integer bitwise (width-agnostic, plain 64-bit) ---- */
         case BIR_AND: load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]);rexw(X,X_RCX,X_RAX);eb(X,0x21);modrm(X,3,X_RCX,X_RAX);st_slot(X,X_RAX,s);break;

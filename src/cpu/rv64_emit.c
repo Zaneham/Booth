@@ -43,6 +43,7 @@ static uint32_t mk_J(int op,int rd,int imm21){
 static void e_add (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,0,a,b,0x00)); }
 static void e_sub (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,0,a,b,0x20)); }
 static void e_mul (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,0,a,b,0x01)); }
+static void e_mulhu(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,3,a,b,0x01)); }
 static void e_slt (rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,2,a,b,0x00)); }
 static void e_sltu(rv64_mod_t*V,int d,int a,int b){ ew(V,mk_R(0x33,d,3,a,b,0x00)); }
 static void e_addi(rv64_mod_t*V,int d,int a,int i){ ew(V,mk_I(0x13,d,0,a,i&0xFFF)); }
@@ -409,6 +410,7 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         case BIR_ADD: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_add(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
         case BIR_SUB: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_sub(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
         case BIR_MUL: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_mul(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
+        case BIR_UMULHI: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_mulhu(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;
 
         /* ---- integer bitwise + width-aware shift/divide ---- */
         case BIR_AND: load_val(V,V_T0,I->operands[0]);load_val(V,V_T1,I->operands[1]);e_and(V,V_T0,V_T0,V_T1);st_slot(V,V_T0,s); break;

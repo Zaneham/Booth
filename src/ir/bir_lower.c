@@ -1432,6 +1432,21 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             return BIR_MAKE_VAL(inst);
         }
 
+        /* __umul64hi(a, b): high 64 bits of a 64x64 unsigned product.
+           Keystone for ZK field arithmetic — Montgomery multiply is
+           mul-lo + mul-hi + add-with-carry. */
+        if (strcmp(cname, "__umul64hi") == 0) {
+            uint32_t an = ND(L, callee_n)->next_sibling;
+            uint32_t a0 = lower_expr(L, an);
+            an = ND(L, an)->next_sibling;
+            uint32_t a1 = lower_expr(L, an);
+            uint32_t rt = bir_type_int(L->M, 64);
+            uint32_t inst = emit(L, BIR_UMULHI, rt, 2, 0);
+            set_op(L, inst, 0, a0);
+            set_op(L, inst, 1, a1);
+            return BIR_MAKE_VAL(inst);
+        }
+
         /* Warp shuffle: up to 4-arg (mask, val, lane/delta, [width]) */
         {
             static const struct { const char *n; uint16_t op; } stab[] = {

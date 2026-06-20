@@ -179,7 +179,7 @@ static void print_inst(const bir_module_t *M, const bir_inst_t *I,
     switch (I->op) {
 
     /* Binary arithmetic/bitwise: OP TYPE %a, %b */
-    case BIR_ADD: case BIR_SUB: case BIR_MUL:
+    case BIR_ADD: case BIR_SUB: case BIR_MUL: case BIR_UMULHI:
     case BIR_SDIV: case BIR_UDIV: case BIR_SREM: case BIR_UREM:
     case BIR_FADD: case BIR_FSUB: case BIR_FMUL: case BIR_FDIV: case BIR_FREM:
     case BIR_AND: case BIR_OR: case BIR_XOR:

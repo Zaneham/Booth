@@ -174,6 +174,10 @@ typedef enum {
     BIR_SELECT,                 /* ops[0] = cond, ops[1] = true, ops[2] = false */
     BIR_INLINE_ASM,             /* for when you need to talk directly to the metal */
 
+    /* Wide multiply — high half of a full-width product. Keystone for
+       256-bit field arithmetic (Montgomery): mul-lo + mul-hi + carry. */
+    BIR_UMULHI,
+
     BIR_OP_IMPLEMENTED,
 
     /* Reserved: texture/surface ops */

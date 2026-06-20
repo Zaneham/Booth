@@ -8,6 +8,7 @@ static const char *op_names[BIR_OP_COUNT] = {
     [BIR_ADD]           = "add",
     [BIR_SUB]           = "sub",
     [BIR_MUL]           = "mul",
+    [BIR_UMULHI]        = "umulhi",
     [BIR_SDIV]          = "sdiv",
     [BIR_UDIV]          = "udiv",
     [BIR_SREM]          = "srem",
