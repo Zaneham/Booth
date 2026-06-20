@@ -1,4 +1,8 @@
 #include "tensix.h"
+#include "rv_buf.h"
+#include "rv_enc.h"
+#include "rt_args.h"
+#include "noc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -594,6 +598,62 @@ int tensix_emit_binary(tt_module_t *tt, const char *path)
 int tensix_emit_ttinsn(tt_module_t *tt, const char *path)
 {
     return emit_stream(tt, path, xf_ttinsn);
+}
+
+/* ---- Compute-core weave ----
+ * The reader and writer cores are baby-RISC-V programs; so is the compute core.
+ * Its body is the .ttinsn issue stream (each word a custom RISC-V instruction
+ * that pushes one Tensix op), and around it goes the circular-buffer handshake
+ * so it only computes on input tiles that have arrived and only overwrites
+ * output slots the writer has drained.
+ *
+ * Per tile: wait for an input tile (wait_front), claim an output slot
+ * (reserve_back), issue the math, publish the output (push_back), release the
+ * input (pop_front). The tile count comes from the runtime-args slab; the
+ * counter in a5 drives the loop. The CB primitives only touch t0/t1/t2, so a5
+ * and the issue stream are undisturbed.
+ *
+ * This is the inter-core synchronisation, validated end to end. Intra-Tensix
+ * unpack/math/pack ordering is the issue-stream sequence itself; the Sync Unit
+ * bracket in emit_stream() remains the provisional on-chip piece. */
+int
+tensix_emit_compute_rv(tt_module_t *tt, rv_buf_t *code,
+                       const tt_compute_sync_t *s)
+{
+    uint32_t i, loop, br_exit, jback, done;
+
+    /* prologue: load the tile count into a5. */
+    tt_li32(code, RV_T0, s->ntiles_addr);
+    rv_buf_emit(code, rv_lw(RV_A5, RV_T0, 0));
+
+    loop    = rv_buf_n_words(code);
+    br_exit = (uint32_t)rv_buf_emit(code, 0u);          /* beq a5,zero,done */
+
+    /* acquire: input tile present, output slot free. */
+    tt_cb_wait_front(code, s->in_recv_addr, 1u);
+    tt_cb_reserve_back(code, s->out_free_addr, 1u);
+
+    /* the math: each real Tensix op issued as one .ttinsn instruction. */
+    for (i = 0; i < tt->num_minsts; i++) {
+        const tt_minst_t *I = &tt->minsts[i];
+        if (!enc_lookup(I->op)) continue;               /* pseudo-op */
+        rv_buf_emit(code, xf_ttinsn(encode_inst(I)));
+    }
+
+    /* publish output, release input. */
+    tt_cb_push_back(code, s->out_recv_lo, s->out_recv_mid, 1u);
+    tt_cb_pop_front(code, s->in_free_lo, s->in_free_mid, 1u);
+
+    /* decrement and loop. */
+    rv_buf_emit(code, rv_addi(RV_A5, RV_A5, -1));
+    jback = rv_buf_n_words(code);
+    rv_buf_emit(code, rv_jal(RV_ZERO, rv_buf_offset(code, jback, loop)));
+
+    done = rv_buf_n_words(code);
+    rv_buf_patch(code, br_exit,
+                 rv_beq(RV_A5, RV_ZERO,
+                        (int16_t)rv_buf_offset(code, br_exit, done)));
+    return BC_OK;
 }
 
 /* ---- Disassembly ---- */

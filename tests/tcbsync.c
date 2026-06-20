@@ -7,6 +7,9 @@
 #include "rv_buf.h"
 #include "rv_enc.h"
 #include "noc.h"
+#include "tensix.h"
+#include <stdlib.h>
+#include <string.h>
 
 /* NIU register file base, high 20 bits (the lui immediate). 0xFFB20000. */
 #define NIU_LUI 0xFFB20u
@@ -100,3 +103,57 @@ static void cb_wait_front_is_wait_ge(void)
     PASS();
 }
 TH_REG("tensix", cb_wait_front_is_wait_ge);
+
+/* ---- compute weave brackets the issue stream with the CB handshake ---- */
+
+static void compute_weave_brackets_issue(void)
+{
+    tt_module_t *m = (tt_module_t *)malloc(sizeof *m);
+    tt_compute_sync_t s;
+    uint32_t n, last;
+
+    CHECK(m != NULL);
+    memset(m, 0, sizeof *m);
+    /* two real Tensix ops as the body. */
+    m->minsts[0].op = TT_SFPADD; m->minsts[0].fmt = TT_FMT_A;
+    m->minsts[1].op = TT_SFPMUL; m->minsts[1].fmt = TT_FMT_A;
+    m->num_minsts = 2u;
+
+    memset(&s, 0, sizeof s);
+    s.ntiles_addr   = 0x8030u;
+    s.in_recv_addr  = 0xA100u;
+    s.in_free_lo    = 0x9000u;
+    s.out_free_addr = 0xB100u;
+    s.out_recv_lo   = 0x9100u;
+
+    rv_buf_init(&B);
+    CHEQ(tensix_emit_compute_rv(m, &B, &s), BC_OK);
+
+    n = rv_buf_n_words(&B);
+    CHECK(n > 8u);
+    /* a CB wait is a spin: lw then bltu back by one word. */
+    CHECK(find_word(rv_bltu(RV_T1, RV_T2, -4)) >= 0);
+    /* a CB signal is an atomic increment: NOC_AT_LEN_BE = 0x107C materialised. */
+    CHECK(find_word(rv_addi(RV_T1, RV_T1, 0x7C)) >= 0);
+    /* the loop has an exit branch: beq <reg>, zero, done. */
+    {
+        int found_exit = 0;
+        uint32_t k;
+        for (k = 0; k < n; k++) {
+            uint32_t w = rv_buf_data(&B)[k];
+            if ((w & 0x7fu) == 0x63u             /* BRANCH        */
+             && ((w >> 12) & 7u) == 0u           /* funct3 = beq  */
+             && ((w >> 20) & 0x1fu) == 0u) {     /* rs2 = zero    */
+                found_exit = 1; break;
+            }
+        }
+        CHECK(found_exit);
+    }
+    /* and the loop closes with a back jump. */
+    last = rv_buf_data(&B)[n - 1u];
+    CHEQ(last & 0x7fu, 0x6fu);                         /* JAL  */
+    CHEQ((last >> 7) & 0x1fu, 0u);                     /* rd == zero */
+    free(m);
+    PASS();
+}
+TH_REG("tensix", compute_weave_brackets_issue);

@@ -2,6 +2,7 @@
 #define BARRACUDA_TENSIX_H
 
 #include "bir.h"
+#include "rv_buf.h"     /* rv_buf_t, for the compute-core weave */
 
 /* Tenstorrent Tensix backend. 32-lane SFPU, 8 writable LRegs, predicated
  * execution, no branches, and a register that contains 0.8373.
@@ -268,6 +269,26 @@ void tensix_regalloc(tt_module_t *tt);
 int  tensix_emit_metalium(tt_module_t *tt, const char *path);
 int  tensix_emit_binary(tt_module_t *tt, const char *path);   /* raw Tensix words */
 int  tensix_emit_ttinsn(tt_module_t *tt, const char *path);   /* RISC-V .ttinsn stream */
+
+/* CB addresses the compute core synchronises against. As consumer of its input
+ * CB it waits on `in_recv` (local) and releases via the producer's `in_free`
+ * (remote); as producer of its output CB it waits on `out_free` (local) and
+ * signals the consumer's `out_recv` (remote). Same-tile placement makes the
+ * remote mids zero. */
+typedef struct {
+    uint32_t ntiles_addr;       /* L1 address of the tile-count runtime arg */
+    uint32_t in_recv_addr;      /* local: input produced-counter (wait_front) */
+    uint32_t in_free_lo;        /* remote: input free-counter (pop_front)      */
+    uint32_t in_free_mid;
+    uint32_t out_free_addr;     /* local: output free-counter (reserve_back)   */
+    uint32_t out_recv_lo;       /* remote: output produced-counter (push_back) */
+    uint32_t out_recv_mid;
+} tt_compute_sync_t;
+
+/* Weave the compute body into a baby-core RISC-V program: a per-tile loop that
+ * brackets the .ttinsn issue stream with the CB handshake. */
+int  tensix_emit_compute_rv(tt_module_t *tt, rv_buf_t *code,
+                            const tt_compute_sync_t *s);
 /* Data movement — Tier 4 */
 void tensix_analyze_datamov(const bir_module_t *bir, const tt_module_t *tt,
                             tt_dmov_t *dmov);
