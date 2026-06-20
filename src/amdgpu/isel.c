@@ -1952,6 +1952,18 @@ static void isel_atomic(uint32_t idx, const bir_inst_t *I, int div)
     }
     int as = get_addrspace(ptr_type);
 
+    /* Shared-memory exchange/CAS need ds_wrxchg_rtn_b32 / ds_cmpst_rtn_b32,
+     * which aren't implemented yet. Bail loudly instead of silently emitting
+     * an atomic ADD (which returns the wrong result with no error). */
+    if (as == BIR_AS_SHARED &&
+        (I->op == BIR_ATOMIC_XCHG || I->op == BIR_ATOMIC_CAS)) {
+        fprintf(stderr, "barracuda: shared-memory atomic %s not yet supported "
+                "(needs ds_%s)\n",
+                I->op == BIR_ATOMIC_XCHG ? "exchange" : "compare-and-swap",
+                I->op == BIR_ATOMIC_XCHG ? "wrxchg_rtn_b32" : "cmpst_rtn_b32");
+        return;
+    }
+
     uint32_t vr = map_bir_val(idx, 1);
     moperand_t dst = mop_vreg_v((uint16_t)vr);
 
@@ -1968,8 +1980,10 @@ static void isel_atomic(uint32_t idx, const bir_inst_t *I, int div)
         case BIR_ATOMIC_XOR:  ds_op = AMD_DS_XOR_RTN_B32; break;
         case BIR_ATOMIC_MIN:  ds_op = AMD_DS_MIN_RTN_I32; break;
         case BIR_ATOMIC_MAX:  ds_op = AMD_DS_MAX_RTN_I32; break;
-        case BIR_ATOMIC_XCHG: ds_op = AMD_DS_ADD_RTN_U32; break; /* placeholder */
-        default: ds_op = AMD_DS_ADD_RTN_U32; break;
+        default:
+            fprintf(stderr, "barracuda: unsupported shared-memory atomic "
+                    "(BIR op=%u)\n", (unsigned)I->op);
+            return;
         }
         emit2(ds_op, dst, addr, val);
         emit_wait_ds();
