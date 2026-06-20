@@ -300,5 +300,9 @@ int  tensix_emit_writer(const tt_module_t *tt, const tt_dmov_t *dmov,
 int  tensix_emit_host_full(const tt_module_t *tt, const tt_dmov_t *dmov,
                            const char *host_path, const char *reader_path,
                            const char *compute_path, const char *writer_path);
+/* Emit the three baby-core ELFs (reader/compute/writer) with one shared L1
+ * address layout. Writes <stem>_reader.elf, <stem>_compute.elf, <stem>_writer.elf. */
+int  tensix_emit_kernel_elves(tt_module_t *tt, const tt_dmov_t *dmov,
+                              const char *stem);
 
 #endif /* BARRACUDA_TENSIX_H */

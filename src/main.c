@@ -339,6 +339,14 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             tensix_emit_writer(ttm, &ttm->dmov, writer_path);
             tensix_emit_host_full(ttm, &ttm->dmov, host_path,
                                   reader_path, compute_path, writer_path);
+            /* The same three cores as baby-core machine code, one shared L1
+             * address map. The Metalium C++ above is the dev path; these ELFs
+             * are the toolchain-free path. */
+            {
+                char elf_stem[BC_MAX_PATH];
+                snprintf(elf_stem, sizeof(elf_stem), "%.*s", pfx, compute_path);
+                tensix_emit_kernel_elves(ttm, &ttm->dmov, elf_stem);
+            }
         } else {
             fprintf(stderr, "error: Tensix compilation failed\n");
             rc = trc;
