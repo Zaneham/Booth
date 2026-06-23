@@ -417,7 +417,8 @@ static uint32_t resolve_type(lower_t *L, uint32_t node, int ptr_depth,
             base = bir_type_float(L->M, 16);
         else if (strcmp(name, "__nv_bfloat16") == 0
                  || strcmp(name, "nv_bfloat16") == 0
-                 || strcmp(name, "__bfloat16") == 0)
+                 || strcmp(name, "__bfloat16") == 0
+                 || strcmp(name, "__hip_bfloat16") == 0)
             base = bir_type_bfloat(L->M);
         else {
             /* ---- Vector types → synthetic structs ---- */
