@@ -410,7 +410,8 @@ static uint32_t resolve_typespec(sema_ctx_t *S, uint32_t node, int ptr_depth)
             || strcmp(tname, "_Float16") == 0)   { base = intern_type(S, STYPE_HALF, 0, 0, 0, 0); break; }
         if (strcmp(tname, "__nv_bfloat16") == 0
             || strcmp(tname, "nv_bfloat16") == 0
-            || strcmp(tname, "__bfloat16") == 0) { base = intern_type(S, STYPE_BF16, 0, 0, 0, 0); break; }
+            || strcmp(tname, "__bfloat16") == 0
+            || strcmp(tname, "__hip_bfloat16") == 0) { base = intern_type(S, STYPE_BF16, 0, 0, 0, 0); break; }
 
         /* ---- Vector types (CUDA vector_types.h) ---- */
         {
