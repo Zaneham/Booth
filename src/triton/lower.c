@@ -315,6 +315,26 @@ static int l_type_kind(const tn_lower_t *L, uint32_t type_idx)
     return L->bir->types[type_idx].kind;
 }
 
+static uint32_t l_tjoin(tn_lower_t *L, uint32_t a, uint32_t b)
+{
+    if (a == b) return a;
+    if ((a == L->t_i32 && b == L->t_f32) ||
+        (a == L->t_f32 && b == L->t_i32))
+        return L->t_f32;
+    return BIR_VAL_NONE;
+}
+
+static uint32_t l_cast(tn_lower_t *L, uint32_t v, uint32_t dst)
+{
+    uint32_t src = l_val_type(L, v);
+    if (src == dst) return v;
+    if (src != L->t_i32 || dst != L->t_f32)
+        return BIR_VAL_NONE;
+    uint32_t inst = l_emit(L, BIR_SITOFP, dst, 0);
+    l_op(L, inst, v);
+    return inst;
+}
+
 /* Map a Triton BinOp subcode onto the matching BIR opcode, choosing
  * integer or floating-point flavour based on the operand types. The
  * pointer-plus-int case is handled separately because it lowers to
@@ -751,6 +771,52 @@ static uint32_t l_intrinsic_call(tn_lower_t *L, uint32_t call_idx,
         uint32_t div = l_emit(L, BIR_SDIV, L->t_i32, 0);
         l_op(L, div, sum); l_op(L, div, b);
         return div;
+    }
+
+    case TN_TLI_WHERE: {
+        /* tl.where(cond, a, b) is the Triton spelling of a predicated
+         * elementwise select. Rank-1 tiles lower through the scalar lane
+         * model here; rank-2 fan-out belongs to the materialised tile path
+         * and is deliberately not smuggled into this scalar lowerer. */
+        uint32_t cn = l_pos_arg(L, call_idx, 0);
+        uint32_t tn = l_pos_arg(L, call_idx, 1);
+        uint32_t fn = l_pos_arg(L, call_idx, 2);
+        if (cn == 0 || tn == 0 || fn == 0) {
+            l_err(L, 95, l_tok(L, call_idx),
+                  "tl.where expects condition, true value, false value");
+            return BIR_VAL_NONE;
+        }
+
+        uint32_t cond = l_expr(L, cn);
+        if (cond == BIR_VAL_NONE) return BIR_VAL_NONE;
+        int ck = l_type_kind(L, l_val_type(L, cond));
+        if (ck != BIR_TYPE_INT) {
+            l_err(L, 95, l_tok(L, call_idx),
+                  "tl.where condition must lower to an integer/bool mask");
+            return BIR_VAL_NONE;
+        }
+
+        uint32_t tv = l_expr(L, tn);
+        uint32_t fv = l_expr(L, fn);
+        if (tv == BIR_VAL_NONE || fv == BIR_VAL_NONE) return BIR_VAL_NONE;
+
+        uint32_t tty = l_val_type(L, tv);
+        uint32_t fty = l_val_type(L, fv);
+        uint32_t sty = l_tjoin(L, tty, fty);
+        if (sty == BIR_VAL_NONE) {
+            l_err(L, 95, l_tok(L, call_idx),
+                  "tl.where value types not yet lowerable");
+            return BIR_VAL_NONE;
+        }
+        tv = l_cast(L, tv, sty);
+        fv = l_cast(L, fv, sty);
+        if (tv == BIR_VAL_NONE || fv == BIR_VAL_NONE) return BIR_VAL_NONE;
+
+        uint32_t inst = l_emit(L, BIR_SELECT, sty, 0);
+        l_op(L, inst, cond);
+        l_op(L, inst, tv);
+        l_op(L, inst, fv);
+        return inst;
     }
 
     case TN_TLI_EXP:     return l_exp_nat(L, call_idx);

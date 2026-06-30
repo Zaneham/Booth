@@ -327,6 +327,49 @@ static void tt_lower_math_intrinsics(void)
 }
 TH_REG("triton", tt_lower_math_intrinsics)
 
+static void tt_lower_where_select(void)
+{
+    int rc = tt_run("--triton --ir tests/tri_where.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "fcmp ") != NULL);
+    CHECK(strstr(obuf, "select f32") != NULL);
+    CHECK(strstr(obuf, "E095") == NULL);
+    PASS();
+}
+TH_REG("triton", tt_lower_where_select)
+
+static void tt_lower_where_mixed_promotes(void)
+{
+    int rc = tt_run("--triton --ir --no-cfold tests/tri_where_mixed.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "sitofp i32") != NULL);
+    CHECK(strstr(obuf, "select f32") != NULL);
+    CHECK(strstr(obuf, "E095") == NULL);
+    PASS();
+}
+TH_REG("triton", tt_lower_where_mixed_promotes)
+
+static void tt_lower_where_i32_select(void)
+{
+    int rc = tt_run("--triton --ir --no-dce tests/tri_where_int.py");
+    CHEQ(rc, 0);
+    CHECK(strstr(obuf, "icmp ") != NULL);
+    CHECK(strstr(obuf, "select i32") != NULL);
+    CHECK(strstr(obuf, "E095") == NULL);
+    PASS();
+}
+TH_REG("triton", tt_lower_where_i32_select)
+
+static void tt_lower_where_bad_cond(void)
+{
+    int rc = tt_run("--triton --ir tests/tri_where_bad_cond.py");
+    CHNE(rc, 0);
+    CHECK(strstr(obuf, "E095") != NULL);
+    CHECK(strstr(obuf, "condition must lower") != NULL);
+    PASS();
+}
+TH_REG("triton", tt_lower_where_bad_cond)
+
 /* ============================================================
  * Backend: AMD GFX11
  * ============================================================ */
