@@ -1,4 +1,5 @@
 #include "sema.h"
+#include "amdgpu.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -618,6 +619,22 @@ static const cuda_builtin_t cuda_builtins[] = {
     {NULL, 0, 0, 0}
 };
 
+/* ---- CUDA Builtin Constants ---- */
+typedef struct {
+    const char *name;
+    int         (*resolve)(const sema_ctx_t *S);
+} cuda_builtin_const_t;
+
+static int resolve_warp_size(const sema_ctx_t *S)
+{
+    return (S->amd_target == AMD_TARGET_GFX90A || S->amd_target == AMD_TARGET_GFX942) ? AMD_WAVE64 : AMD_WAVE_SIZE;
+}
+
+static const cuda_builtin_const_t cuda_builtin_consts[] = {
+    {"warpSize", resolve_warp_size},
+    {NULL, NULL}
+};
+
 /* ---- Expression Type Checking ---- */
 
 static int64_t parse_int_value(const char *s, int len)
@@ -694,6 +711,16 @@ static uint32_t check_expr(sema_ctx_t *S, uint32_t node)
     case AST_IDENT: {
         char name[128];
         get_text(S, node, name, sizeof(name));
+
+        /* Builtin constant for warpSize */
+        for (int i = 0; cuda_builtin_consts[i].name; i++) {
+            if (strcmp(name, cuda_builtin_consts[i].name) == 0) {
+                (void)cuda_builtin_consts[i].resolve(S);
+                uint32_t t = st_int(S);
+                annotate(S, node, t);
+                return t;
+            }
+        }
 
         const sema_sym_t *sym = find_sym(S, name);
         if (sym) {
@@ -1571,12 +1598,13 @@ static void check_func_def(sema_ctx_t *S, uint32_t node)
 
 /* ---- Initialization ---- */
 
-void sema_init(sema_ctx_t *S, const parser_t *P, uint32_t root)
+void sema_init(sema_ctx_t *S, const parser_t *P, uint32_t root, int amd_target)
 {
     (void)root;
     memset(S, 0, sizeof(*S));
     S->P   = P;
     S->src = P->src;
+    S->amd_target = amd_target;
 
     st_void(S);    /* 0 */
     st_bool(S);    /* 1 */

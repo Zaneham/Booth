@@ -882,7 +882,7 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "error: failed to allocate sema context\n");
                 return 1;
             }
-            sema_init(sema_ctx, &P, root);
+            sema_init(sema_ctx, &P, root, (int)amd_target);
             sema_check(sema_ctx, root);
 
             bc_diag(file, lex_src, sema_ctx->errors, sema_ctx->num_errors);
