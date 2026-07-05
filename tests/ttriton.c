@@ -420,6 +420,8 @@ static void tt_nvidia_ptx(void)
     size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
     buf[n] = '\0';
+    for (size_t i = 0; i < n; i++)
+        CHECK(((unsigned char)buf[i]) < 128);
     CHECK(strstr(buf, ".entry vector_add") != NULL);
     CHECK(strstr(buf, ".version") != NULL);
     PASS();
