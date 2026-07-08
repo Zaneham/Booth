@@ -58,6 +58,7 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tinsert.c \
           tests/tsroa.c \
           tests/tsched.c \
+          tests/twarpsize.c \
           tests/tabend.c \
           tests/tregalloc.c \
           tests/ttriton.c \
@@ -65,6 +66,7 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/trv_enc.c tests/trv_buf.c tests/trv_elf.c tests/trv_isel.c \
           tests/tsoft_fp.c \
           tests/tsysprint.c
+
 TOBJS   = $(TSRC:.c=.o)
 COBJS   = src/ir/bir.o src/ir/bir_print.o src/ir/bir_lower.o src/ir/bir_mem2reg.o src/ir/bir_cfold.o src/ir/bir_dce.o src/ir/bir_struct.o src/ir/bir_insert.o src/ir/bir_sroa.o \
           src/tdf/tdf.o src/tdf/tdf_lower.o src/tdf/tdf_fission.o src/tdf/tdf_place.o src/tdf/tdf_noc.o \
