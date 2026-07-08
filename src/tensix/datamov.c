@@ -26,7 +26,7 @@ static void dm_write(FILE *fp, const char *fmt, ...)
 
 /* Follow the SSA def-use chain from an address operand back to the
  * BIR_PARAM that originally defined it. GEPs, bitcasts, and other
- * address computations are transparent — we just want the base pointer.
+ * address computations are transparent, we just want the base pointer.
  * Returns param index (subop) or -1 if the trail goes cold. */
 
 static int trace_to_param(const bir_module_t *bir, uint32_t val)
@@ -43,7 +43,7 @@ static int trace_to_param(const bir_module_t *bir, uint32_t val)
         if (I->op == BIR_PARAM)
             return (int)I->subop;
 
-        /* Transparent address computations — follow the base pointer */
+        /* Transparent address computations, follow the base pointer */
         if (I->op == BIR_GEP || I->op == BIR_BITCAST ||
             I->op == BIR_INTTOPTR || I->op == BIR_PTRTOINT) {
             val = I->operands[0];

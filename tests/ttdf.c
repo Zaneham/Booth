@@ -415,11 +415,9 @@ static void tdf_build_then_lower(void)
 TH_REG("tdf", tdf_build_then_lower);
 
 /* ---- td_tile_bytes returns the right size per dtype ---- */
-/*
- * Wormhole's tile granularity is 32x32. At fp32 that is 4096 bytes,
- * at fp16/bf16 it is 2048. These numbers turn up in NoC alignment
- * arithmetic, in CB depth budgets, and in any future runtime arg
- * computation, so a regression here would ripple everywhere. */
+/* Wormhole tiles are 32x32, so 4096 bytes at fp32 and 2048 at fp16/bf16.
+ * Those numbers feed NoC alignment, CB depth and runtime args, so a
+ * regression here ripples everywhere. */
 
 static void tdf_tile_bytes_fp32(void)
 {
@@ -495,12 +493,8 @@ TH_REG("tdf", tdf_place_budget);
 
 static void tdf_noc_addr_basic(void)
 {
-    /* (x=1, y=2, local=0x1000) ->
-     *   0x1000 | (1<<36) | (2<<42)
-     *   = 0x0000_0000_0000_1000
-     *   | 0x0000_0010_0000_0000
-     *   | 0x0000_0800_0000_0000
-     *   = 0x0000_0810_0000_1000 */
+    /* (x=1, y=2, local=0x1000) packs to 0x1000 | (1<<36) | (2<<42),
+     * which is 0x0000081000001000. */
     CHEQ(td_noc_addr(1, 2, 0x1000ull), 0x0000081000001000ull);
     PASS();
 }

@@ -62,6 +62,7 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tregalloc.c \
           tests/ttriton.c \
           tests/ttdf.c \
+          tests/ttmc.c \
           tests/trv_enc.c tests/trv_buf.c tests/trv_elf.c tests/trv_isel.c \
           tests/tcbsync.c \
           tests/tsoft_fp.c \

@@ -542,13 +542,11 @@ static uint32_t xf_raw(uint32_t w)    { return w; }
 static uint32_t xf_ttinsn(uint32_t w) { return (w << 2) | (w >> 30); }
 
 /* Write the compute word stream with a conservative circular-buffer sync
- * bracket. xform leaves the words raw (.bin) or .ttinsn-encodes them.
- *
- * The bracket is the first cut: SEMINIT sets up the semaphores, SEMWAIT blocks
- * compute until the input tile is available, SEMPOST signals the output tile.
- * The *encoding* of every word is validated against the Kahu decoder; the
- * semaphore-to-circular-buffer mapping is the provisional protocol and is the
- * piece that still needs confirmation on real hardware. */
+ * bracket; xform leaves the words raw (.bin) or .ttinsn-encodes them. SEMINIT
+ * sets up the semaphores, SEMWAIT blocks compute until the input tile arrives,
+ * and SEMPOST signals the output tile. Every word's encoding is validated
+ * against the Kahu decoder, but the semaphore-to-circular-buffer mapping is
+ * still the provisional protocol and needs confirmation on real hardware. */
 static int emit_stream(tt_module_t *tt, const char *path, uint32_t (*xform)(uint32_t))
 {
     FILE    *fp;
@@ -586,14 +584,13 @@ int tensix_emit_binary(tt_module_t *tt, const char *path)
 }
 
 /* ---- RISC-V .ttinsn stream ----
- * The Tensix coprocessor never fetches its own instructions; a baby RISC-V
- * core pushes each one by storing the 32-bit word to INSTRN_BUF_BASE
- * (0xFFE40000). The .ttinsn custom instruction is the shorthand: a single
- * RISC-V instruction whose encoding is the Tensix word rotated left by two
- * bits (hardware rotates it back right and stores it). Valid because every
- * real Tensix opcode is below 0xC0000000. Source: Wormhole B0 ISA docs,
- * BabyRISCV/PushTensixInstruction. This is the math core's instruction
- * stream: each word here issues one Tensix instruction. */
+ * The Tensix coprocessor never fetches its own instructions; a baby RISC-V core
+ * pushes each one by storing the 32-bit word to INSTRN_BUF_BASE (0xFFE40000).
+ * The .ttinsn custom instruction is the shorthand, one RISC-V instruction whose
+ * encoding is the Tensix word rotated left by two bits (hardware rotates it back
+ * right and stores it), valid because every real Tensix opcode is below
+ * 0xC0000000. Each word here issues one Tensix instruction. Source: Wormhole B0
+ * ISA docs, BabyRISCV/PushTensixInstruction. */
 
 int tensix_emit_ttinsn(tt_module_t *tt, const char *path)
 {
@@ -601,21 +598,17 @@ int tensix_emit_ttinsn(tt_module_t *tt, const char *path)
 }
 
 /* ---- Compute-core weave ----
- * The reader and writer cores are baby-RISC-V programs; so is the compute core.
- * Its body is the .ttinsn issue stream (each word a custom RISC-V instruction
- * that pushes one Tensix op), and around it goes the circular-buffer handshake
- * so it only computes on input tiles that have arrived and only overwrites
- * output slots the writer has drained.
- *
- * Per tile: wait for an input tile (wait_front), claim an output slot
- * (reserve_back), issue the math, publish the output (push_back), release the
- * input (pop_front). The tile count comes from the runtime-args slab; the
- * counter in a5 drives the loop. The CB primitives only touch t0/t1/t2, so a5
- * and the issue stream are undisturbed.
- *
- * This is the inter-core synchronisation, validated end to end. Intra-Tensix
- * unpack/math/pack ordering is the issue-stream sequence itself; the Sync Unit
- * bracket in emit_stream() remains the provisional on-chip piece. */
+ * The reader, writer and compute cores are all baby-RISC-V programs; the compute
+ * core's body is the .ttinsn issue stream (each word a custom RISC-V instruction
+ * that pushes one Tensix op), wrapped in the circular-buffer handshake so it only
+ * computes on input tiles that have arrived and only overwrites output slots the
+ * writer has drained. Per tile it waits for an input tile (wait_front), claims an
+ * output slot (reserve_back), issues the math, publishes the output (push_back)
+ * and releases the input (pop_front); the tile count comes from the runtime-args
+ * slab and the counter in a5 drives the loop, undisturbed because the CB
+ * primitives only touch t0/t1/t2. The inter-core synchronisation is validated end
+ * to end, while the Sync Unit bracket in emit_stream() remains the provisional
+ * on-chip piece. */
 int
 tensix_emit_compute_rv(tt_module_t *tt, rv_buf_t *code,
                        const tt_compute_sync_t *s)

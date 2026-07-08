@@ -8,20 +8,16 @@
 /*
  * Tile DataFlow IR.
  *
- * Sits above BIR. A CUDA __global__ lowers to a td_mod_t, which is a
- * graph of regions communicating via channels. On AMD and NVIDIA the
- * graph collapses to one region and forwards straight to BIR isel. On
- * Tensix the graph fans out, one region per baby core, channels become
- * L1 circular buffers, and arcs become inlined NoC + CB ops.
- *
- * The vocabulary is mainframe on purpose. Regions are CICS tasks with
- * their own working area. Channels are the TPF circular block lists
- * that the regions hand tiles through. Arcs are the ENQ/DEQ pairs
- * that the hardware enforces with semaphores. None of this is novel.
- * The novelty is the chip, not the bookkeeping pattern, which is the
- * same one that ran airline reservations on a 360 in 1968.
- *
- * No malloc. The module is sized at sema time and lives in one arena.
+ * Sits above BIR. A CUDA __global__ lowers to a td_mod_t, a graph of regions
+ * communicating via channels. On AMD and NVIDIA the graph collapses to one
+ * region and forwards straight to BIR isel; on Tensix it fans out, one region
+ * per baby core, channels become L1 circular buffers, and arcs become inlined
+ * NoC + CB ops. The vocabulary is mainframe on purpose: regions are CICS tasks
+ * with their own working area, channels are the TPF circular block lists the
+ * regions hand tiles through, and arcs are the ENQ/DEQ pairs the hardware
+ * enforces with semaphores. None of this is novel; the novelty is the chip, not
+ * the bookkeeping pattern that ran airline reservations on a 360 in 1968. No
+ * malloc, the module is sized at sema time and lives in one arena.
  */
 
 /* ---- Limits ---- */
@@ -37,45 +33,31 @@
 
 /* ---- Wormhole L1 placement constants ----
  *
- * Source citations live next to each value because the gap between
- * spec and reverse-engineered-from-tt-metal is wide and load-bearing
- * here. Future-us needs to know which number is gospel and which is
- * a sensible guess.
- *
- * Wormhole L1: 1,464 KiB usable, addressable from 0x00000000 to
- * 0x0016FFFF, organised as 16 banks of 91.5 KiB.
- * Source: tt-isa-documentation/WormholeB0/TensixTile/L1.md
- *
- * Code region reservation is OUR call: the docs do not specify a
- * fixed maximum kernel size, only that baby cores fetch instructions
- * from L1. 32 KiB up front is conservative and matches what typical
- * Metalium kernels use in practice. Adjust once we have real RV32IM
- * emission and can measure.
- *
- * NoC reads/writes from non-L1 to L1 require C16 congruence
- * (alignment to 16 bytes). Tile-data buffers must start on a 16-byte
- * boundary or they will be silently corrupted.
- * Source: tt-isa-documentation/WormholeB0/NoC/Alignment.md
- *
- * The 8-byte FIFO header is a software convention for an L1-resident
- * read/write pair when we run out of hardware semaphores (Wormhole
- * has eight, indices 0..7). The hardware semaphore path lives in
- * 0xFFE80000 MMIO and does not consume L1 at all; the L1 FIFO path
- * is used only as a fallback for channels nine and onward.
- * Source: tt-isa-documentation/WormholeB0/TensixTile/TensixCoprocessor/SyncUnit.md
+ * Source citations sit next to each value because the gap between spec and
+ * reverse-engineered-from-tt-metal is wide and load-bearing, and future-us needs
+ * to know which number is gospel and which is a sensible guess. Wormhole L1 is
+ * 1,464 KiB usable from 0x00000000 to 0x0016FFFF, organised as 16 banks of
+ * 91.5 KiB (WormholeB0/TensixTile/L1.md). The 32 KiB code reservation is OUR
+ * call, since the docs fix no maximum kernel size and only say baby cores fetch
+ * instructions from L1; it is conservative, matches typical Metalium kernels, and
+ * we can adjust once real RV32IM emission lets us measure. NoC reads/writes to L1
+ * require C16 congruence (16-byte alignment) or tile-data buffers start off a
+ * boundary and get silently corrupted (WormholeB0/NoC/Alignment.md). The 8-byte
+ * FIFO header is a software convention for an L1-resident read/write pair when we
+ * run out of the eight hardware semaphores (indices 0..7); the hardware path
+ * lives in 0xFFE80000 MMIO and costs no L1, so the L1 FIFO path serves only
+ * channels nine and onward (WormholeB0/.../SyncUnit.md).
  */
 #define TD_L1_BASE        0x00000000u
 #define TD_L1_END         0x00170000u    /* one past last usable byte */
 #define TD_L1_CODE_RSV    0x00008000u    /* 32 KiB for code + stack  */
 /*
- * Runtime args slab sits between code and CBs. The kernel reads
- * its CUDA coordinate intrinsics (threadIdx etc.) and its scalar
- * parameters from this region, populated by the host launcher
- * before dispatch. Layout lives in tensix/rt_args.h.
- *
- * 0x100 reserved (256 B) for the 112-byte struct plus growth room.
- * The base address has a 12-bit-zero low half so the isel can
- * materialise it with a single LUI: 0x00008000 = 0x8 << 12.
+ * Runtime args slab sits between code and CBs. The kernel reads its CUDA
+ * coordinate intrinsics (threadIdx etc.) and its scalar parameters from here,
+ * populated by the host launcher before dispatch, with the layout in
+ * tensix/rt_args.h. We reserve 0x100 (256 B) for the 112-byte struct plus growth
+ * room, and the base keeps a 12-bit-zero low half so the isel can materialise it
+ * with a single LUI (0x00008000 = 0x8 << 12).
  */
 #define TD_L1_RTARG_BASE  TD_L1_CODE_RSV
 #define TD_L1_RTARG_SIZE  0x00000100u
@@ -86,23 +68,16 @@
 
 /* ---- Wormhole NoC constants ----
  *
- * Source: tt-isa-documentation/WormholeB0/NoC/MemoryMap.md
- * (64-bit unicast address layout) and ./Alignment.md
- * (8192-byte max transfer).
- *
- * 64-bit NoC unicast address layout:
- *   bits  [35:0]   local memory address (36 bits, byte granularity)
- *   bits [41:36]   destination X coordinate (6 bits)
- *   bits [47:42]   destination Y coordinate (6 bits)
- *   bits [63:48]   reserved, ignored by the hardware
- *
- * Two physical NoCs run in opposite directions. NoC 0 favours reads
- * because it flows top-left to bottom-right which matches the
- * Tensix-to-DRAM direction for column-16 banks; NoC 1 favours
- * writes for the same reason in reverse, per RoutingPaths.md and
- * the congestion table in DRAMTile/README.md. Static VC allocation
- * matters for large writes but is below this layer's concern, the
- * RV32IM emitter sets it when materialising the NoC instruction.
+ * From WormholeB0/NoC/MemoryMap.md (64-bit unicast address layout) and
+ * ./Alignment.md (8192-byte max transfer). A unicast address packs the 36-bit
+ * byte-granular local memory address in bits [35:0], the 6-bit destination X in
+ * [41:36], the 6-bit destination Y in [47:42], and leaves [63:48] reserved and
+ * ignored by the hardware. Two physical NoCs run in opposite directions: NoC 0
+ * favours reads because it flows top-left to bottom-right, matching the
+ * Tensix-to-DRAM direction for column-16 banks, and NoC 1 favours writes for the
+ * same reason in reverse (RoutingPaths.md plus the DRAMTile/README.md congestion
+ * table). Static VC allocation matters for large writes but is below this layer's
+ * concern; the RV32IM emitter sets it when materialising the NoC instruction.
  */
 #define TD_NOC0           0u
 #define TD_NOC1           1u
@@ -315,54 +290,37 @@ int       td_build_solo_from_bir(td_mod_t *M, int target,
                                  bir_module_t *body);
 
 /*
- * Tensix fission. Takes a SOLO module whose body is a CUDA __global__
- * BIR and rewrites the TDF graph in place into the canonical
- * RDR/CMP/WRT three-region shape. Pointer parameters that are loaded
- * become channels from the reader into the compute region; pointer
- * parameters that are stored become channels from the compute region
- * out to the writer. The BIR body stays attached to the compute
- * region for now and the eventual BIR-level fission, which will
- * actually split the loads off the front and the stores off the back
- * into their own bodies, lands in a follow-up sitting.
- *
- * Returns BC_ERR_TDF if the input is not a Tensix SOLO module with a
- * body attached, if the body has no recognisable kernel function, or
- * if the BIR contains constructs that defeat the analysis (currently:
- * device function calls).
+ * Tensix fission. Takes a SOLO module whose body is a CUDA __global__ BIR and
+ * rewrites the TDF graph in place into the canonical RDR/CMP/WRT three-region
+ * shape: loaded pointer parameters become channels from the reader into compute,
+ * stored ones become channels from compute out to the writer. The BIR body stays
+ * attached to the compute region for now, and the eventual BIR-level fission that
+ * splits loads off the front and stores off the back into their own bodies lands
+ * in a follow-up sitting. Returns BC_ERR_TDF if the input is not a Tensix SOLO
+ * module with a body, has no recognisable kernel function, or contains constructs
+ * that defeat the analysis (currently device function calls).
  */
 int       td_fission_tensix(td_mod_t *M);
 
 /*
- * L1 placement. Walks every channel in the module, packs each one
- * into the CB region of L1 starting at TD_L1_CB_BASE, sets the
- * channel's l1_off field. First-fit static packing, channels packed
- * in declaration order; a future pass can sort by size or by core
- * once placement actually has more than one core to think about.
- *
- * Returns BC_ERR_TDF if the channels do not fit in the budget after
- * the code reservation. Today that ceiling is roughly 1,432 KiB
- * which is enough for ~350 fp32 32x32 tiles in flight, so the
- * error case is mostly a check against runaway depth values rather
- * than a real workload limit.
- *
- * Also exposes a helper that gives the byte size of one tile given
- * a channel tag, used by the placer and useful enough on its own
- * that the L1 emitter and the NoC orchestrator will both want it.
+ * L1 placement. Walks every channel, packs each into the CB region of L1 from
+ * TD_L1_CB_BASE and sets the channel's l1_off field, first-fit in declaration
+ * order; a future pass can sort by size or core once placement has more than one
+ * core to think about. Returns BC_ERR_TDF if the channels do not fit after the
+ * code reservation, a ceiling of roughly 1,432 KiB (about 350 fp32 32x32 tiles in
+ * flight), so the error case mostly guards against runaway depth values rather
+ * than a real workload limit. Also exposes a helper for the byte size of one tile
+ * given a channel tag, which the L1 emitter and the NoC orchestrator both want.
  */
 uint32_t  td_tile_bytes(td_tag_t tag);
 int       td_place_l1(td_mod_t *M);
 
 /*
- * NoC orchestration. Walks every RD and WR arc in the module,
- * fills in the noc_id (which of the two physical NoCs to use) and
- * length (bytes per fire) fields, and refuses any transfer that
- * busts the TD_NOC_MAX_XFER 8 KiB single-request limit.
- *
- * The 8 KiB limit is from Alignment.md and is a hard ceiling per
- * NoC request; bigger transfers must be split into multiple ops by
- * a future pass. Today we just bail rather than silently truncate.
- *
- * The encoder is exposed too so the eventual RV32IM emitter can
+ * NoC orchestration. Walks every RD and WR arc, fills in noc_id (which of the two
+ * physical NoCs to use) and length (bytes per fire), and refuses any transfer that
+ * busts the TD_NOC_MAX_XFER 8 KiB single-request limit from Alignment.md; bigger
+ * transfers must be split by a future pass, and until then we bail rather than
+ * silently truncate. The encoder is exposed too so the eventual RV32IM emitter can
  * reach for it directly rather than reinventing the bit-packing.
  */
 uint64_t  td_noc_addr(uint8_t x, uint8_t y, uint64_t local);

@@ -6,24 +6,15 @@
 #include <string.h>
 
 /*
- * Bring-up isel: stack-spill every BIR value, walk the instruction
- * stream once, emit a small pattern per opcode. The stack frame
- * layout is:
- *
- *   sp + 0     : saved ra (always saved, leaf or not, to keep the
- *                prologue uniform; the host loader does not care)
- *   sp + 4     : reserved padding to keep 16-byte alignment
- *   sp + 8     : slot for BIR value 0
- *   sp + 12    : slot for BIR value 1
- *   ...
- *
- * Each BIR instruction's stack slot is at sp + ISEL_LOCALS_BASE +
- * (bir_inst_index * 4). Constants do not get their own slot; they
- * are materialised into t0/t1 on demand.
- *
- * The frame size must be 16-byte aligned (RISC-V psABI for soft-float
- * RV32; cite Unprivileged ISA appendix on the integer calling
- * convention).
+ * Bring-up isel: stack-spill every BIR value, walk the instruction stream
+ * once, emit a small pattern per opcode. The frame keeps saved ra at sp+0
+ * (always saved, leaf or not, to keep the prologue uniform; the host
+ * loader does not care), reserved padding at sp+4 for 16-byte alignment,
+ * then one 4-byte slot per BIR value from sp+8 onward. Each instruction's
+ * slot lives at sp + ISEL_LOCALS_BASE + bir_inst_index * 4; constants get
+ * no slot and are materialised into t0/t1 on demand. The frame size must
+ * be 16-byte aligned per the RISC-V soft-float RV32 psABI (Unprivileged
+ * ISA appendix on the integer calling convention).
  */
 
 #define ISEL_LOCALS_BASE  8u           /* bytes; ra + pad */
@@ -374,15 +365,11 @@ static int sel_cast_id(const bir_module_t *M, uint32_t inst_idx,
  *
  * Source and destination integer widths come from the operand and
  * the result type respectively. The lowering is straight out of the
- * Unprivileged ISA spec page 26 (shift idioms):
- *
- *   ZEXT to wider:  AND with (1<<src_w)-1
- *                   (for src_w<=11 the mask fits in ANDI; for 16/24
- *                   we use SLLI/SRLI to clear high bits)
- *   SEXT to wider:  SLLI (32-src_w), then SRAI (32-src_w)
- *   TRUNC narrower: same mask trick to clear high bits
- *
- * The shift-twice idiom works for any source width up to 31 and
+ * Unprivileged ISA spec page 26 (shift idioms): a zero-extend masks with
+ * (1<<src_w)-1, done via SLLI/SRLI to clear the high bits rather than an
+ * ANDI whose immediate cannot reach 16 or 24 bits; a sign-extend is SLLI
+ * by (32-src_w) then SRAI back; and a truncate uses the same clear-the-
+ * high-bits trick. The shift-twice idiom works for any source width up to 31 and
  * gives the right answer regardless of whatever was in the high
  * bits before, which is the assumption we have to make because the
  * slot store/load pipeline keeps 32-bit values without tracking
@@ -945,15 +932,11 @@ static int gep_add_byte_offset(int64_t off, rv_buf_t *out)
 }
 
 /*
- * GEP lowering. Two shapes:
- *
- *   1. Struct-field GEP: base is a pointer-to-struct, the index
- *      operand is a constant field number. Offset is computed
- *      from the struct's layout.
- *
- *   2. Array-stride GEP: base is anything else (pointer to a
- *      primitive, decayed array, vector). Offset is index times
- *      the element size of the GEP's result pointee.
+ * GEP lowering comes in two shapes. A struct-field GEP has a pointer-to-
+ * struct base and a constant field number for the index, and its offset
+ * comes from the struct's layout. An array-stride GEP has any other base
+ * (pointer to a primitive, decayed array, vector) and its offset is the
+ * index times the element size of the GEP's result pointee.
  *
  * The distinction is made by inspecting the BASE operand's type,
  * not the result type, because the BIR encoding changes the

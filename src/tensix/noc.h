@@ -3,27 +3,25 @@
 
 #include "rv_buf.h"
 
-/* NoC transfer primitive for the baby RISC-V data-movement cores.
- *
- * A transfer is programmed by storing to the NIU request-initiator registers
- * (NIU_BASE 0xFFB20000, initiator 0) and writing 1 to NOC_CMD_CTRL to trigger.
- * Each call appends the RISC-V `sw` sequence to `code`. Addresses are 36-bit:
- * _lo is the low 32 bits, _mid packs the high 4 bits with the remote tile's
- * NoC X/Y coordinates (see NoC/Coordinates.md). Register layout from the
- * Wormhole B0 ISA docs, NoC/MemoryMap.md.
- *
- * read:  remote(target) -> local L1(return).
- * write: local L1(target) -> remote(return).  (per NOC_CMD_WR semantics.) */
+/* NoC transfer primitive for the baby RISC-V data-movement cores. A transfer is
+ * programmed by storing to the NIU request-initiator registers (NIU_BASE
+ * 0xFFB20000, initiator 0) and writing 1 to NOC_CMD_CTRL to trigger, and each
+ * call appends the RISC-V `sw` sequence to `code`. Addresses are 36-bit: _lo is
+ * the low 32 bits, _mid packs the high 4 bits with the remote tile's NoC X/Y
+ * coordinates (see NoC/Coordinates.md), and the register layout comes from the
+ * Wormhole B0 ISA docs, NoC/MemoryMap.md. A read moves remote(target) to local
+ * L1(return); a write moves local L1(target) to remote(return), per NOC_CMD_WR
+ * semantics. */
 int tt_noc_read (rv_buf_t *code, uint32_t targ_lo, uint32_t targ_mid,
                  uint32_t ret_lo, uint32_t ret_mid, uint32_t len);
 int tt_noc_write(rv_buf_t *code, uint32_t targ_lo, uint32_t targ_mid,
                  uint32_t ret_lo, uint32_t ret_mid, uint32_t len);
 
 /* CB synchronisation. The signal (tt_sem_inc) is a NoC atomic increment of a
- * counter in a remote core's L1; the wait (tt_sem_wait_ge) is a local spin.
- * The four cb_* ops are these two under their producer/consumer names:
- *   producer: reserve_back (wait free) ... push_back (signal recv)
- *   consumer: wait_front  (wait recv) ... pop_front  (signal free) */
+ * counter in a remote core's L1; the wait (tt_sem_wait_ge) is a local spin. The
+ * four cb_* ops are these two under producer/consumer names: the producer does
+ * reserve_back (wait free) then push_back (signal recv), and the consumer does
+ * wait_front (wait recv) then pop_front (signal free). */
 int tt_sem_inc    (rv_buf_t *code, uint32_t sem_lo, uint32_t sem_mid,
                    uint32_t incr);
 int tt_sem_wait_ge(rv_buf_t *code, uint32_t sem_addr, uint32_t threshold);

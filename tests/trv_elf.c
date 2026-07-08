@@ -35,11 +35,9 @@ static uint32_t rd32(uint32_t off)
          | ((uint32_t)rd[off + 3] << 24);
 }
 
-/* Build a trivial three-instruction kernel:
- *   addi a0, zero, 42
- *   addi a1, zero, 7
- *   add  a0, a0, a1
- * No store, just enough body for the ELF emitter to write. */
+/* Build a trivial three-instruction kernel (addi a0, zero, 42; addi a1,
+ * zero, 7; add a0, a0, a1), with no store, just enough body for the ELF
+ * emitter to write. */
 
 static void build_kernel(void)
 {

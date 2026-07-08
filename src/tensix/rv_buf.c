@@ -35,11 +35,10 @@ const uint32_t *rv_buf_data(const rv_buf_t *b)  { return b->words; }
 
 int32_t rv_buf_offset(const rv_buf_t *b, uint32_t from, uint32_t to)
 {
-    /* Word indices come in unsigned; convert to signed byte offset.
-     * The unused-parameter warning suppressor is here because the
-     * function doesn't strictly need the buffer pointer (offset is
-     * purely arithmetic on the indices), but taking it keeps the
-     * API uniform and gives us room to add bounds checks later. */
+    /* Word indices come in unsigned; convert to a signed byte offset. The
+     * buffer pointer isn't strictly needed since this is pure index arithmetic,
+     * hence the (void)b, but taking it keeps the API uniform and leaves room to
+     * add bounds checks later. */
     (void)b;
     return ((int32_t)to - (int32_t)from) * 4;
 }
