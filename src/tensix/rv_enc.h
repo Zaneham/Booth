@@ -4,30 +4,19 @@
 #include "barracuda.h"
 
 /*
- * RV32IM instruction encoder for the Tenstorrent Wormhole baby
- * RISC-V cores. Pure bit-packing, no assembler, no parser. Each
- * function returns a 32-bit little-endian instruction word.
+ * RV32IM instruction encoder for the Tenstorrent Wormhole baby RISC-V
+ * cores. Pure bit-packing, no assembler or parser, each function returns
+ * a 32-bit little-endian instruction word. Spec sources are cited inline
+ * next to each opcode (the Unprivileged ISA PDF and the BabyRISCV README).
  *
- * Spec sources cited inline next to each opcode:
- *   docs/RISC-V_Unprivileged_ISA_2024.pdf
- *   tt-isa-documentation/WormholeB0/TensixTile/BabyRISCV/README.md
- *
- * RV32I base + M extension only. No F/D/A/C/V/CSR. The baby cores
- * do not implement those and the .ttinsn coprocessor extension
- * lives in a separate emitter once we get there.
- *
- * Calling convention reminder (from spec page 21):
- *   x0       hard zero
- *   x1       ra, return address
- *   x2       sp, stack pointer
- *   x10-x17  a0-a7, argument and return registers
- *   x5-x7    t0-t2, temporaries (caller-saved)
- *   x28-x31  t3-t6, temporaries (caller-saved)
- *   x8-x9    s0-s1, callee-saved
- *   x18-x27  s2-s11, callee-saved
- *
- * Soft-float libcalls pass FP values in a0/a1 and return there too,
- * which is what the soft-float runtime expects when we link it in.
+ * RV32I base plus the M extension only, no F/D/A/C/V/CSR: the baby cores
+ * do not implement those, and the .ttinsn coprocessor extension lives in
+ * a separate emitter once we get there. The calling convention (spec page
+ * 21) is the standard one: x0 hard zero, x1 ra, x2 sp, x5-x7 and x28-x31
+ * the caller-saved temporaries, x10-x17 the argument/return registers, and
+ * x8-x9 with x18-x27 callee-saved. Soft-float libcalls pass FP values in
+ * a0/a1 and return there too, which is what the soft-float runtime expects
+ * when we link it in.
  */
 
 /* ---- Register names ---- */

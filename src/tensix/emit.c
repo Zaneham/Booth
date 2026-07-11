@@ -1,4 +1,8 @@
 #include "tensix.h"
+#include "rv_buf.h"
+#include "rv_enc.h"
+#include "rt_args.h"
+#include "noc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -72,6 +76,13 @@ static const tt_enc_entry_t enc_table_sparse[] = {
     /* Control */
     { TT_FMT_C, 0x02, "sfpnop"     },  /* TT_SFPNOP     */
     { TT_FMT_C, 0x8F, "sfpwnop"    },  /* TT_SFPWNOP    */
+
+    /* Sync Unit (semaphores / stalls). Field layouts from ttas/sfpi-binutils,
+     * cross-checked against the Kahu decoder. */
+    { TT_FMT_SYNC, 0xA2, "stallwait" },  /* TT_STALLWAIT */
+    { TT_FMT_SYNC, 0xA3, "seminit"   },  /* TT_SEMINIT   */
+    { TT_FMT_SYNC, 0xA4, "sempost"   },  /* TT_SEMPOST   */
+    { TT_FMT_SYNC, 0xA6, "semwait"   },  /* TT_SEMWAIT   */
 };
 
 #define ENC_TABLE_SPARSE_LEN \
@@ -79,7 +90,7 @@ static const tt_enc_entry_t enc_table_sparse[] = {
 
 static const tt_enc_entry_t *enc_lookup(uint16_t op)
 {
-    if (op >= 0x02 && op <= 0x99) {
+    if (op >= 0x02 && op <= 0xA6) {
         int guard = 256;
         for (uint32_t i = 0; i < ENC_TABLE_SPARSE_LEN && guard > 0;
              i++, guard--) {
@@ -473,9 +484,174 @@ static uint32_t encode_inst(const tt_minst_t *I)
         return op | ((lreg & 0xF) << 20) | ((mod0 & 0xF) << 16)
                   | (imm & 0xFFFF);
     }
+    case TT_FMT_SYNC: {
+        /* Per-opcode Sync Unit field layout. Operand order matches the
+         * disassembly: the fields named in each case below. */
+        int a = (int)get_imm(&I->operands[0]);
+        int b = (int)get_imm(&I->operands[1]);
+        int c = (int)get_imm(&I->operands[2]);
+        switch (enc->hw_opcode) {
+        case 0xA2:  /* stallwait: wait_res[0:14], stall_res[15:23] */
+            return op | ((b & 0x1FF) << 15) | (a & 0x7FFF);
+        case 0xA3:  /* seminit: sem_sel[2:15], init[16:19], max[20:23] */
+            return op | ((c & 0xF) << 20) | ((b & 0xF) << 16)
+                      | ((a & 0x3FFF) << 2);
+        case 0xA4:  /* sempost: sem_sel[2:23] */
+            return op | ((a & 0x3FFFFF) << 2);
+        case 0xA6:  /* semwait: cond[0:1], sem_sel[2:14], stall_res[15:23] */
+            return op | ((c & 0x1FF) << 15) | ((a & 0x1FFF) << 2)
+                      | (b & 0x3);
+        default:
+            return op;
+        }
+    }
     default:
         return op;
     }
+}
+
+/* ---- Raw Tensix machine code ----
+ * The Metalium path emits C++ for Tenstorrent's toolchain to compile. This
+ * one emits the real thing: the encoded 32-bit Tensix words, little-endian,
+ * the same stream ttas assembles and Kahu decodes. Pseudo-ops (phi/copy/def)
+ * are gone after regalloc; anything the table does not know is skipped. */
+
+/* Build and encode one Sync Unit instruction (all operands are immediates). */
+static uint32_t sync_word(uint16_t op, int a, int b, int c)
+{
+    tt_minst_t I;
+    memset(&I, 0, sizeof(I));
+    I.op = op;
+    I.operands[0].kind = TT_MOP_IMM; I.operands[0].imm = a;
+    I.operands[1].kind = TT_MOP_IMM; I.operands[1].imm = b;
+    I.operands[2].kind = TT_MOP_IMM; I.operands[2].imm = c;
+    return encode_inst(&I);
+}
+
+static int wr_word(FILE *fp, uint32_t w)
+{
+    uint8_t b[4];
+    b[0] = (uint8_t)(w & 0xFF);
+    b[1] = (uint8_t)((w >> 8) & 0xFF);
+    b[2] = (uint8_t)((w >> 16) & 0xFF);
+    b[3] = (uint8_t)((w >> 24) & 0xFF);
+    return fwrite(b, 1, 4, fp) == 4;
+}
+
+static uint32_t xf_raw(uint32_t w)    { return w; }
+static uint32_t xf_ttinsn(uint32_t w) { return (w << 2) | (w >> 30); }
+
+/* Write the compute word stream with a conservative circular-buffer sync
+ * bracket; xform leaves the words raw (.bin) or .ttinsn-encodes them. SEMINIT
+ * sets up the semaphores, SEMWAIT blocks compute until the input tile arrives,
+ * and SEMPOST signals the output tile. Every word's encoding is validated
+ * against the Kahu decoder, but the semaphore-to-circular-buffer mapping is
+ * still the provisional protocol and needs confirmation on real hardware. */
+static int emit_stream(tt_module_t *tt, const char *path, uint32_t (*xform)(uint32_t))
+{
+    FILE    *fp;
+    uint32_t i, n = 0;
+
+    fp = fopen(path, "wb");
+    if (!fp) return BC_ERR_IO;
+
+    /* SemaphoreMask is an 8-bit mask, not an index: sem 0 = 0x1 (input tile
+     * available), sem 1 = 0x2 (output tile produced). Init both, max 1. */
+    if (!wr_word(fp, xform(sync_word(TT_SEMINIT, 0x3, 0, 1)))) goto io; /* init sem 0 and 1 */
+    if (!wr_word(fp, xform(sync_word(TT_SEMWAIT, 0x1, 1, 0)))) goto io; /* wait input sem */
+    n += 2;
+
+    for (i = 0; i < tt->num_minsts; i++) {
+        const tt_minst_t *I = &tt->minsts[i];
+        if (!enc_lookup(I->op)) continue;   /* pseudo-op, not real hardware */
+        if (!wr_word(fp, xform(encode_inst(I)))) goto io;
+        n++;
+    }
+
+    if (!wr_word(fp, xform(sync_word(TT_SEMPOST, 0x2, 0, 0)))) goto io; /* post output sem */
+    n++;
+
+    fclose(fp);
+    return (n > 0) ? BC_OK : BC_ERR_IO;
+io:
+    fclose(fp);
+    return BC_ERR_IO;
+}
+
+int tensix_emit_binary(tt_module_t *tt, const char *path)
+{
+    return emit_stream(tt, path, xf_raw);
+}
+
+/* ---- RISC-V .ttinsn stream ----
+ * The Tensix coprocessor never fetches its own instructions; a baby RISC-V core
+ * pushes each one by storing the 32-bit word to INSTRN_BUF_BASE (0xFFE40000).
+ * The .ttinsn custom instruction is the shorthand, one RISC-V instruction whose
+ * encoding is the Tensix word rotated left by two bits (hardware rotates it back
+ * right and stores it), valid because every real Tensix opcode is below
+ * 0xC0000000. Each word here issues one Tensix instruction. Source: Wormhole B0
+ * ISA docs, BabyRISCV/PushTensixInstruction. */
+
+int tensix_emit_ttinsn(tt_module_t *tt, const char *path)
+{
+    return emit_stream(tt, path, xf_ttinsn);
+}
+
+/* ---- Compute-core weave ----
+ * The reader, writer and compute cores are all baby-RISC-V programs; the compute
+ * core's body is the .ttinsn issue stream (each word a custom RISC-V instruction
+ * that pushes one Tensix op), wrapped in the circular-buffer handshake so it only
+ * computes on input tiles that have arrived and only overwrites output slots the
+ * writer has drained. Per tile it waits for an input tile (wait_front), claims an
+ * output slot (reserve_back), issues the math, publishes the output (push_back)
+ * and releases the input (pop_front); the tile count comes from the runtime-args
+ * slab and the counter in a5 drives the loop, undisturbed because the CB
+ * primitives only touch t0/t1/t2. The inter-core synchronisation is validated end
+ * to end, while the Sync Unit bracket in emit_stream() remains the provisional
+ * on-chip piece. */
+int
+tensix_emit_compute_rv(tt_module_t *tt, rv_buf_t *code,
+                       const tt_compute_sync_t *s)
+{
+    uint32_t i, loop, br_exit, jback, done;
+
+    /* seed the counters this core acquires: its input starts empty (no tiles
+     * produced yet), its output ring starts full of free slots. */
+    tt_sem_init(code, s->in_recv_addr, 0u);
+    tt_sem_init(code, s->out_free_addr, s->out_depth);
+
+    /* prologue: load the tile count into a5. */
+    tt_li32(code, RV_T0, s->ntiles_addr);
+    rv_buf_emit(code, rv_lw(RV_A5, RV_T0, 0));
+
+    loop    = rv_buf_n_words(code);
+    br_exit = (uint32_t)rv_buf_emit(code, 0u);          /* beq a5,zero,done */
+
+    /* acquire: input tile present, output slot free. */
+    tt_cb_wait_front(code, s->in_recv_addr, 1u);
+    tt_cb_reserve_back(code, s->out_free_addr, 1u);
+
+    /* the math: each real Tensix op issued as one .ttinsn instruction. */
+    for (i = 0; i < tt->num_minsts; i++) {
+        const tt_minst_t *I = &tt->minsts[i];
+        if (!enc_lookup(I->op)) continue;               /* pseudo-op */
+        rv_buf_emit(code, xf_ttinsn(encode_inst(I)));
+    }
+
+    /* publish output, release input. */
+    tt_cb_push_back(code, s->out_recv_lo, s->out_recv_mid, 1u);
+    tt_cb_pop_front(code, s->in_free_lo, s->in_free_mid, 1u);
+
+    /* decrement and loop. */
+    rv_buf_emit(code, rv_addi(RV_A5, RV_A5, -1));
+    jback = rv_buf_n_words(code);
+    rv_buf_emit(code, rv_jal(RV_ZERO, rv_buf_offset(code, jback, loop)));
+
+    done = rv_buf_n_words(code);
+    rv_buf_patch(code, br_exit,
+                 rv_beq(RV_A5, RV_ZERO,
+                        (int16_t)rv_buf_offset(code, br_exit, done)));
+    return BC_OK;
 }
 
 /* ---- Disassembly ---- */

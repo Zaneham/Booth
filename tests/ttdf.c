@@ -3,8 +3,29 @@
 
 #include "tharns.h"
 #include "tdf.h"
+#include "noc.h"
+#include "rv_enc.h"
 
 static char obuf[TH_BUFSZ];
+
+/* CB-arc emit comparison buffers. Each rv_buf_t is 16 KiB, so keep them in
+ * BSS rather than on MinGW's lazily-committed stack. */
+static rv_buf_t EA, EB;
+
+static int bufs_eq(const rv_buf_t *a, const rv_buf_t *b)
+{
+    uint32_t n = rv_buf_n_words(a);
+    if (n != rv_buf_n_words(b)) return 0;
+    return memcmp(rv_buf_data(a), rv_buf_data(b), n * 4u) == 0;
+}
+
+static int has_word(const rv_buf_t *b, uint32_t w)
+{
+    uint32_t n = rv_buf_n_words(b);
+    const uint32_t *d = rv_buf_data(b);
+    for (uint32_t i = 0; i < n; i++) if (d[i] == w) return 1;
+    return 0;
+}
 
 /* bir_module_t is a multi-megabyte arena and absolutely will not fit
  * on the stack. We never dereference this in the lowering, the
@@ -394,11 +415,9 @@ static void tdf_build_then_lower(void)
 TH_REG("tdf", tdf_build_then_lower);
 
 /* ---- td_tile_bytes returns the right size per dtype ---- */
-/*
- * Wormhole's tile granularity is 32x32. At fp32 that is 4096 bytes,
- * at fp16/bf16 it is 2048. These numbers turn up in NoC alignment
- * arithmetic, in CB depth budgets, and in any future runtime arg
- * computation, so a regression here would ripple everywhere. */
+/* Wormhole tiles are 32x32, so 4096 bytes at fp32 and 2048 at fp16/bf16.
+ * Those numbers feed NoC alignment, CB depth and runtime args, so a
+ * regression here ripples everywhere. */
 
 static void tdf_tile_bytes_fp32(void)
 {
@@ -474,12 +493,8 @@ TH_REG("tdf", tdf_place_budget);
 
 static void tdf_noc_addr_basic(void)
 {
-    /* (x=1, y=2, local=0x1000) ->
-     *   0x1000 | (1<<36) | (2<<42)
-     *   = 0x0000_0000_0000_1000
-     *   | 0x0000_0010_0000_0000
-     *   | 0x0000_0800_0000_0000
-     *   = 0x0000_0810_0000_1000 */
+    /* (x=1, y=2, local=0x1000) packs to 0x1000 | (1<<36) | (2<<42),
+     * which is 0x0000081000001000. */
     CHEQ(td_noc_addr(1, 2, 0x1000ull), 0x0000081000001000ull);
     PASS();
 }
@@ -666,3 +681,113 @@ static void tdf_region_overflow(void)
     PASS();
 }
 TH_REG("tdf", tdf_region_overflow);
+
+/* ---- CB-arc emit lowers each kind to the right primitive at placed addrs ---- */
+
+static void tdf_emit_cb_arcs(void)
+{
+    td_init(&M, TD_TGT_TENSIX);
+    uint16_t rdr = td_mkrgn(&M, TD_RG_RDR);
+    uint16_t cmp = td_mkrgn(&M, TD_RG_CMP);
+    td_tag_t  tag = tile_f32(32, 32, TD_LAY_INTRL);
+    uint16_t  ch  = td_link(&M, rdr, cmp, tag, /*depth=*/2);
+    CHEQ(td_place_l1(&M), BC_OK);
+
+    /* counters sit in the FIFO header right after the tile-data buffer. */
+    uint32_t data_b = td_tile_bytes(M.chans[ch].tag) * (uint32_t)M.chans[ch].depth;
+    uint32_t recv   = M.chans[ch].l1_off + data_b;
+    uint32_t freec  = recv + 4u;
+    /* producer and consumer share the tile (coords 0,0), so the NoC address
+     * the atomic targets equals the bare L1 address. */
+
+    /* RSV -> reserve_back(free): producer waits on the free counter. */
+    uint16_t a_rsv = td_mkarc(&M, rdr, TD_AR_RSV, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_rsv], &EA), BC_OK);
+    tt_cb_reserve_back(&EB, freec, 1);
+    CHECK(bufs_eq(&EA, &EB));
+
+    /* WAIT -> wait_front(recv): consumer waits on the recv counter. */
+    uint16_t a_wait = td_mkarc(&M, cmp, TD_AR_WAIT, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_wait], &EA), BC_OK);
+    tt_cb_wait_front(&EB, recv, 1);
+    CHECK(bufs_eq(&EA, &EB));
+
+    /* PUSH -> sem_inc(recv): producer bumps the consumer's recv counter. */
+    uint16_t a_push = td_mkarc(&M, rdr, TD_AR_PUSH, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_push], &EA), BC_OK);
+    tt_cb_push_back(&EB, recv, 0, 1);
+    CHECK(bufs_eq(&EA, &EB));
+
+    /* POP -> sem_inc(free): consumer bumps the producer's free counter. */
+    uint16_t a_pop = td_mkarc(&M, cmp, TD_AR_POP, ch, 1, 0);
+    rv_buf_init(&EA); rv_buf_init(&EB);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_pop], &EA), BC_OK);
+    tt_cb_pop_front(&EB, freec, 0, 1);
+    CHECK(bufs_eq(&EA, &EB));
+    PASS();
+}
+TH_REG("tdf", tdf_emit_cb_arcs);
+
+/* ---- the CB emitter refuses NoC arcs (those are emitted elsewhere) ---- */
+
+static void tdf_emit_cb_rejects_noc(void)
+{
+    td_init(&M, TD_TGT_TENSIX);
+    uint16_t rdr = td_mkrgn(&M, TD_RG_RDR);
+    uint16_t cmp = td_mkrgn(&M, TD_RG_CMP);
+    td_tag_t  tag = tile_f32(32, 32, TD_LAY_INTRL);
+    uint16_t  ch  = td_link(&M, rdr, cmp, tag, 2);
+    td_place_l1(&M);
+    uint16_t a_rd = td_mkarc(&M, rdr, TD_AR_RD, ch, 1, 0);
+    rv_buf_init(&EA);
+    CHEQ(td_emit_cb_arc(&M, &M.arcs[a_rd], &EA), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("tdf", tdf_emit_cb_rejects_noc);
+
+/* ---- reader loop: DRAM -> L1, read barrier, back-jump ---- */
+
+static void tdf_reader_loop_shape(void)
+{
+    rv_buf_init(&EA);
+    CHEQ(td_emit_dma_loop(&EA, /*is_write=*/0,
+                          /*dram_slot=*/0, /*ntiles_slot=*/1,
+                          /*l1_buf=*/0x8100u, /*depth=*/2u,
+                          /*dram_mid=*/0u, /*l1_mid=*/0u,
+                          /*tile_bytes=*/4096u,
+                          /*recv=*/0xA100u, /*free=*/0xA104u), BC_OK);
+    uint32_t n = rv_buf_n_words(&EA);
+    CHECK(n > 40u);
+    /* DRAM(a3) -> L1(a4): target-low from a3, return-low from a4. */
+    CHECK(has_word(&EA, rv_sw(RV_A3, RV_T0, 0x00)));
+    CHECK(has_word(&EA, rv_sw(RV_A4, RV_T0, 0x0C)));
+    /* read barrier polls RD_REQ_SENT (0x14) vs RD_RESP_RECEIVED (0x08). */
+    CHECK(has_word(&EA, rv_lw(RV_T1, RV_T0, 0x14)));
+    CHECK(has_word(&EA, rv_lw(RV_T2, RV_T0, 0x08)));
+    /* loop closes with a back jump: jal zero, <negative>. */
+    uint32_t last = rv_buf_data(&EA)[n - 1u];
+    CHEQ(last & 0x7fu, 0x6fu);          /* JAL opcode      */
+    CHEQ((last >> 7) & 0x1fu, 0u);      /* rd == zero      */
+    PASS();
+}
+TH_REG("tdf", tdf_reader_loop_shape);
+
+/* ---- writer loop: L1 -> DRAM, write-ack barrier ---- */
+
+static void tdf_writer_loop_shape(void)
+{
+    rv_buf_init(&EA);
+    CHEQ(td_emit_dma_loop(&EA, /*is_write=*/1,
+                          0, 1, 0x8100u, 2u, 0u, 0u, 4096u,
+                          0xA100u, 0xA104u), BC_OK);
+    /* L1(a4) -> DRAM(a3): target-low from a4, return-low from a3. */
+    CHECK(has_word(&EA, rv_sw(RV_A4, RV_T0, 0x00)));
+    CHECK(has_word(&EA, rv_sw(RV_A3, RV_T0, 0x0C)));
+    /* write barrier polls WR_ACK_RECEIVED (0x04), reader's never does. */
+    CHECK(has_word(&EA, rv_lw(RV_T2, RV_T0, 0x04)));
+    PASS();
+}
+TH_REG("tdf", tdf_writer_loop_shape);

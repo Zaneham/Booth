@@ -49,6 +49,9 @@ __pycache__/
 /tri_*_host.cpp
 /tri_*_reader.cpp
 /tri_*_writer.cpp
+/tri_*.bin
+/tri_*.ttinsn
+/tri_*.elf
 
 # Ad-hoc test kernels and runners that piled up during the Moa GPU
 # port and the parameter-count and scratch-allocation investigations.

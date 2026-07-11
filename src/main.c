@@ -303,6 +303,21 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
                 cfg->output_file ? cfg->output_file : "a_compute.cpp";
             tensix_analyze_datamov(bir, ttm, &ttm->dmov);
             tensix_emit_metalium(ttm, compute_path);
+            /* Raw Tensix machine code alongside the Metalium C++: the encoded
+             * 32-bit word stream, decodable by ttas/Kahu. */
+            {
+                char bin_path[BC_MAX_PATH];
+                const char *st2 = strstr(compute_path, "_compute");
+                int bp = st2 ? (int)(st2 - compute_path)
+                             : (int)strlen(compute_path);
+                snprintf(bin_path, sizeof(bin_path), "%.*s_compute.bin",
+                         bp, compute_path);
+                tensix_emit_binary(ttm, bin_path);
+                /* The math core's RISC-V .ttinsn stream that issues them. */
+                snprintf(bin_path, sizeof(bin_path), "%.*s_compute.ttinsn",
+                         bp, compute_path);
+                tensix_emit_ttinsn(ttm, bin_path);
+            }
             char host_path[BC_MAX_PATH];
             char reader_path[BC_MAX_PATH];
             char writer_path[BC_MAX_PATH];
@@ -324,6 +339,14 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             tensix_emit_writer(ttm, &ttm->dmov, writer_path);
             tensix_emit_host_full(ttm, &ttm->dmov, host_path,
                                   reader_path, compute_path, writer_path);
+            /* The same three cores as baby-core machine code, one shared L1
+             * address map. The Metalium C++ above is the dev path; these ELFs
+             * are the toolchain-free path. */
+            {
+                char elf_stem[BC_MAX_PATH];
+                snprintf(elf_stem, sizeof(elf_stem), "%.*s", pfx, compute_path);
+                tensix_emit_kernel_elves(ttm, &ttm->dmov, elf_stem);
+            }
         } else {
             fprintf(stderr, "error: Tensix compilation failed\n");
             rc = trc;

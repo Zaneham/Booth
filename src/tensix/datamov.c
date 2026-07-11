@@ -1,4 +1,9 @@
 #include "tensix.h"
+#include "tdf.h"          /* TD_L1_* layout constants, td_emit_dma_loop */
+#include "rt_args.h"
+#include "rv_buf.h"
+#include "rv_elf.h"
+#include "noc.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -21,7 +26,7 @@ static void dm_write(FILE *fp, const char *fmt, ...)
 
 /* Follow the SSA def-use chain from an address operand back to the
  * BIR_PARAM that originally defined it. GEPs, bitcasts, and other
- * address computations are transparent — we just want the base pointer.
+ * address computations are transparent, we just want the base pointer.
  * Returns param index (subop) or -1 if the trail goes cold. */
 
 static int trace_to_param(const bir_module_t *bir, uint32_t val)
@@ -38,7 +43,7 @@ static int trace_to_param(const bir_module_t *bir, uint32_t val)
         if (I->op == BIR_PARAM)
             return (int)I->subop;
 
-        /* Transparent address computations — follow the base pointer */
+        /* Transparent address computations, follow the base pointer */
         if (I->op == BIR_GEP || I->op == BIR_BITCAST ||
             I->op == BIR_INTTOPTR || I->op == BIR_PTRTOINT) {
             val = I->operands[0];
@@ -545,5 +550,100 @@ int tensix_emit_host_full(const tt_module_t *tt, const tt_dmov_t *dmov,
            host_path, dmov->num_bufs);
 
     (void)tt;
+    return BC_OK;
+}
+
+/* ---- Machine-code kernel images ----
+ * The reader/writer/host above emit Metalium C++. This emits the three baby-
+ * core ELFs directly: reader, compute, writer. It computes one canonical L1
+ * layout so all three cores agree on the CB buffer and counter addresses, which
+ * is the whole reason to do it in one place.
+ *
+ * Topology handled: one input CB and one output CB on a single Tensix (the
+ * eltwise shape). Multi-input fan-in and multi-Tensix placement are later work.
+ *
+ * Counters: each core seeds the one it acquires (free starts full = depth, recv
+ * starts empty = 0). Across the three: reader owns in_free, compute owns in_recv
+ * and out_free, writer owns out_recv. Every counter has exactly one acquirer and
+ * one remote signaller, so the seeding is consistent. */
+
+#define TT_CB_DEPTH 2u   /* ring depth for the wired single-kernel layout */
+
+static rv_buf_t g_kern_code;   /* 16 KiB; reused across the three ELFs */
+
+static uint32_t round16(uint32_t x) { return (x + 15u) & ~15u; }
+
+int tensix_emit_kernel_elves(tt_module_t *tt, const tt_dmov_t *dmov,
+                             const char *stem)
+{
+    const tt_dmov_buf_t *in = NULL, *out = NULL;
+    uint32_t i, sem, in_recv, in_free, out_recv, out_free, cb, in_buf, out_buf;
+    uint32_t ntiles_addr;
+    char path[BC_MAX_PATH];
+
+    for (i = 0; i < dmov->num_bufs; i++) {
+        const tt_dmov_buf_t *b = &dmov->bufs[i];
+        if (!b->is_output && !in)  in  = b;
+        if (b->is_output  && !out) out = b;
+    }
+    if (!in || !out) {
+        fprintf(stderr,
+                "tensix: ELF wiring needs >=1 input and >=1 output CB "
+                "(have %u in, %u out); skipping\n",
+                dmov->num_inputs, dmov->num_outputs);
+        return BC_OK;   /* not fatal: the Metalium path was still emitted */
+    }
+
+    /* canonical layout: four counters, then the two ring buffers. */
+    sem      = TD_L1_CB_BASE;
+    in_recv  = sem + 0u;
+    in_free  = sem + 4u;
+    out_recv = sem + 8u;
+    out_free = sem + 12u;
+    cb       = round16(sem + 16u);
+    in_buf   = cb;
+    out_buf  = round16(in_buf + in->tile_size * TT_CB_DEPTH);
+    ntiles_addr = TD_L1_RTARG_BASE + RT_ARG_OFF_KARG(1u);
+
+    /* reader: DRAM(arg slot 0) -> input CB. acquires in_free, signals in_recv. */
+    rv_buf_init(&g_kern_code);
+    td_emit_dma_loop(&g_kern_code, 0, 0u, 1u, in_buf, TT_CB_DEPTH,
+                     0u, 0u, in->tile_size, in_recv, in_free);
+    snprintf(path, sizeof path, "%s_reader.elf", stem);
+    if (rv_elf_write(&g_kern_code, path) != BC_OK) return BC_ERR_IO;
+
+    /* compute: input CB -> output CB. acquires in_recv and out_free. */
+    {
+        tt_compute_sync_t s;
+        memset(&s, 0, sizeof s);
+        s.ntiles_addr   = ntiles_addr;
+        s.in_recv_addr  = in_recv;
+        s.in_free_lo    = in_free;
+        s.out_free_addr = out_free;
+        s.out_recv_lo   = out_recv;
+        s.out_depth     = TT_CB_DEPTH;
+        rv_buf_init(&g_kern_code);
+        tensix_emit_compute_rv(tt, &g_kern_code, &s);
+        snprintf(path, sizeof path, "%s_compute.elf", stem);
+        if (rv_elf_write(&g_kern_code, path) != BC_OK) return BC_ERR_IO;
+    }
+
+    /* writer: output CB -> DRAM(arg slot 2). acquires out_recv, signals out_free. */
+    rv_buf_init(&g_kern_code);
+    td_emit_dma_loop(&g_kern_code, 1, 2u, 1u, out_buf, TT_CB_DEPTH,
+                     0u, 0u, out->tile_size, out_recv, out_free);
+    snprintf(path, sizeof path, "%s_writer.elf", stem);
+    if (rv_elf_write(&g_kern_code, path) != BC_OK) return BC_ERR_IO;
+
+    printf("wrote %s_{reader,compute,writer}.elf\n", stem);
+    printf("  L1 counters: in_recv=0x%x in_free=0x%x out_recv=0x%x out_free=0x%x\n",
+           (unsigned)in_recv, (unsigned)in_free,
+           (unsigned)out_recv, (unsigned)out_free);
+    printf("  L1 buffers:  in=0x%x (%uB x%u)  out=0x%x (%uB x%u)\n",
+           (unsigned)in_buf, (unsigned)in->tile_size, (unsigned)TT_CB_DEPTH,
+           (unsigned)out_buf, (unsigned)out->tile_size, (unsigned)TT_CB_DEPTH);
+    printf("  NOTE: compute load/store still bind to Dst row 0 (isel.c:432); the\n"
+           "        unpack/pack <-> CB-buffer binding is not yet emitted, so the\n"
+           "        compute core does not yet consume the delivered tiles.\n");
     return BC_OK;
 }

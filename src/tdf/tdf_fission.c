@@ -5,23 +5,18 @@
 /*
  * Tensix kernel fission analysis.
  *
- * Reader/compute/writer is not a Tenstorrent invention. It is the
- * same producer/consumer pattern that ran ICL paper-tape pipelines,
- * the same one CICS named transaction regions after, and the same
- * one TPF lays out across baby cores. The hardware just makes it
- * physical: three baby RISC-V cores per Tensix, talking through L1
- * circular buffers, with a NoC instead of a backplane between them.
- *
- * What this pass does today: take a SOLO Tensix module whose body is
- * a CUDA __global__ in BIR form, identify which pointer parameters
- * are read and which are written, and rewrite the TDF graph as a
- * three-region pipeline with channels representing the data flow.
- *
- * What this pass does NOT do today: split the BIR body into three.
- * The CMP region still owns the original BIR; the RDR and WRT
- * regions are placeholders for the bodies a follow-up pass will
- * synthesise. Once that lands, td_lower for Tensix will accept the
- * fissioned shape and the multi-baby-core path comes online.
+ * Reader/compute/writer is not a Tenstorrent invention: it is the same
+ * producer/consumer pattern that ran ICL paper-tape pipelines, that CICS named
+ * transaction regions after, and that TPF lays out across baby cores. The
+ * hardware just makes it physical, three baby RISC-V cores per Tensix talking
+ * through L1 circular buffers with a NoC instead of a backplane. Today this pass
+ * takes a SOLO Tensix module whose body is a CUDA __global__ in BIR, identifies
+ * which pointer parameters are read and which are written, and rewrites the TDF
+ * graph as a three-region pipeline with channels for the data flow. It does not
+ * yet split the BIR body into three: the CMP region still owns the original BIR,
+ * and the RDR and WRT regions are placeholders for bodies a follow-up pass will
+ * synthesise, at which point td_lower for Tensix accepts the fissioned shape and
+ * the multi-baby-core path comes online.
  */
 
 #define FS_MAX_PARAMS   64
