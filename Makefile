@@ -26,7 +26,7 @@ LIBS    = -lm
 
 SOURCES = src/main.c \
           src/fe/bc_err.c src/fe/bc_render.c src/fe/preproc.c src/fe/lexer.c src/fe/parser.c src/fe/sema.c \
-          src/ir/bir.c src/ir/bir_print.c src/ir/bir_lower.c src/ir/bir_mem2reg.c src/ir/bir_cfold.c src/ir/bir_dce.c src/ir/bir_struct.c src/ir/bir_insert.c src/ir/bir_sroa.c \
+          src/ir/bir.c src/ir/bir_print.c src/ir/bir_lower.c src/ir/bir_mem2reg.c src/ir/bir_cfold.c src/ir/bir_dce.c src/ir/bir_struct.c src/ir/bir_insert.c src/ir/bir_sroa.c src/ir/bir_inline.c \
           src/tdf/tdf.c src/tdf/tdf_lower.c src/tdf/tdf_fission.c src/tdf/tdf_place.c src/tdf/tdf_noc.c \
           src/amdgpu/amd_rplan.c src/amdgpu/isel.c src/amdgpu/emit.c src/amdgpu/ra_ssa.c src/amdgpu/encode.c src/amdgpu/enc_tab.c src/amdgpu/sched.c src/amdgpu/verify.c \
           src/tensix/isel.c src/tensix/emit.c src/tensix/coarsen.c src/tensix/datamov.c src/tensix/noc.c \
@@ -57,6 +57,7 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tstruct.c \
           tests/tinsert.c \
           tests/tsroa.c \
+          tests/tinline.c \
           tests/tsched.c \
           tests/twarpsize.c \
           tests/tabend.c \
@@ -70,7 +71,7 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tsysprint.c
 
 TOBJS   = $(TSRC:.c=.o)
-COBJS   = src/ir/bir.o src/ir/bir_print.o src/ir/bir_lower.o src/ir/bir_mem2reg.o src/ir/bir_cfold.o src/ir/bir_dce.o src/ir/bir_struct.o src/ir/bir_insert.o src/ir/bir_sroa.o \
+COBJS   = src/ir/bir.o src/ir/bir_print.o src/ir/bir_lower.o src/ir/bir_mem2reg.o src/ir/bir_cfold.o src/ir/bir_dce.o src/ir/bir_struct.o src/ir/bir_insert.o src/ir/bir_sroa.o src/ir/bir_inline.o \
           src/tdf/tdf.o src/tdf/tdf_lower.o src/tdf/tdf_fission.o src/tdf/tdf_place.o src/tdf/tdf_noc.o \
           src/tensix/rv_enc.o src/tensix/rv_buf.o src/tensix/rv_elf.o src/tensix/rv_isel.o src/tensix/noc.o src/tensix/emit.o \
           runtime/soft_fp.o runtime/sysprint.o \

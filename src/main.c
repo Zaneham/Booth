@@ -5,6 +5,7 @@
 #include "bc_render.h"
 #include "bir_lower.h"
 #include "bir_sroa.h"
+#include "bir_inline.h"
 #include "bir_mem2reg.h"
 #include "bir_cfold.h"
 #include "bir_dce.h"
@@ -93,6 +94,17 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             "in device code will not compile until those land.\n",
             gname);
         return BC_ERR_VERIFY;
+    }
+
+    /* Device-call inlining. The GPU and vector backends have no calling
+     * convention for __device__ functions, their isel aborts on a BIR_CALL,
+     * so splice the callee bodies in before anything else runs. mem2reg then
+     * cleans up the inlined parameter stores as if they were always local.
+     * CPU, RV64 and Metal emit real calls and are left untouched. */
+    if (cfg->mode_amdgpu || cfg->mode_amdgpu_bin ||
+        cfg->mode_nvidia || cfg->mode_tensix) {
+        int irc = bir_inline_device(bir);
+        if (irc != BC_OK) return irc;
     }
 
     /* Optimisation passes: same shape regardless of frontend. */
