@@ -6,14 +6,10 @@
 #include "rv_enc.h"
 
 /* ---- R-type ALU ---- */
-/*
- * add x0, x0, x0 = 0x00000033
- *   opcode=0x33, funct3=0, funct7=0, rs1=rs2=rd=0
+/* add x0, x0, x0 is 0x00000033: opcode 0x33 with every field zero.
  * add x5, x6, x7 = 0x00730333... wait, let's compute properly:
- *   bits: funct7=0000000 rs2=00111 rs1=00110 funct3=000 rd=00101 opcode=0110011
- *       = 0 << 25 | 7 << 20 | 6 << 15 | 0 << 12 | 5 << 7 | 0x33
- *       = 0x00000000 | 0x00700000 | 0x00030000 | 0x0 | 0x00000280 | 0x33
- *       = 0x007302B3 */
+ * funct7=0, rs2=7, rs1=6, funct3=0, rd=5, opcode=0x33 packs to
+ * (7<<20) | (6<<15) | (5<<7) | 0x33 = 0x007302B3. */
 
 static void rv_add_zero(void)
 {
@@ -29,11 +25,8 @@ static void rv_add_x5_x6_x7(void)
 }
 TH_REG("rv_enc", rv_add_x5_x6_x7);
 
-/* sub differs from add only in funct7 bit 5 (funct7 = 0x20).
- * sub x5, x6, x7:
- *   = 0x20 << 25 | 7 << 20 | 6 << 15 | 0 << 12 | 5 << 7 | 0x33
- *   = 0x40000000 | 0x00700000 | 0x00030000 | 0 | 0x280 | 0x33
- *   = 0x407302B3 */
+/* sub differs from add only in funct7 bit 5 (funct7 = 0x20), so
+ * sub x5, x6, x7 = 0x40000000 | 0x007302B3 = 0x407302B3. */
 
 static void rv_sub_x5_x6_x7(void)
 {
@@ -54,11 +47,8 @@ static void rv_sra_vs_srl(void)
 TH_REG("rv_enc", rv_sra_vs_srl);
 
 /* ---- I-type ALU ---- */
-/*
- * addi x1, x0, 5:
- *   imm[11:0]=000000000101, rs1=0, funct3=0, rd=1, opcode=0010011
- *   = 5 << 20 | 0 << 15 | 0 << 12 | 1 << 7 | 0x13
- *   = 0x00500000 | 0 | 0 | 0x80 | 0x13 = 0x00500093 */
+/* addi x1, x0, 5: imm=5 in bits [31:20], rd=1, opcode 0x13, giving
+ * (5<<20) | (1<<7) | 0x13 = 0x00500093. */
 
 static void rv_addi_pos(void)
 {
@@ -67,11 +57,9 @@ static void rv_addi_pos(void)
 }
 TH_REG("rv_enc", rv_addi_pos);
 
-/* Negative immediate sign-extends through the 12-bit field.
- * addi x1, x0, -1:
- *   imm = -1 = 0xFFFFFFFF, masked to 12 bits = 0xFFF
- *   = 0xFFF << 20 | 0 | 0 | 1 << 7 | 0x13
- *   = 0xFFF00000 | 0x80 | 0x13 = 0xFFF00093 */
+/* Negative immediates sign-extend through the 12-bit field. For
+ * addi x1, x0, -1 the imm masks to 0xFFF, so (0xFFF<<20) | (1<<7) | 0x13
+ * = 0xFFF00093. */
 
 static void rv_addi_neg(void)
 {
@@ -80,10 +68,8 @@ static void rv_addi_neg(void)
 }
 TH_REG("rv_enc", rv_addi_neg);
 
-/* SLLI uses a 5-bit shamt in bits[24:20], funct7=0x00.
- * slli x1, x2, 4:
- *   = 0 << 25 | 4 << 20 | 2 << 15 | 1 << 12 | 1 << 7 | 0x13
- *   = 0x00400000 | 0x00010000 | 0x1000 | 0x80 | 0x13 = 0x00411093 */
+/* SLLI uses a 5-bit shamt in bits [24:20] with funct7=0x00, so
+ * slli x1, x2, 4 = (4<<20) | (2<<15) | (1<<12) | (1<<7) | 0x13 = 0x00411093. */
 
 static void rv_slli_basic(void)
 {
@@ -104,11 +90,8 @@ static void rv_srai_basic(void)
 TH_REG("rv_enc", rv_srai_basic);
 
 /* ---- Loads ---- */
-/*
- * lw x1, 0(x2):
- *   imm=0, rs1=2, funct3=2 (LW), rd=1, opcode=0x03
- *   = 0 << 20 | 2 << 15 | 2 << 12 | 1 << 7 | 0x03
- *   = 0x10000 | 0x2000 | 0x80 | 0x03 = 0x00012083 */
+/* lw x1, 0(x2): rs1=2, funct3=2 (LW), rd=1, opcode 0x03, giving
+ * (2<<15) | (2<<12) | (1<<7) | 0x03 = 0x00012083. */
 
 static void rv_lw_basic(void)
 {
@@ -117,11 +100,8 @@ static void rv_lw_basic(void)
 }
 TH_REG("rv_enc", rv_lw_basic);
 
-/* lw with non-zero offset, sign-extended:
- * lw x1, -4(x2):
- *   imm = -4, masked to 12 bits = 0xFFC
- *   = 0xFFC << 20 | 2 << 15 | 2 << 12 | 1 << 7 | 0x03
- *   = 0xFFC00000 | 0x10000 | 0x2000 | 0x80 | 0x03 = 0xFFC12083 */
+/* lw with a non-zero, sign-extended offset: for lw x1, -4(x2) the
+ * imm masks to 0xFFC, giving 0xFFC00000 | 0x00012083 = 0xFFC12083. */
 
 static void rv_lw_neg_off(void)
 {
@@ -131,12 +111,9 @@ static void rv_lw_neg_off(void)
 TH_REG("rv_enc", rv_lw_neg_off);
 
 /* ---- Stores ---- */
-/*
- * sw x2, 0(x1):
- *   imm=0, rs2=2, rs1=1, funct3=2, opcode=0x23
- *   no scrambling matters here since imm=0
- *   = 0 << 25 | 2 << 20 | 1 << 15 | 2 << 12 | 0 << 7 | 0x23
- *   = 0x00200000 | 0x8000 | 0x2000 | 0x23 = 0x0020A023 */
+/* sw x2, 0(x1): rs2=2, rs1=1, funct3=2, opcode 0x23, and no S-type
+ * bit-scrambling matters since imm=0, giving (2<<20) | (1<<15) | (2<<12)
+ * | 0x23 = 0x0020A023. */
 
 static void rv_sw_basic(void)
 {
@@ -145,11 +122,9 @@ static void rv_sw_basic(void)
 }
 TH_REG("rv_enc", rv_sw_basic);
 
-/* sw with scrambled immediate verifies the S-type bit split.
- * sw x2, 24(x1):  (24 = 0b011000)
- *   imm[11:5] = 0b0000000, imm[4:0] = 0b11000
- *   = 0 << 25 | 2 << 20 | 1 << 15 | 2 << 12 | 0x18 << 7 | 0x23
- *   = 0 | 0x200000 | 0x8000 | 0x2000 | 0xC00 | 0x23 = 0x0020AC23 */
+/* sw with a scrambled immediate verifies the S-type bit split. For
+ * sw x2, 24(x1), 24 splits to imm[11:5]=0 and imm[4:0]=0x18, so
+ * (2<<20) | (1<<15) | (2<<12) | (0x18<<7) | 0x23 = 0x0020AC23. */
 
 static void rv_sw_off24(void)
 {
@@ -159,10 +134,8 @@ static void rv_sw_off24(void)
 TH_REG("rv_enc", rv_sw_off24);
 
 /* ---- Branches ---- */
-/*
- * beq x0, x0, 0:
- *   opcode=0x63, funct3=0, rs1=0, rs2=0, all immediate bits 0
- *   = 0x00000063 */
+/* beq x0, x0, 0: opcode 0x63, funct3 0, all registers and immediate
+ * bits zero, giving 0x00000063. */
 
 static void rv_beq_zero(void)
 {
@@ -171,10 +144,8 @@ static void rv_beq_zero(void)
 }
 TH_REG("rv_enc", rv_beq_zero);
 
-/* beq x5, x6, 8:  offset 8 = 0b01000
- *   imm[12]=0, imm[11]=0, imm[10:5]=0, imm[4:1]=0b0100, imm[0]=0 (ignored)
- *   = 0 << 31 | 0 << 25 | 6 << 20 | 5 << 15 | 0 << 12 | 4 << 8 | 0 << 7 | 0x63
- *   = 0x00600000 | 0x00028000 | 0 | 0x400 | 0 | 0x63 = 0x00628463 */
+/* beq x5, x6, 8: offset 8 puts imm[4:1]=0b0100 into bits [11:8], so
+ * (6<<20) | (5<<15) | (4<<8) | 0x63 = 0x00628463. */
 
 static void rv_beq_off8(void)
 {
@@ -183,11 +154,9 @@ static void rv_beq_off8(void)
 }
 TH_REG("rv_enc", rv_beq_off8);
 
-/* Negative branch tests the sign bit landing in inst[31].
- * beq x0, x0, -4: offset = -4 in 13-bit field = 0x1FFC
- *   imm[12]=1, imm[11]=1, imm[10:5]=0b111111, imm[4:1]=0b1110
- *   = 1 << 31 | 0x3F << 25 | 0 | 0 | 0 | 0xE << 8 | 1 << 7 | 0x63
- *   = 0x80000000 | 0x7E000000 | 0xE00 | 0x80 | 0x63 = 0xFE000EE3 */
+/* A negative branch tests the sign bit landing in inst[31]. Offset -4
+ * is 0x1FFC in the 13-bit field, scattering to 0x80000000 | 0x7E000000
+ * | 0xE00 | 0x80 | 0x63 = 0xFE000EE3. */
 
 static void rv_beq_back(void)
 {
@@ -197,9 +166,7 @@ static void rv_beq_back(void)
 TH_REG("rv_enc", rv_beq_back);
 
 /* ---- Jumps and uppers ---- */
-/*
- * jal x1, 0:  opcode 0x6F, rd=1, offset=0
- *   = 0 | 0 | 0 | 1 << 7 | 0x6F = 0x000000EF */
+/* jal x1, 0: opcode 0x6F, rd=1, offset 0, giving (1<<7) | 0x6F = 0x000000EF. */
 
 static void rv_jal_zero(void)
 {
@@ -208,9 +175,8 @@ static void rv_jal_zero(void)
 }
 TH_REG("rv_enc", rv_jal_zero);
 
-/* lui x1, 0x12345:
- *   imm[31:12] = 0x12345, rd=1, opcode=0x37
- *   = 0x12345 << 12 | 1 << 7 | 0x37 = 0x12345000 | 0xB7 = 0x123450B7 */
+/* lui x1, 0x12345: imm[31:12]=0x12345, rd=1, opcode 0x37, giving
+ * 0x12345000 | 0xB7 = 0x123450B7. */
 
 static void rv_lui_basic(void)
 {
@@ -231,11 +197,8 @@ static void rv_auipc_vs_lui(void)
 TH_REG("rv_enc", rv_auipc_vs_lui);
 
 /* ---- M extension ---- */
-/*
- * mul x5, x6, x7:
- *   funct7=0x01, rs2=7, rs1=6, funct3=0, rd=5, opcode=0x33
- *   = 0x01 << 25 | 7 << 20 | 6 << 15 | 0 << 12 | 5 << 7 | 0x33
- *   = 0x02000000 | 0x700000 | 0x30000 | 0x280 | 0x33 = 0x027302B3 */
+/* mul x5, x6, x7: funct7=0x01, rs2=7, rs1=6, rd=5, opcode 0x33, giving
+ * 0x02000000 | (7<<20) | (6<<15) | (5<<7) | 0x33 = 0x027302B3. */
 
 static void rv_mul_basic(void)
 {
@@ -297,9 +260,8 @@ static void rv_nop_canonical(void)
 }
 TH_REG("rv_enc", rv_nop_canonical);
 
-/* fence rw, rw = 0x0FF0000F (pred=0xF, succ=0xF)
- *   = 0xF << 24 | 0xF << 20 | 0x0F
- *   = 0x0F000000 | 0xF00000 | 0x0F = 0x0FF0000F */
+/* fence rw, rw with pred=0xF and succ=0xF gives (0xF<<24) | (0xF<<20)
+ * | 0x0F = 0x0FF0000F. */
 
 static void rv_fence_rwrw(void)
 {

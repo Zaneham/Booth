@@ -197,10 +197,9 @@ void td_dump(const td_mod_t *M, FILE *fp)
     int is_tt = (M->target == TD_TGT_TENSIX);
     for (uint16_t i = 0; i < M->nrgn; i++) {
         const td_rgn_t *r = &M->rgns[i];
-        /* core, x, y, twa only mean something on Tensix. On AMD and
-         * NVIDIA the region is a stand-in for the whole kernel and
-         * those fields are zero by default and would only confuse
-         * the reader of the dump. */
+        /* core, x, y, twa only mean something on Tensix. On AMD and NVIDIA the
+         * region stands in for the whole kernel, so those fields are zero and
+         * would only confuse the reader of the dump. */
         if (is_tt) {
             const char *core = (r->core < 5) ? k_core[r->core] : "-";
             fprintf(fp, "\n  region %u: %s core=%s twa=%u x=%u y=%u\n",

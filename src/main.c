@@ -5,6 +5,7 @@
 #include "bc_render.h"
 #include "bir_lower.h"
 #include "bir_sroa.h"
+#include "bir_inline.h"
 #include "bir_mem2reg.h"
 #include "bir_cfold.h"
 #include "bir_dce.h"
@@ -93,6 +94,17 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             "in device code will not compile until those land.\n",
             gname);
         return BC_ERR_VERIFY;
+    }
+
+    /* Device-call inlining. The GPU and vector backends have no calling
+     * convention for __device__ functions, their isel aborts on a BIR_CALL,
+     * so splice the callee bodies in before anything else runs. mem2reg then
+     * cleans up the inlined parameter stores as if they were always local.
+     * CPU, RV64 and Metal emit real calls and are left untouched. */
+    if (cfg->mode_amdgpu || cfg->mode_amdgpu_bin ||
+        cfg->mode_nvidia || cfg->mode_tensix) {
+        int irc = bir_inline_device(bir);
+        if (irc != BC_OK) return irc;
     }
 
     /* Optimisation passes: same shape regardless of frontend. */
@@ -303,6 +315,21 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
                 cfg->output_file ? cfg->output_file : "a_compute.cpp";
             tensix_analyze_datamov(bir, ttm, &ttm->dmov);
             tensix_emit_metalium(ttm, compute_path);
+            /* Raw Tensix machine code alongside the Metalium C++: the encoded
+             * 32-bit word stream, decodable by ttas/Kahu. */
+            {
+                char bin_path[BC_MAX_PATH];
+                const char *st2 = strstr(compute_path, "_compute");
+                int bp = st2 ? (int)(st2 - compute_path)
+                             : (int)strlen(compute_path);
+                snprintf(bin_path, sizeof(bin_path), "%.*s_compute.bin",
+                         bp, compute_path);
+                tensix_emit_binary(ttm, bin_path);
+                /* The math core's RISC-V .ttinsn stream that issues them. */
+                snprintf(bin_path, sizeof(bin_path), "%.*s_compute.ttinsn",
+                         bp, compute_path);
+                tensix_emit_ttinsn(ttm, bin_path);
+            }
             char host_path[BC_MAX_PATH];
             char reader_path[BC_MAX_PATH];
             char writer_path[BC_MAX_PATH];
@@ -324,6 +351,14 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             tensix_emit_writer(ttm, &ttm->dmov, writer_path);
             tensix_emit_host_full(ttm, &ttm->dmov, host_path,
                                   reader_path, compute_path, writer_path);
+            /* The same three cores as baby-core machine code, one shared L1
+             * address map. The Metalium C++ above is the dev path; these ELFs
+             * are the toolchain-free path. */
+            {
+                char elf_stem[BC_MAX_PATH];
+                snprintf(elf_stem, sizeof(elf_stem), "%.*s", pfx, compute_path);
+                tensix_emit_kernel_elves(ttm, &ttm->dmov, elf_stem);
+            }
         } else {
             fprintf(stderr, "error: Tensix compilation failed\n");
             rc = trc;
@@ -882,7 +917,7 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "error: failed to allocate sema context\n");
                 return 1;
             }
-            sema_init(sema_ctx, &P, root);
+            sema_init(sema_ctx, &P, root, (int)amd_target);
             sema_check(sema_ctx, root);
 
             bc_diag(file, lex_src, sema_ctx->errors, sema_ctx->num_errors);

@@ -1,4 +1,5 @@
 #include "bir_lower.h"
+#include "../amd_target_defs.h"
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -785,6 +786,13 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
     case AST_IDENT: {
         char name[128];
         get_text(L, node, name, sizeof(name));
+
+        /* Builtin constant: warpSize (HIP) */
+        if (strcmp(name, "warpSize") == 0 && L->sema) {
+            int wave_size = amd_get_wave_size(L->sema->amd_target);
+            uint32_t t = bir_type_int(L->M, 32);
+            return BIR_MAKE_CONST(bir_const_int(L->M, t, wave_size));
+        }
 
         /* Enum constant? */
         int64_t eval;

@@ -4,17 +4,13 @@
 /*
  * L1 placement pass.
  *
- * For each channel in the module, decide where its tile-data buffer
- * and FIFO header live in the home core's L1. Today we model L1 as
- * a single pool because we only target one Tensix at a time. When
- * multi-core lowering lands, each core gets its own running offset
- * and channels are assigned to whichever core hosts the producer.
- *
- * Spec citations are in tdf.h next to the TD_L1_* constants. The
- * short version: Wormhole L1 is 1,464 KiB at 0x00000000, NoC
- * reads/writes to L1 need 16-byte alignment, we reserve the first
- * 32 KiB for code, and channels pack first-fit upward from
- * TD_L1_CB_BASE.
+ * For each channel, decide where its tile-data buffer and FIFO header live in the
+ * home core's L1. Today L1 is a single pool because we only target one Tensix at
+ * a time; when multi-core lowering lands, each core gets its own running offset
+ * and channels go to whichever core hosts the producer. Spec citations sit in
+ * tdf.h next to the TD_L1_* constants: Wormhole L1 is 1,464 KiB at 0x00000000,
+ * NoC reads/writes to L1 need 16-byte alignment, the first 32 KiB is reserved for
+ * code, and channels pack first-fit upward from TD_L1_CB_BASE.
  */
 
 static uint32_t round_up(uint32_t x, uint32_t a)
@@ -23,12 +19,11 @@ static uint32_t round_up(uint32_t x, uint32_t a)
 }
 
 /*
- * Tile byte size from a channel tag. Width assumptions follow what
- * the fission pass currently writes: FLOAT defaults to fp32, BFLOAT
- * is the 16-bit brain float, INT defaults to int32. Once td_tag_t
- * carries an explicit width field (which it will, when issue #82
- * tile-shape inference lands and starts producing fp16 or fp8
- * channels) this collapses to a simple width lookup.
+ * Tile byte size from a channel tag. Width assumptions follow what the fission
+ * pass currently writes: FLOAT is fp32, BFLOAT is the 16-bit brain float, INT is
+ * int32. Once td_tag_t carries an explicit width field (when issue #82 tile-shape
+ * inference lands and starts producing fp16 or fp8 channels) this collapses to a
+ * simple width lookup.
  */
 static uint32_t dtype_bytes(uint8_t dt)
 {

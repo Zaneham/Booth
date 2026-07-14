@@ -2,6 +2,7 @@
 #define BARRACUDA_TENSIX_H
 
 #include "bir.h"
+#include "rv_buf.h"     /* rv_buf_t, for the compute-core weave */
 
 /* Tenstorrent Tensix backend. 32-lane SFPU, 8 writable LRegs, predicated
  * execution, no branches, and a register that contains 0.8373.
@@ -35,6 +36,7 @@ typedef enum {
     TT_FMT_C,          /* [op:8][imm16:16][dst:4][mod1:4] */
     TT_FMT_D,          /* [op:8][lreg:4][mod0:4][addr_mode:2][dest_addr:14] */
     TT_FMT_E,          /* [op:8][lreg:4][mod0:4][imm16:16] */
+    TT_FMT_SYNC,       /* Sync Unit ops; per-opcode field layout (see emit.c) */
     TT_FMT_PSEUDO,
     TT_FMT_COUNT
 } tt_fmt_t;
@@ -96,6 +98,12 @@ typedef enum {
 
     TT_SFPNOP           = 0x02,
     TT_SFPWNOP          = 0x8F,
+
+    /* Sync Unit (semaphores / stalls), opcodes from ttas/sfpi-binutils */
+    TT_STALLWAIT        = 0xA2,
+    TT_SEMINIT          = 0xA3,
+    TT_SEMPOST          = 0xA4,
+    TT_SEMWAIT          = 0xA6,
 
     TT_PSEUDO_PHI,
     TT_PSEUDO_COPY,
@@ -259,6 +267,29 @@ int  tensix_compile(const bir_module_t *bir, tt_module_t *tt);
 void tensix_coarsen(tt_module_t *tt);
 void tensix_regalloc(tt_module_t *tt);
 int  tensix_emit_metalium(tt_module_t *tt, const char *path);
+int  tensix_emit_binary(tt_module_t *tt, const char *path);   /* raw Tensix words */
+int  tensix_emit_ttinsn(tt_module_t *tt, const char *path);   /* RISC-V .ttinsn stream */
+
+/* CB addresses the compute core synchronises against. As consumer of its input
+ * CB it waits on `in_recv` (local) and releases via the producer's `in_free`
+ * (remote); as producer of its output CB it waits on `out_free` (local) and
+ * signals the consumer's `out_recv` (remote). Same-tile placement makes the
+ * remote mids zero. */
+typedef struct {
+    uint32_t ntiles_addr;       /* L1 address of the tile-count runtime arg */
+    uint32_t in_recv_addr;      /* local: input produced-counter (wait_front) */
+    uint32_t in_free_lo;        /* remote: input free-counter (pop_front)      */
+    uint32_t in_free_mid;
+    uint32_t out_free_addr;     /* local: output free-counter (reserve_back)   */
+    uint32_t out_recv_lo;       /* remote: output produced-counter (push_back) */
+    uint32_t out_recv_mid;
+    uint32_t out_depth;         /* output CB ring depth (seeds out_free)       */
+} tt_compute_sync_t;
+
+/* Weave the compute body into a baby-core RISC-V program: a per-tile loop that
+ * brackets the .ttinsn issue stream with the CB handshake. */
+int  tensix_emit_compute_rv(tt_module_t *tt, rv_buf_t *code,
+                            const tt_compute_sync_t *s);
 /* Data movement — Tier 4 */
 void tensix_analyze_datamov(const bir_module_t *bir, const tt_module_t *tt,
                             tt_dmov_t *dmov);
@@ -269,5 +300,9 @@ int  tensix_emit_writer(const tt_module_t *tt, const tt_dmov_t *dmov,
 int  tensix_emit_host_full(const tt_module_t *tt, const tt_dmov_t *dmov,
                            const char *host_path, const char *reader_path,
                            const char *compute_path, const char *writer_path);
+/* Emit the three baby-core ELFs (reader/compute/writer) with one shared L1
+ * address layout. Writes <stem>_reader.elf, <stem>_compute.elf, <stem>_writer.elf. */
+int  tensix_emit_kernel_elves(tt_module_t *tt, const tt_dmov_t *dmov,
+                              const char *stem);
 
 #endif /* BARRACUDA_TENSIX_H */

@@ -65,13 +65,10 @@ static uint32_t enc_s(int16_t imm, uint8_t rs2, uint8_t rs1,
 static uint32_t enc_b(int16_t offset, uint8_t rs1, uint8_t rs2,
                       uint32_t f3, uint32_t op)
 {
-    /* B-type immediate scrambling, spec p.24 and p.30:
-     *   inst[31]    = imm[12]
-     *   inst[30:25] = imm[10:5]
-     *   inst[11:8]  = imm[4:1]
-     *   inst[7]     = imm[11]
-     * Bit 0 of the offset is always zero because branch targets
-     * are 2-byte aligned and the encoding has no room for it. */
+    /* B-type immediate scrambling, spec p.24 and p.30: bit 12 goes to
+     * inst[31], bits 10:5 to inst[30:25], bits 4:1 to inst[11:8], and bit
+     * 11 to inst[7]. Bit 0 of the offset is always zero because branch
+     * targets are 2-byte aligned and the encoding has no room for it. */
     uint32_t u  = (uint32_t)offset & 0x1FFFu;     /* 13-bit field */
     uint32_t b12 = (u >> 12) & 0x1u;
     uint32_t b11 = (u >> 11) & 0x1u;
@@ -99,13 +96,11 @@ static uint32_t enc_u(uint32_t imm_hi20, uint8_t rd, uint32_t op)
 
 static uint32_t enc_j(int32_t offset, uint8_t rd, uint32_t op)
 {
-    /* J-type immediate scrambling, spec p.24:
-     *   inst[31]    = imm[20]
-     *   inst[30:21] = imm[10:1]
-     *   inst[20]    = imm[11]
-     *   inst[19:12] = imm[19:12]
-     * Same trick as B-type: middle bits stay put, sign bit at top,
-     * the 11/12-bit boundary slots in where there is room. */
+    /* J-type immediate scrambling, spec p.24: bit 20 goes to inst[31],
+     * bits 10:1 to inst[30:21], bit 11 to inst[20], and bits 19:12 stay
+     * at inst[19:12]. Same trick as B-type, the middle bits stay put, the
+     * sign bit sits at top, and the 11/12-bit boundary slots in where
+     * there is room. */
     uint32_t u  = (uint32_t)offset & 0x1FFFFFu;       /* 21-bit field */
     uint32_t b20    = (u >> 20) & 0x1u;
     uint32_t b19_12 = (u >> 12) & 0xFFu;
@@ -190,14 +185,12 @@ uint32_t rv_remu  (uint8_t rd, uint8_t rs1, uint8_t rs2) { return enc_r(0x01, rs
 
 uint32_t rv_fence(uint8_t pred, uint8_t succ)
 {
-    /* FENCE encoding, spec p.32:
-     *   bits[31:28] = fm (zero for normal fence)
-     *   bits[27:24] = pred (memory operations before)
-     *   bits[23:20] = succ (memory operations after)
-     *   rs1 = 0, funct3 = 0, rd = 0, opcode = 0x0F
-     * Baby cores treat the whole thing as a nop but we emit the
-     * canonical encoding so future hardware revisions and any
-     * downstream disassembler see the right bits. */
+    /* FENCE encoding, spec p.32: fm in bits[31:28] is zero for a normal
+     * fence, pred (operations before) in bits[27:24], succ (operations
+     * after) in bits[23:20], with rs1, funct3 and rd all zero on opcode
+     * 0x0F. Baby cores treat the whole thing as a nop but we emit the
+     * canonical encoding so future hardware revisions and any downstream
+     * disassembler see the right bits. */
     return ((uint32_t)(pred & 0xFu) << 24)
          | ((uint32_t)(succ & 0xFu) << 20)
          | 0x0Fu;

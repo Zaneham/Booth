@@ -223,17 +223,12 @@ static void rv_isel_unsupported(void)
 TH_REG("rv_enc", rv_isel_unsupported);
 
 /* ---- THREAD_ID etc. lower to LW from L1 runtime args ---- */
-/*
- * Each coordinate intrinsic emits two instructions: LUI to
- * materialise the runtime args base into t1, then LW from the
- * appropriate offset in that region. We check both pieces appear
- * in the output rather than trying to find a particular slot in
- * the buffer, because the surrounding code can shift if other
- * lowerings change. The expected encoding is what the spec says
- * the launcher will write into.
- *
- * No stub: the kernel actually reads from L1; what's IN that L1
- * slot is the launcher's responsibility, not the compiler's. */
+/* Each coordinate intrinsic emits two instructions: a LUI to materialise
+ * the runtime-args base into t1, then a LW from the right offset. We check
+ * both pieces appear rather than hunting a particular buffer slot, since
+ * surrounding code shifts as other lowerings change. No stub here: the
+ * kernel really reads from L1, and what's in that slot is the launcher's
+ * job, not the compiler's. */
 static void rv_isel_thread_id_x_via_l1(void)
 {
     build_bir_add();
@@ -533,16 +528,10 @@ static void rv_isel_icmp_ult(void)
 TH_REG("rv_enc", rv_isel_icmp_ult);
 
 /* ---- load_imm32: small constant ---- */
-/*
- * Below ADDI's 12-bit signed range, materialisation should be a
- * single ADDI from x0. Just above, it should be LUI followed by a
- * negative ADDI when the low half's high bit is set, and LUI
- * followed by a positive ADDI otherwise.
- *
- * We build a BIR module that produces "return c" for a chosen
- * constant c, then walk the emitted instructions and check the
- * mantissa.
- */
+/* Below ADDI's 12-bit signed range, materialisation is a single ADDI
+ * from x0. Above it, it's a LUI plus an ADDI, negative when the low
+ * half's high bit is set and positive otherwise. We build a "return c"
+ * module for a chosen constant and walk the emitted instructions. */
 static void build_bir_return_const(int32_t v)
 {
     memset(&fake_bir, 0, sizeof(fake_bir));
@@ -669,11 +658,10 @@ TH_REG("rv_enc", rv_isel_cast_id_bitcast);
 
 /* ---- Width conversions ---- */
 /*
- * ZEXT i8 -> i32 should be SLLI 24, SRLI 24 — that's the
- * canonical pattern for clearing the high bits without a mask
- * that doesn't fit in ANDI. SEXT i8 -> i32 differs only in
- * using SRAI instead of SRLI to sign-extend. TRUNC i32 -> i8
- * is the same SLLI/SRLI pair as ZEXT (clear the high bits). */
+ * ZEXT i8 -> i32 should be SLLI 24 then SRLI 24, the canonical pattern
+ * for clearing the high bits without a mask that won't fit in ANDI. SEXT
+ * i8 -> i32 differs only in using SRAI instead of SRLI to sign-extend, and
+ * TRUNC i32 -> i8 is the same SLLI/SRLI pair as ZEXT. */
 
 static void build_bir_zext_i8_to_i32(void)
 {
@@ -742,18 +730,12 @@ TH_REG("rv_enc", rv_isel_sext_i8);
  *       *out = helper(a, b);
  *   }
  *
- * helper is function 1, kern is function 0 (emitted first because
- * function 0 is the entry point). BIR_CALL inside kern targets
- * function 1; the JAL offset gets filled in after both functions
- * have been laid out in the code buffer.
- *
- * What we check:
- *   - rv_isel_module returns OK
- *   - Both function prologues appear in the buffer (we look for
- *     two `sw ra, 0(sp)` instructions, one per function)
- *   - At least one JAL with a positive offset exists (the call
- *     from kern to helper, since helper is laid out after kern)
- */
+ * helper is function 1 and kern is function 0, emitted first because
+ * function 0 is the entry point. BIR_CALL inside kern targets function 1,
+ * and the JAL offset is filled in once both functions are laid out. We
+ * check that rv_isel_module returns OK, that both prologues appear (two
+ * `sw ra, 0(sp)`, one per function), and that at least one JAL with a
+ * positive offset exists for the forward call from kern to helper. */
 static void build_bir_kern_calls_helper(void)
 {
     memset(&fake_bir, 0, sizeof(fake_bir));
@@ -1016,13 +998,9 @@ static void rv_isel_br_forward_and_backward(void)
 TH_REG("rv_enc", rv_isel_br_forward_and_backward);
 
 /* ---- BR_COND emits BNE + JAL ---- */
-/*
- * `if (cond) goto X; else goto Y;` lowers to:
- *   load cond -> T0
- *   BNE T0, zero, X
- *   JAL zero, Y
- * We construct a two-arm BIR and check both branch flavours
- * appear in the output. */
+/* `if (cond) goto X; else goto Y;` lowers to loading cond into T0, a
+ * BNE T0, zero, X, then a JAL zero, Y. We construct a two-arm BIR and
+ * check both branch flavours appear in the output. */
 static void rv_isel_br_cond_shape(void)
 {
     memset(&fake_bir, 0, sizeof(fake_bir));
@@ -1092,15 +1070,10 @@ static void rv_isel_br_cond_shape(void)
 TH_REG("rv_enc", rv_isel_br_cond_shape);
 
 /* ---- SELECT: BEQ skip + value loads ---- */
-/*
- * cond ? a : b lowers to:
- *   load cond  -> T2
- *   load b     -> T0
- *   BEQ T2, zero, skip past true arm
- *   load a     -> T0
- *   store T0
- * We can't easily verify the exact skip offset without depending
- * on every instruction count downstream, but we can check that a
+/* cond ? a : b lowers to loading cond into T2 and b into T0, a
+ * BEQ T2, zero to skip past the true arm, then loading a into T0 and
+ * storing T0. We can't easily verify the exact skip offset without
+ * depending on every downstream instruction count, but we can check a
  * BEQ appears and the buffer parses past it without unresolved
  * placeholders. */
 static void rv_isel_select_shape(void)
@@ -1122,7 +1095,7 @@ static void rv_isel_select_shape(void)
     fake_bir.blocks[0].first_inst = 0;
     fake_bir.blocks[0].num_insts = 5;
 
-    /* PARAM 0,1,2 — cond, a, b */
+    /* PARAM 0,1,2 (cond, a, b) */
     for (int p = 0; p < 3; p++) {
         fake_bir.insts[p].op = BIR_PARAM;
         fake_bir.insts[p].subop = (uint8_t)p;
@@ -1218,18 +1191,12 @@ TH_REG("rv_enc", rv_isel_param_overflow_refused);
  *
  * Construct a kernel with a 4-int struct (gp_cell_t shape from
  * test_cell_load.cu) and a GEP that accesses field 1. The isel
- * should emit ADDI t0, t0, 4 (the byte offset of field 1, since
- * each preceding field is 4 bytes).
+ * should emit ADDI t0, t0, 4, the byte offset of field 1 since each
+ * preceding field is 4 bytes.
  *
- * The BIR we build:
- *   types: 0=i32, 1=struct{i32,i32,f32,i32}, 2=ptr<global,struct>,
- *          3=ptr<global,i32>, 4=void, 5=f32 (for the struct field)
- *   consts: 0 = i32 const 1
- *   insts: 0 = PARAM 0 (ptr<global,struct>)
- *          1 = GEP base=%0, idx=0 (just the struct pointer)
- *          2 = GEP base=%1, idx=1 (field 1 of struct, i32 mat)
- *          3 = RET void
- */
+ * The BIR uses types 0=i32, 1=struct{i32,i32,f32,i32}, 2=ptr<global,
+ * struct>, 3=ptr<global,i32>, 4=void and 5=f32, one i32 const of 1, and
+ * insts PARAM 0, a no-op GEP on idx 0, a GEP to field 1, then RET void. */
 static void rv_isel_struct_gep_field1(void)
 {
     memset(&fake_bir, 0, sizeof(fake_bir));
@@ -1305,17 +1272,13 @@ TH_REG("rv_enc", rv_isel_struct_gep_field1);
 
 /* ---- type_bytes for nested types ----
  *
- * The size walker has to recurse into ARRAY, VECTOR and STRUCT.
- * We don't expose type_bytes directly, so the test exercises it
- * via a struct GEP that picks a field whose offset depends on
- * a preceding ARRAY field's full size being known.
+ * The size walker has to recurse into ARRAY, VECTOR and STRUCT. We don't
+ * expose type_bytes directly, so the test exercises it via a struct GEP
+ * whose field offset depends on a preceding ARRAY field's full size.
  *
- * Struct: { i8, [4 x i32], i32 }
- *   field 0: i8 at offset 0, size 1
- *   field 1: [4 x i32] starts at 4 (aligned), size 16
- *   field 2: i32 at offset 20, size 4
- * GEP-to-field-2 should produce ADDI 20.
- */
+ * For struct { i8, [4 x i32], i32 } the i8 sits at offset 0, the [4 x i32]
+ * starts at 4 (aligned) with size 16, and the trailing i32 lands at offset
+ * 20, so GEP-to-field-2 should produce ADDI 20. */
 static void rv_isel_struct_gep_with_array(void)
 {
     memset(&fake_bir, 0, sizeof(fake_bir));
@@ -1386,23 +1349,15 @@ TH_REG("rv_enc", rv_isel_struct_gep_with_array);
 
 /* ---- Array-of-struct GEP: stride access (the bug regression) ----
  *
- * Distinct from struct-field GEP: when base AND result pointees
- * are the SAME struct type, the index is a stride multiplier
- * (typically a runtime threadIdx), not a field number. The isel
- * must recognise this and emit a MUL by sizeof(struct), not a
- * struct-field offset lookup.
+ * Distinct from struct-field GEP: when base AND result pointees are the
+ * SAME struct type, the index is a stride multiplier (typically a runtime
+ * threadIdx), not a field number. The isel must recognise this and emit a
+ * MUL by sizeof(struct), not a struct-field offset lookup.
  *
- * Struct: { i32, i32 } -> size 8 bytes
- * BIR:
- *   %0 = PARAM 0 (ptr<global, struct>)
- *   %1 = PARAM 1 (i32 idx, runtime)
- *   %2 = GEP base=%0, idx=%1   (yields ptr<global, struct>, same pointee)
- *   %3 = RET void
- *
- * Expected codegen: load base, load idx, multiply idx by 8, add
- * to base, store. The defining instruction is MUL with elem_size
- * loaded into a register; we look for the LI for the size of 8
- * and the MUL. */
+ * The struct { i32, i32 } is 8 bytes, and the BIR takes a ptr<global,
+ * struct> param and a runtime i32 idx, then GEPs base by idx to yield the
+ * same pointee before RET. The codegen loads base and idx, multiplies idx
+ * by 8 and adds it to base, so we look for the LI of 8 and the MUL. */
 static void rv_isel_array_of_struct_stride(void)
 {
     memset(&fake_bir, 0, sizeof(fake_bir));

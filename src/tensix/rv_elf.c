@@ -3,15 +3,12 @@
 #include <string.h>
 
 /*
- * ELF32 little-endian header writer. Constants are inlined as
- * literals rather than included from elf.h because there is no
- * portable elf.h on Windows/MinGW and inlining keeps the build
- * dependency-free, which is the whole point of this compiler.
- *
- * All multibyte fields are written little-endian, which matches
- * both the ELFDATA2LSB declaration and the host x86-64 byte order
- * the compiler runs on. The native-write below assumes that;
- * porting to a big-endian compiler host would need explicit
+ * ELF32 little-endian header writer. The constants are inlined as literals
+ * rather than pulled from elf.h because there's no portable elf.h on
+ * Windows/MinGW, and inlining keeps the build dependency-free, which is the
+ * whole point of this compiler. All multibyte fields are written little-endian,
+ * matching both the ELFDATA2LSB declaration and the host x86-64 byte order the
+ * compiler runs on. Porting to a big-endian host would need explicit
  * byte-swizzling, which is a problem we can have when we have it.
  */
 
@@ -66,11 +63,9 @@ static void w32(uint8_t  **p, uint32_t v)
 
 /* ---- Header builders ---- */
 
-/* Section names live in a tiny string table. Indices into the table:
- *   0: empty string (every strtab starts with NUL)
- *   1: ".text"      (length 5 + NUL = 6)
- *   7: ".shstrtab"  (length 9 + NUL = 10)
- * Total: 17 bytes. */
+/* Section names live in a tiny 17-byte string table: offset 0 is the empty
+ * string every strtab starts with, offset 1 is ".text" (5 chars plus NUL) and
+ * offset 7 is ".shstrtab" (9 chars plus NUL). */
 static const char k_shstrtab[] = "\0.text\0.shstrtab\0";
 #define SHSTRTAB_SIZE   17u
 #define SHSTR_OFF_TEXT  1u
@@ -175,10 +170,9 @@ int rv_elf_write(const rv_buf_t *code, const char *path)
     rv_elf_lay_t lay;
     plan_layout(code_bytes, &lay);
 
-    /* Fixed maximum size: 16 KiB code + 256 bytes of header/section
-     * metadata is well under what we want to hold in a stack frame
-     * but the file write below uses the buffer as a single blob,
-     * so we cap it here and refuse anything bigger. */
+    /* Fixed maximum size of 16 KiB code plus 256 bytes of header and section
+     * metadata. The write below treats the buffer as a single blob, so we cap it
+     * here and refuse anything bigger. */
     static uint8_t out[RV_BUF_MAX_WORDS * 4u + 256u];
     if (lay.total_sz > sizeof(out)) {
         fprintf(stderr,
