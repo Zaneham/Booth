@@ -119,6 +119,9 @@ typedef struct {
     /* Current function return type (for return-statement checking) */
     uint32_t        cur_ret_type;
 
+    /* Target setting for wavefront size */
+    int             amd_target;
+
     /* Errors */
     bc_error_t      errors[SEMA_MAX_ERRORS];
     int             num_errors;
@@ -126,7 +129,7 @@ typedef struct {
 
 /* ---- Public API ---- */
 
-void sema_init(sema_ctx_t *S, const parser_t *P, uint32_t root);
+void sema_init(sema_ctx_t *S, const parser_t *P, uint32_t root, int amd_target);
 int  sema_check(sema_ctx_t *S, uint32_t root);
 void sema_dump(const sema_ctx_t *S, uint32_t root);
 

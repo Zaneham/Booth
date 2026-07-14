@@ -2,6 +2,7 @@
 #define BARRACUDA_AMDGPU_H
 
 #include "bir.h"
+#include "../amd_target_defs.h"
 
 /*
  * AMDGPU backend for BarraCUDA.
@@ -12,16 +13,6 @@
  */
 
 #define BC_ERR_AMDGPU   -6
-
-/* ---- Target Selection ---- */
-
-typedef enum {
-    AMD_TARGET_GFX90A,    /* CDNA 2 (MI250, Wave64) */
-    AMD_TARGET_GFX942,    /* CDNA 3 (MI300X, Wave64) */
-    AMD_TARGET_GFX1030,   /* RDNA 2 */
-    AMD_TARGET_GFX1100,   /* RDNA 3 */
-    AMD_TARGET_GFX1200,   /* RDNA 4 */
-} amd_target_t;
 
 /* ---- Target Constants ---- */
 

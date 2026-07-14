@@ -1,4 +1,5 @@
 #include "sema.h"
+#include "../amd_target_defs.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -694,6 +695,13 @@ static uint32_t check_expr(sema_ctx_t *S, uint32_t node)
     case AST_IDENT: {
         char name[128];
         get_text(S, node, name, sizeof(name));
+
+        /* Builtin constant for warpSize */
+        if (strcmp(name, "warpSize") == 0) {
+            uint32_t t = st_int(S);
+            annotate(S, node, t);
+            return t;
+        }
 
         const sema_sym_t *sym = find_sym(S, name);
         if (sym) {
@@ -1571,12 +1579,13 @@ static void check_func_def(sema_ctx_t *S, uint32_t node)
 
 /* ---- Initialization ---- */
 
-void sema_init(sema_ctx_t *S, const parser_t *P, uint32_t root)
+void sema_init(sema_ctx_t *S, const parser_t *P, uint32_t root, int amd_target)
 {
     (void)root;
     memset(S, 0, sizeof(*S));
     S->P   = P;
     S->src = P->src;
+    S->amd_target = amd_target;
 
     st_void(S);    /* 0 */
     st_bool(S);    /* 1 */
