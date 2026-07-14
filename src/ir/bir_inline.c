@@ -1,6 +1,6 @@
 /* bir_inline.c -- inline calls to user __device__ functions.
  *
- * BarraCUDA's IR references values by absolute index into one flat,
+ * Booth's IR references values by absolute index into one flat,
  * append-only insts[] array, and a function's blocks and instructions are
  * contiguous slices of the global arenas. That makes an in-place insert a
  * non-starter: dropping instructions into the middle would slide every
@@ -554,7 +554,7 @@ static void warn_uninlined(inl_t *X)
                 cfi = call_func_index(M, I);
                 if (is_device(M, cfi) && !X->warned[cfi]) {
                     X->warned[cfi] = 1;
-                    fprintf(stderr, "barracuda: warning: __device__ function "
+                    fprintf(stderr, "kath: warning: __device__ function "
                         "'%s' has control flow and is not inlined yet; calls "
                         "to it will not run correctly on this backend. Inline "
                         "it by hand for now. (issue #101)\n", func_name(M, cfi));
@@ -596,7 +596,7 @@ static int inline_run(inl_t *X)
         uint32_t f;
         for (f = 0; f < M->num_funcs; f++) {
             if (func_has_inlinable_call(M, f)) {
-                fprintf(stderr, "barracuda: device call inlining did not "
+                fprintf(stderr, "kath: device call inlining did not "
                         "converge after %d rounds (recursive __device__ "
                         "function '%s'?)\n", INL_MAX_ROUNDS, func_name(M, f));
                 return BC_ERR_VERIFY;
