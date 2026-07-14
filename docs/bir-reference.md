@@ -1,6 +1,6 @@
-# BIR: BarraCUDA Intermediate Representation
+# BIR: Booth Intermediate Representation
 
-BIR is the target-independent SSA intermediate representation at the core of the BarraCUDA compiler. It sits between semantic analysis and backend code generation, providing a typed, hardware-agnostic instruction set that captures GPU compute semantics without committing to any particular ISA.
+BIR is the target-independent SSA intermediate representation at the core of the Booth compiler. It sits between semantic analysis and backend code generation, providing a typed, hardware-agnostic instruction set that captures GPU compute semantics without committing to any particular ISA.
 
 ```
 Source (.cu) -> Lexer -> Parser -> AST -> Semantic Analysis
@@ -844,11 +844,11 @@ bb1:
 
 ## Textual IR Format
 
-The textual IR is produced by `bir_print_module()` and can be dumped with `./barracuda --ir kernel.cu`. The format follows these conventions:
+The textual IR is produced by `bir_print_module()` and can be dumped with `./kath --ir kernel.cu`. The format follows these conventions:
 
 ### Module Structure
 ```
-; BarraCUDA IR
+; Booth IR
 
 @global_name = global|constant TYPE [initializer] [cuda_flags]
 
@@ -873,7 +873,7 @@ Each instruction is annotated with its source line number as a trailing comment:
 ### Complete Example
 
 ```
-; BarraCUDA IR
+; Booth IR
 
 func @vector_add(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, i32 %3) __global__ {
 entry:

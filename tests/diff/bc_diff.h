@@ -1,4 +1,4 @@
-/* bc_diff.h -- differential testing core for BarraCUDA backends.
+/* bc_diff.h -- differential testing core for Booth backends.
  *
  * One IR, many targets. Run the same kernel through two of them, diff the
  * output buffers, and you find out fast whether a wrong answer is your

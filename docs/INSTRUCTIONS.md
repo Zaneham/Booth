@@ -1,6 +1,6 @@
 # BIR Instruction Set
 
-This is the complete instruction listing for the BarraCUDA Intermediate Representation. Each entry specifies the mnemonic, syntax, operand layout, subop encoding, result type, and operational semantics.
+This is the complete instruction listing for the Booth Intermediate Representation. Each entry specifies the mnemonic, syntax, operand layout, subop encoding, result type, and operational semantics.
 
 Conventions used throughout this document:
 

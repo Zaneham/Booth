@@ -1,5 +1,5 @@
 # lang/en.txt - English (reference)
-# BarraCUDA error messages. Format: ENNN=message text
+# Booth error messages. Format: ENNN=message text
 # Placeholders (%s, %d, %c, %02x) must be preserved in translations.
 
 # ---- Internal ----

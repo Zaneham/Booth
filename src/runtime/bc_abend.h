@@ -1,4 +1,4 @@
-/* bc_abend.h -- GPU ABEND dump diagnostics for BarraCUDA
+/* bc_abend.h -- GPU ABEND dump diagnostics for Booth
  *
  * Oh yeah baby, mainframes are IN, chopped error messages are OUT.
  * IBM solved crash diagnostics in the 1960s. We're solving them in the

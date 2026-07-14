@@ -140,6 +140,6 @@ CLAUDE.md
 /trck.txt
 
 # Build artifacts (root-level binaries + generated kernels)
-/barracuda
+/kath
 /trunner
 /tdf_*.elf

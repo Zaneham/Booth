@@ -1,4 +1,4 @@
-/* bc_abend.c -- GPU ABEND dump diagnostics for BarraCUDA
+/* bc_abend.c -- GPU ABEND dump diagnostics for Booth
  *
  * When your kernel faults, AMD gives you a cryptic one-liner about
  * "Memory access fault, Reason: Unknown." Cheers for that. We hook

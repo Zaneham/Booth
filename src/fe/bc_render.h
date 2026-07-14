@@ -1,4 +1,4 @@
-/* bc_render.h — Diagnostic rendering for BarraCUDA.
+/* bc_render.h — Diagnostic rendering for Booth.
  *
  * One place that turns a phase's bc_error_t[] into output a human actually
  * wants to read: the message, where it is, the offending line, and a caret

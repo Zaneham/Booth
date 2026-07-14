@@ -1,4 +1,4 @@
-/* bc_runtime.c — BarraCUDA HSA Runtime Launcher
+/* bc_runtime.c — Booth HSA Runtime Launcher
  * dlopen's libhsa-runtime64.so. No compile-time ROCm dependency. Linux only. */
 
 #ifdef __linux__

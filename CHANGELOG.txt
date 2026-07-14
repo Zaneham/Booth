@@ -1,5 +1,17 @@
-BarraCUDA — Changelog
-=====================
+Booth — Changelog
+=================
+
+2026-06-29 — Renamed from BarraCUDA to Booth. The fish pun said
+"CUDA" while the whole point of the project is not needing CUDA, so
+it had to go. Booth honours Kathleen Booth: she wrote the first
+assembly language and co-built the computer it ran on, which is the
+top and the bottom of this compiler's pipeline in one person. The
+CLI binary is now `kath`, after her. Old `Zaneham/BarraCUDA` URLs
+redirect, so nothing external breaks. Internal `bc_`-prefixed
+symbols keep their names for now; renaming those is tracked as a
+good-first-issue rather than risked in one big sweep across the
+codegen. Every entry below this line predates the rename and still
+says BarraCUDA, because that's what happened.
 
 2026-06-13 — Diagnostics that read like Clang's. A new renderer
 (src/fe/bc_render.c) gives every phase the same shape: error[Ennn]:
@@ -213,7 +225,7 @@ suite stands at 107 cases, 106 pass, 1 skip.
 2026-05-21 — Triton frontend wired through to every backend. The
 post-lowering pipeline (mem2reg, constant folding, dead code
 elimination, then per-backend codegen) lived inside the C99
-frontend block in main.c since the day BarraCUDA gained its
+frontend block in main.c since the day the project gained its
 second backend. Factored out into run_bir_backends so both
 frontends can call it. Triton kernels now compile end to end:
 --triton --amdgpu-bin produces a working .hsaco, --triton

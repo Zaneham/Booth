@@ -1,4 +1,4 @@
-/* cpu_launch_vadd.c -- run a BarraCUDA --cpu kernel natively, no GPU.
+/* cpu_launch_vadd.c -- run a Booth --cpu kernel natively, no GPU.
  *
  * The whole trick to calling one of these kernels: pass its own params
  * first, then one extra arg on the end, nthreads. The kernel runs its
@@ -6,12 +6,12 @@
  * just hand it the element count and a single call does the lot.
  *
  * Build (Triton source):
- *   ./barracuda --triton --cpu -o vadd.o tests/tri_vadd.py
+ *   ./kath --triton --cpu -o vadd.o tests/tri_vadd.py
  *   gcc -no-pie examples/cpu_launch_vadd.c vadd.o -o cpu_vadd
  *   ./cpu_vadd
  *
  * Or from CUDA C with a matching add(float*,float*,float*) kernel:
- *   ./barracuda --cpu -o vadd.o vadd.cu      (then link as above)
+ *   ./kath --cpu -o vadd.o vadd.cu      (then link as above)
  *
  * tri_vadd.py signature: vector_add(x_ptr, y_ptr, out_ptr, n_elements,
  *                                   BLOCK_SIZE) + hidden nthreads.

@@ -9,8 +9,8 @@
  * Emit an object, then link a driver and diff against the oracle. The kernel
  * uses the SIMT thread-loop ABI: it compiles to k(out, a, b, n) where the
  * trailing n is the thread/iteration count, so launch with n=1:
- *     barracuda --cpu  -o k_cpu.o tests/test_umulhi.cu   # then gcc + run
- *     barracuda --rv64 -o k_rv.o  tests/test_umulhi.cu   # then link + qemu-riscv64
+ *     kath --cpu  -o k_cpu.o tests/test_umulhi.cu   # then gcc + run
+ *     kath --rv64 -o k_rv.o  tests/test_umulhi.cu   # then link + qemu-riscv64
  *     driver: extern void k(u64*,u64,u64,long); k(&out, a, b, 1);
  * Verified ALL OK on --cpu (x86-64) and --rv64 (qemu) against the oracle.
  *

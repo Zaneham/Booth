@@ -57,7 +57,7 @@ All static memory (~30 MB), no malloc.  ~1,300 lines of C99.
 Operates on SSA form before phi elimination — free PHI coalescing.
 Fallback to ra_gc/ra_lin for functions exceeding pool limits.
 
-Enabled via: barracuda --ssa-ra
+Enabled via: kath --ssa-ra
 
 Files
 -----
@@ -88,7 +88,7 @@ Yes I used Zotero because I always seem to miss something in apa7th lol.
 Next Steps
 ----------
 - Run on MI300X hardware 
-  barracuda --ssa-ra --amdgpu-bin --gfx942 gpu/tp_kern.cu
+  kath --ssa-ra --amdgpu-bin --gfx942 gpu/tp_kern.cu
   then: kahu a.hsaco --all
   then: run Godiva benchmark, verify k_eff matches CPU (0.995 ± 0.001)
 - If kernel runs correctly, benchmark against ra_gc binary

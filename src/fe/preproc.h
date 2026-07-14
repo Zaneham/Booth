@@ -4,7 +4,7 @@
 #include "barracuda.h"
 
 /*
- * CUDA preprocessor for BarraCUDA.
+ * CUDA preprocessor for Booth.
  * Runs before the lexer on raw source text.
  * Handles: #include, #define/#undef, macro expansion,
  *          #ifdef/#ifndef/#if/#elif/#else/#endif, #pragma, #error.

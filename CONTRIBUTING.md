@@ -1,4 +1,4 @@
-# Contributing to BarraCUDA
+# Contributing to Booth
 
 You're more than welcome to submit a PR. I'm happy to look at it and give it a fair shake.
 
@@ -6,7 +6,7 @@ If you're reading this and going "Ah heck I don't think I can do that, I'll get 
 
 ## The Style
 
-BarraCUDA is written in a defensive C99 style. I spent too much time staring at NASA code in my Halmat project and it stuck. The rules exist because they eliminate entire categories of bugs by construction rather than by testing.
+Booth is written in a defensive C99 style. I spent too much time staring at NASA code in my Halmat project and it stuck. The rules exist because they eliminate entire categories of bugs by construction rather than by testing.
 
 **No dynamic allocation in hot paths.** Pre-allocated, fixed-size buffers. If a pool overflows, return a sentinel, never corrupt a counter. If you can't have unbounded allocation you can't have memory leaks.
 
@@ -62,15 +62,15 @@ For code comments, same deal. Multilingual comments are welcome and encouraged. 
 
 For identifiers, the HLASM naming convention handles this naturally. When your function names are 4-7 characters of Latin text — `ra_gc`, `mk_hash`, `enc_vop3` — there's nothing culturally English about them. They're just short labels. No umlauts or accents though, sorry (especially you Germans), ASCII only in identifiers. The compiler's lexer would have opinions.
 
-I've had messages from developers around the world, all of whom speak English to varying degrees. Some of them see things I don't. Developer convenience is never a factor in my dependency decisions, and that principle extends to people. 
+I've had messages from developers around the world, all of whom speak English to varying degrees. Some of them see things I don't. Developer convenience is never a factor in my dependency decisions, and that principle extends to people.
 
-## On LLM's 
+## On LLM's
 
-Speaking of translations and using LLM's, let us address the elephant in the room. An LLM like Chatgpt or any other model is a tool and tools are perfectly acceptable to use depending on how you use them. 
+Speaking of translations and using LLM's, let us address the elephant in the room. An LLM like Chatgpt or any other model is a tool and tools are perfectly acceptable to use depending on how you use them.
 
 I'll start off by saying that I have used LLM's. They're very nifty and perfectly fine. When AMD's documentation says one thing but the output and behaviour say another, an LLM can look up an obscure bug report from a forum post made in 2019 when someone else hit the same bug. It can also look into multiple languages, not just English. I've used LLM's like Ollama to quickly jot down some documentation, like how I would dictate to a voice recorder whenever I've hit a bug or an edge case somewhere and wanted details for when I get back to it. I've had LLM's write me tests to throw at my compilers, and if I'm tired and writing my 42nd array I might just let intellisense handle the rest.
 
-All of these are perfectly acceptable uses of LLM's. 
+All of these are perfectly acceptable uses of LLM's.
 
 When I was a kid learning Lua on Roblox, I would actually copy and paste scripts from forums when I genuinely got stuck. It is a fantastic way to 1) learn and 2) fix a problem if you struggle with it. Intellisense, Stack Overflow and all of these things are tools. The Mainframe community passed around assembler macros and borrowed off each other's work on literal magnetic tapes. This isn't new. LLM's are just another tool in a long line of tool development that has happened over the years.
 
@@ -79,12 +79,12 @@ When I was a kid learning Lua on Roblox, I would actually copy and paste scripts
 
 - Code review - I use LLM's to have a "second pair of eyes" when I'm writing code, it's pretty nifty at spotting unbounded memory violations I occasionally write or uncommented code that another person might need to read. There are limits to LLM's. If you ask Chatgpt about how to make a compiler it will probably recommend you to use Rust and LLVM which this project purposefully does not use. Code review is fine, architecture is not.
 - Research and search - Finding edge cases, documentation, summarisation are all fine
-- Test generation - Generate edge case galore and throw it at the compiler, If you do use an LLM just make sure to say so in the issues. 
+- Test generation - Generate edge case galore and throw it at the compiler, If you do use an LLM just make sure to say so in the issues.
 - Documentation - Writing up said bugs when you run into them or for your personal notes
 
 **What's not acceptable**
 
-- **Generating code you don't understand** - When I was writing Callout, my Call and Dispatch engine (it's what Emergency services use when dispatching a firetruck because you burnt toast and now the alarm is going off), I hit a wall. I know systems but had no idea on how to properly add a button or a UI element. I found myself relying on my Ollama model too much and eventually couldn't understand what I was making. BarraCUDA requires bit level precision as it emits machine code. If you want to submit a PR but don't understand a section of the codebase or don't understand everything, that is fine, that's being human. You are more than welcome to submit a PR, even an incomplete one, and we can discuss tradeoffs and implementations. We are all learning. Learning is what makes us, us.
+- **Generating code you don't understand** - When I was writing Callout, my Call and Dispatch engine (it's what Emergency services use when dispatching a firetruck because you burnt toast and now the alarm is going off), I hit a wall. I know systems but had no idea on how to properly add a button or a UI element. I found myself relying on my Ollama model too much and eventually couldn't understand what I was making. Booth requires bit level precision as it emits machine code. If you want to submit a PR but don't understand a section of the codebase or don't understand everything, that is fine, that's being human. You are more than welcome to submit a PR, even an incomplete one, and we can discuss tradeoffs and implementations. We are all learning. Learning is what makes us, us.
 - **Wholly synthetic undeclared code** is something we'll have to send back or rework together. If you've used an LLM, just say so — declared LLM-assisted code that you understand and can defend is absolutely fine. The copyright picture is genuinely unsettled though, so occasionally I might ask you to rewrite a section from scratch. Here's why there's caution:
   - **Licence contamination** — LLM training data can include proprietary or incompatibly-licensed code. If it leaks into a PR, it poisons the Apache 2.0 licence for the whole project.
   - **Copyright** — the wonderful folks in that small outfit known as "The United States Federal Government" have ruled that a human has to substantially author or alter code for it to be copyrightable. Unaltered LLM output may not be copyrightable at all, which means it can't actually be licensed under Apache 2.0. Now I'm not in the US, I'm in New Zealand, and our laws are actually more reasonable, but US lawyers aren't exactly well known for their geography knowledge.
@@ -111,7 +111,7 @@ If you're not sure whether something is worth a PR, open an issue. I also love t
 
 ## Backends
 
-BarraCUDA currently supports:
+Booth generates code for the following targets. This is codegen support; the silicon it's actually been run and validated on is listed in [docs/hardware.md](docs/hardware.md).
 
 - **AMD CDNA 2** (gfx90a, MI250)
 - **AMD CDNA 3** (gfx942, MI300X)
@@ -123,7 +123,7 @@ BarraCUDA currently supports:
 - **Apple Metal** (stub, hardware validation pending)
 - **Intel Arc / Xe SPIR-V** (stub)
 
-The frontend lowers to BIR (BarraCUDA IR) in SSA form. Each backend is a self-contained target that consumes BIR. Adding a new architecture means writing a new instruction selector and emitter; the rest of the pipeline is shared.
+The frontend lowers to BIR (Booth IR) in SSA form. Each backend is a self-contained target that consumes BIR. Adding a new architecture means writing a new instruction selector and emitter; the rest of the pipeline is shared.
 
 Tenstorrent additionally sits above BIR through TDF (Tile DataFlow), a small IR that models L1 placement, circular buffers, and NoC arcs as first-class concepts. Adding a new Tenstorrent-shaped target (other tile-based accelerators, RVV-style processors) can reuse TDF and skip writing all of the orchestration from scratch.
 
@@ -159,7 +159,7 @@ Commits before PR merge can have any history shape you like: squash, rebase, mer
 
 ## License
 
-BarraCUDA is Apache 2.0. By submitting a PR, you agree your contribution is licensed under the same terms and you represent that you have the right to do so — meaning the code is your own work, or derived from compatibly-licensed sources, and not copied from proprietary material.
+Booth is Apache 2.0. By submitting a PR, you agree your contribution is licensed under the same terms and you represent that you have the right to do so — meaning the code is your own work, or derived from compatibly-licensed sources, and not copied from proprietary material.
 
 ---
 

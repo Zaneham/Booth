@@ -54,7 +54,7 @@ jobs:
             '    int i = blockIdx.x * blockDim.x + threadIdx.x;' \
             '    if (i < n) out[i] = a[i] + b[i];' \
             '}' > vadd.cu
-          ./barracuda --metal vadd.cu -o vadd.metal
+          ./kath --metal vadd.cu -o vadd.metal
           echo '--- emitted MSL ---'
           cat vadd.metal
           xcrun -sdk macosx metal -c vadd.metal -o vadd.air

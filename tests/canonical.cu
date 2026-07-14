@@ -1,5 +1,5 @@
 /* canonical.cu — Classic CUDA patterns from NVIDIA samples and GPU Gems,
- * adapted for BarraCUDA's current parser capabilities.
+ * adapted for Booth's current parser capabilities.
  *
  * Original sources: NVIDIA cuda-samples, GPU Gems 3 Ch.39, various
  * NVIDIA blog posts. Adapted by removing compound assignment (+=),

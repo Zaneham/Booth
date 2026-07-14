@@ -1,4 +1,4 @@
-/* tmain.c -- BarraCUDA test runner
+/* tmain.c -- Booth test runner
  * Runs tests in a sensible order, prints dots, judges silently. */
 
 #include "tharns.h"
@@ -129,7 +129,7 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    printf("BarraCUDA Test Suite\n");
+    printf("Booth Test Suite\n");
     printf("====================\n");
 
     /* Run tests in category order */

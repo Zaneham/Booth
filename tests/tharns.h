@@ -1,4 +1,4 @@
-/* tharns.h -- BarraCUDA test harness
+/* tharns.h -- Booth test harness
  * Named after nobody in particular. Definitely not a typo. */
 #ifndef THARNS_H
 #define THARNS_H
@@ -59,9 +59,9 @@ extern int npass, nfail, nskip;
 /* popen on Windows goes through cmd.exe, which has less understanding
  * of Unix paths than Grok has of being a real AI. */
 #ifdef _WIN32
-#define BC_BIN ".\\barracuda.exe"
+#define BC_BIN ".\\kath.exe"
 #else
-#define BC_BIN "./barracuda"
+#define BC_BIN "./kath"
 #endif
 
 /* ---- Utilities ---- */

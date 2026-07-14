@@ -4,7 +4,7 @@
 #include "barracuda.h"
 
 /*
- * BarraCUDA Intermediate Representation.
+ * Booth Intermediate Representation.
  * SSA form, flat arrays, index-based references.
  * No malloc. No mercy. No hardware assumptions.
  */

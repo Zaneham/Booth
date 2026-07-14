@@ -1,8 +1,8 @@
-/* bc_err.h — Error localisation for BarraCUDA
+/* bc_err.h — Error localisation for Booth
  *
  * Every diagnostic gets a numeric ID (E001..E129). English is compiled in;
  * external translation files loaded via --lang override individual messages.
- * A Japanese dev can Google "BarraCUDA E020" regardless of locale.
+ * A Japanese dev can Google "Booth E020" regardless of locale.
  * No malloc. No nonsense. */
 
 #ifndef BARRACUDA_BC_ERR_H

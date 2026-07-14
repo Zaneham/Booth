@@ -1,4 +1,4 @@
-/* cpu.h -- x86-64 CPU backend for BarraCUDA.
+/* cpu.h -- x86-64 CPU backend for Booth.
  *
  * Turns a kernel into a host-runnable x86-64 function, so you can hack
  * on Triton and CUDA kernels on a laptop with no GPU in it. Codegen is

@@ -5,7 +5,7 @@
 #include "../amd_target_defs.h"
 
 /*
- * AMDGPU backend for BarraCUDA.
+ * AMDGPU backend for Booth.
  * Targets CDNA 2/3 (gfx90a/gfx942), RDNA 2 (gfx1030), RDNA 3 (gfx1100), RDNA 4 (gfx1200).
  * Compiles BIR SSA to AMDGCN machine IR, then emits assembly text
  * or binary ELF code objects (.hsaco).

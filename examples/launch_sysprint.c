@@ -5,7 +5,7 @@
  *             src/runtime/bc_runtime.c \
  *             runtime/sysprint.c \
  *             -ldl -lm -o launch_sysprint
- * Run:    ./barracuda --amdgpu-bin -I runtime -I examples \
+ * Run:    ./kath --amdgpu-bin -I runtime -I examples \
  *             -o sp_demo.hsaco examples/sysprint_kernel.cu
  *         ./launch_sysprint sp_demo.hsaco
  *
@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
 {
     const char *hsaco = (argc > 1) ? argv[1] : "sp_demo.hsaco";
 
-    printf("BarraCUDA SYSPRINT launcher\n");
+    printf("Booth SYSPRINT launcher\n");
     printf("  .hsaco:  %s\n", hsaco);
 
     /* Intern demo classes and register a sink for the result. */

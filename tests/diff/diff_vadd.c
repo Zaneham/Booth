@@ -1,6 +1,6 @@
 /* diff_vadd.c -- worked differential test for the Triton vector_add kernel.
  *
- * Subject: the kernel as compiled by `barracuda --triton --cpu`, called
+ * Subject: the kernel as compiled by `kath --triton --cpu`, called
  * the usual way (its own params, then the hidden nthreads). Oracle: the
  * same sum worked out in plain host C. We diff the two.
  *
@@ -14,7 +14,7 @@
  * on purpose, which is how we check the harness fails when it should.
  *
  * Build (Linux / WSL):
- *   ./barracuda --triton --cpu -o vadd.o tests/tri_vadd.py
+ *   ./kath --triton --cpu -o vadd.o tests/tri_vadd.py
  *   gcc -no-pie -Itests/diff tests/diff/diff_vadd.c vadd.o -o diff_vadd -lm
  *   ./diff_vadd            # PASS
  *   ./diff_vadd --inject   # FAIL (proves the harness has teeth)

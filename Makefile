@@ -36,7 +36,7 @@ SOURCES = src/main.c \
           src/intel/emit.c \
           src/triton/lex.c src/triton/parse.c src/triton/sema.c src/triton/lower.c
 OBJECTS = $(SOURCES:.c=.o)
-TARGET  = barracuda
+TARGET  = kath
 
 all: $(TARGET)
 
@@ -92,7 +92,7 @@ src/runtime/%.o: src/runtime/%.c
 	$(CC) $(TCFLAGS) -c $< -o $@
 
 # Target-side runtime (soft-float, etc). Built with host gcc here
-# so we can host-test the IEEE math; barracuda will compile the
+# so we can host-test the IEEE math; Booth will compile the
 # same .c files separately when generating kernel ELFs.
 runtime/%.o: runtime/%.c
 	$(CC) $(TCFLAGS) -c $< -o $@

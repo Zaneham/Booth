@@ -16,11 +16,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Build BarraCUDA
+      - name: Build Booth
         run: make
 
       - name: Compile test kernels
-        run: ./barracuda --amdgpu-bin tests/vector_add.cu -o tests/vector_add.hsaco
+        run: ./kath --amdgpu-bin tests/vector_add.cu -o tests/vector_add.hsaco
 
       - name: Setup tinygrad emulator
         run: |

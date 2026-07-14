@@ -1,5 +1,5 @@
 /* ============================================================
- * preproc.c — CUDA Preprocessor for BarraCUDA
+ * preproc.c — CUDA Preprocessor for Booth
  *
  * Runs before the lexer on raw source text.
  * Handles: #include, #define/#undef, macro expansion,

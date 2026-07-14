@@ -3,7 +3,7 @@
 
 /*
  * Tensix kernel runtime arguments layout. This is the shared contract between
- * the BarraCUDA RV32IM isel (rv_isel.c), which emits LW from these offsets when
+ * the Booth RV32IM isel (rv_isel.c), which emits LW from these offsets when
  * lowering BIR_PARAM and the four CUDA coordinate intrinsics (threadIdx,
  * blockIdx, blockDim, gridDim), and the host launcher
  * (examples/koyeb_tensix_launch.cpp and any future deploy harness), which writes
