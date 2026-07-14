@@ -26,7 +26,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build the compiler
-        run: make
+        run: |
+          make
+          # Transitional bridge: Moa's Makefile still calls the old binary name
+          # `barracuda`. Alias it to `kath` until Moa migrates. See issue #120.
+          cp kath barracuda
 
       - name: Fetch the workload (Moa) and its safety library (Kauri)
         run: |
