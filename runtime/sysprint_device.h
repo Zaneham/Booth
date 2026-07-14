@@ -1,24 +1,14 @@
 /* sysprint_device.h -- device-side SYSPRINT emit.
- *
- * Kernels include this header to emit class-tagged records into
- * a host-visible buffer. The buffer is allocated and managed by
- * the host through sysprint.h; the device side appends records
- * via atomicAdd on the head.
- *
- * The emit is a macro rather than a function so the kernel does
- * not depend on device-call support. Same .cu file compiles
- * through Booth (for the GPU) and host gcc (for development
- * and the runtime test path). */
+ * Kernels append class-tagged records into a host-managed buffer via atomicAdd on
+ * head. A macro (no device-call dependency) so one .cu builds under Booth and gcc. */
 
 #ifndef BARRACUDA_SYSPRINT_DEVICE_H
 #define BARRACUDA_SYSPRINT_DEVICE_H
 
 #include <stdint.h>
 
-/* Host-build fallback for atomicAdd. The Booth frontend
- * recognises atomicAdd as an intrinsic; under host gcc we route
- * it through gcc's __atomic builtin so a .cu file is portable
- * to the CPU for the runtime test path. */
+/* Host-build fallback for atomicAdd: Booth treats it as an intrinsic, host gcc
+ * routes it through __atomic so the .cu runs on the CPU test path. */
 #if !defined(__CUDA_ARCH__) && !defined(__HIPCC__) && !defined(__BARRACUDA__)
 static inline uint32_t bc_sp_dev_atomic_add(uint32_t *p, uint32_t v)
 {
@@ -27,10 +17,8 @@ static inline uint32_t bc_sp_dev_atomic_add(uint32_t *p, uint32_t v)
 #define atomicAdd bc_sp_dev_atomic_add
 #endif
 
-/* Layout must match the host-side bc_sp_buf_t in sysprint.h.
- * Field for field. The include guard below stops double-typedef
- * when both headers are included in the same translation unit
- * (which the host launcher does). */
+/* Must match bc_sp_buf_t in sysprint.h field for field; the guard stops a double
+ * typedef when both headers land in one translation unit. */
 #ifndef BC_SP_BUF_T_DEFINED
 #define BC_SP_BUF_T_DEFINED
 typedef struct {
@@ -41,10 +29,8 @@ typedef struct {
 } bc_sp_buf_t;
 #endif
 
-/* Emit a record into the buffer. The class id should match what
- * the host interned (see examples/sysprint_classes.h for the
- * convention used by the demo). Payload is copied byte by byte
- * into the buffer; the host decodes by class. */
+/* Emit a record; class_id should match what the host interned. Payload is copied
+ * byte by byte, decoded host-side by class. */
 #define BC_SYSPRINT(buf, class_id, payload, len)                            \
     do {                                                                    \
         uint32_t _sp_bytes = 8u + (((uint32_t)(len) + 3u) & ~3u);           \

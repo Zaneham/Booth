@@ -1,47 +1,14 @@
 #include "soft_fp.h"
 #include "soft_fp_internal.h"
 
-/*
- * IEEE-754 fp32 soft-float implementation. Each public function is
- * a libgcc-named entry point that lowered float code calls into.
- * The helpers below the public functions handle the pieces that
- * are shared across operations: unpack/pack of the bit layout,
- * round-to-nearest-even with guard and sticky bits, and a couple
- * of small numerical utilities that earn their own functions
- * because they appear in three or four places.
- *
- * Numerical model:
- *   - Round to nearest, ties to even.
- *   - FTZ/DAZ on subnormals (default; SFP_STRICT_IEEE flips it).
- *   - Canonical quiet NaN on all NaN results.
- *   - Inf and zero handled in the special-case dispatch at the
- *     top of each arithmetic function.
- *
- * The internal mantissa convention: when we work on a value we
- * keep the implicit leading 1 attached. So 1.0 has mantissa
- * 0x800000 (bit 23 set, bits 22..0 zero) and unbiased exponent
- * 0. This matches what most reference soft-float code does, and
- * matters because half the operations need to do arithmetic on
- * the full 24-bit value rather than just the 23 explicit bits.
- */
+/* IEEE-754 fp32 soft-float; libgcc-named entry points for lowered float code.
+ * Round-to-nearest-even, FTZ/DAZ on subnormals (SFP_STRICT_IEEE flips it),
+ * canonical quiet NaN. Mantissas carry the implicit leading 1 (1.0 = 0x800000). */
 
 /* ---- Unpack / pack ---- */
 
-/*
- * Decompose a 32-bit IEEE pattern into the unpacked struct.
- * Dispatch order:
- *   1. Exponent all-ones (0xFF biased): Inf if mantissa zero,
- *      NaN otherwise. No further work.
- *   2. Exponent all-zero with nonzero mantissa: subnormal.
- *      In FTZ mode we treat as zero on input; in strict mode
- *      we preserve. The hidden bit is NOT set for subnormals
- *      because the IEEE encoding deliberately drops it (the
- *      true value is 0.f_22f_21...f_0 x 2^-126 rather than
- *      1.something).
- *   3. Exponent all-zero with zero mantissa: signed zero.
- *   4. Anything else: a normal number. Add the implicit bit
- *      and unbias the exponent.
- */
+/* Decompose a 32-bit IEEE pattern into sign/exp/mant; tag Inf/NaN/zero/subnormal.
+ * Subnormals flush to zero unless SFP_STRICT_IEEE. */
 __device__ sfp_unpacked_t sfp_unpack(uint32_t bits)
 {
     sfp_unpacked_t u;
@@ -72,9 +39,8 @@ __device__ sfp_unpacked_t sfp_unpack(uint32_t bits)
             return u;
         }
 #if SFP_STRICT_IEEE
-        /* Subnormal preserved. The smallest unbiased exponent
-         * is (1 - bias) per the IEEE spec; the hidden bit is
-         * NOT added because subnormals encode 0.frac. */
+        /* Subnormal preserved: unbiased exp is (1 - bias), no hidden bit
+         * since subnormals encode 0.frac. */
         u.is_sub = 1;
         u.exp    = 1 - SFP_EXP_BIAS;
         u.mant   = mant;
@@ -91,15 +57,8 @@ __device__ sfp_unpacked_t sfp_unpack(uint32_t bits)
     return u;
 }
 
-/*
- * Pack an unpacked value back into a 32-bit IEEE pattern. Handles
- * exponent overflow (-> infinity), exponent underflow (FTZ ->
- * zero; strict mode would produce a subnormal, marked as future
- * work below), and the special-case flags. The caller is
- * responsible for handing us a normalised mantissa (hidden bit
- * at position SFP_MANT_BITS); if the mantissa is over- or
- * under-normalised we mis-pack and the result is wrong.
- */
+/* Pack sign/exp/mant into a 32-bit IEEE pattern; overflow to Inf, underflow to
+ * zero (FTZ). Mantissa must arrive normalised (hidden bit at SFP_MANT_BITS). */
 __device__ uint32_t sfp_pack(sfp_unpacked_t u)
 {
     if (u.is_nan) return SFP_CANONICAL_NAN;
@@ -113,10 +72,7 @@ __device__ uint32_t sfp_pack(sfp_unpacked_t u)
     }
     if (biased <= 0) {
 #if SFP_STRICT_IEEE
-        /* Subnormal output: shift mantissa right by (1 - biased)
-         * to denormalise, then pack with biased = 0. Future work;
-         * for now we fall through to FTZ behaviour even in strict
-         * mode so we do not ship a half-built path. */
+        /* Strict subnormal output not built yet; fall through to FTZ. */
         return u.sign ? SFP_SIGN_BIT : 0u;
 #else
         /* FTZ: anything that would be subnormal flushes to zero. */
@@ -130,30 +86,8 @@ __device__ uint32_t sfp_pack(sfp_unpacked_t u)
 }
 
 /* ---- Rounding ----
- *
- * Round-to-nearest-even from a wide intermediate mantissa back
- * down to 24 bits (the implicit-bit width). The wide mantissa
- * has SFP_MANT_BITS + shift_amount bits of precision: the top
- * 24 bits are the target mantissa, and shift_amount bits below
- * that are the round-and-sticky lane.
- *
- * The rule:
- *   - If all the lane bits are zero, no rounding needed.
- *   - Otherwise the round bit is the topmost lane bit (just
- *     below the LSB of the target mantissa). The sticky bit is
- *     the OR of everything strictly below the round bit.
- *   - If round = 0: truncate. The discarded fraction is < 0.5
- *     ULP so we round down.
- *   - If round = 1 and sticky = 0: exactly halfway. Round to
- *     even: bump up only if the target LSB is currently 1.
- *   - If round = 1 and sticky = 1: discarded fraction > 0.5
- *     ULP, round up.
- *
- * When rounding up causes the mantissa to grow past the 24-bit
- * width (e.g. 0xFFFFFF + 1 = 0x1000000), we shift right by one
- * and bump the exponent. Pack then catches any resulting
- * overflow to infinity.
- */
+ * Round-to-nearest-even from a wide mantissa to 24 bits: round bit is the top
+ * lane bit, sticky the OR below, ties to even. Roundup past 24 bits bumps exp. */
 __device__ uint32_t sfp_round_normal(uint8_t sign, int32_t exp,
                           uint64_t wide_mant, int shift_amount)
 {
@@ -176,14 +110,8 @@ __device__ uint32_t sfp_round_normal(uint8_t sign, int32_t exp,
         return sfp_pack(u);
     }
 
-    /* Normalise so the leading 1 sits at bit (SFP_MANT_BITS +
-     * shift_amount). When the wide mantissa is already
-     * normalised this loop runs zero times; when leading bits
-     * have cancelled (subtraction) we shift left and decrement
-     * the exponent.
-     *
-     * The upper bound on shift count is chosen to avoid an
-     * infinite loop on a corrupted input. */
+    /* Normalise the leading 1 to bit (SFP_MANT_BITS + shift_amount); guard
+     * counter bounds the shift so corrupted input can't spin forever. */
     int target_top = SFP_MANT_BITS + shift_amount;
     int guard = 64;
     while (((wide_mant >> target_top) == 0u) && guard-- > 0) {
@@ -211,9 +139,8 @@ __device__ uint32_t sfp_round_normal(uint8_t sign, int32_t exp,
     if (round_bit && (sticky_bit || (mant24 & 1u))) {
         mant24++;
         if (mant24 == (1u << (SFP_MANT_BITS + 1))) {
-            /* Rounded across the implicit-bit boundary. Bring
-             * the mantissa back into range and bump the exponent;
-             * pack() handles the overflow-to-Inf check. */
+            /* Rounded past the implicit-bit boundary; renormalise and bump exp
+             * (pack handles overflow to Inf). */
             mant24 >>= 1;
             exp++;
         }
@@ -224,30 +151,16 @@ __device__ uint32_t sfp_round_normal(uint8_t sign, int32_t exp,
 }
 
 /* ---- Negation ----
- *
- * Trivially flip the sign bit. NaN payload preservation is not
- * a concern in our model; we do not carry payloads. */
+ * Flip the sign bit. No NaN payloads to preserve in this model. */
 __device__ float __negsf2(float a)
 {
     return sfp_from_bits(sfp_to_bits(a) ^ SFP_SIGN_BIT);
 }
 
 /* ---- Addition / Subtraction ----
- *
- * The fast paths handle special cases first because they avoid
- * needing to align mantissas: NaN inputs propagate, Inf operations
- * resolve to Inf or NaN depending on signs, and zero inputs
- * collapse to the other operand. The slow path is the general
- * normal-plus-normal case where we align the smaller operand
- * mantissa down to the larger operand exponent and then either
- * add (same sign) or subtract (different sign).
- *
- * The alignment uses a 64-bit wide register so we have room for
- * 24 mantissa bits plus enough headroom to capture sticky bits
- * before the small operand vanishes entirely. shift_amount = 24
- * places the mantissa in bits 47..24 of the wide value, leaving
- * 24 lane bits for guard/sticky.
- */
+ * Special cases first (NaN propagates, Inf gives Inf or NaN, zero collapses to the
+ * other operand). Else align the smaller mantissa down to the larger exponent in a
+ * 64-bit wide value (shift_amount = 24 leaves guard/sticky) and add or subtract. */
 __device__ static float sfp_add_signed(float a, float b, int subtract)
 {
     sfp_unpacked_t ua = sfp_unpack(sfp_to_bits(a));
@@ -257,9 +170,7 @@ __device__ static float sfp_add_signed(float a, float b, int subtract)
     /* NaN propagates. */
     if (ua.is_nan || ub.is_nan) return sfp_from_bits(SFP_CANONICAL_NAN);
 
-    /* Inf cases. Inf - Inf (same magnitude, opposite sign after
-     * the subtract-as-add transform) is NaN; everything else
-     * with an Inf collapses to a signed Inf. */
+    /* Inf cases: opposite-sign Inf + Inf is NaN, else Inf collapses to signed Inf. */
     if (ua.is_inf && ub.is_inf) {
         if (ua.sign != ub.sign) return sfp_from_bits(SFP_CANONICAL_NAN);
         return sfp_from_bits(ua.sign ? SFP_NEG_INF : SFP_POS_INF);
@@ -291,11 +202,8 @@ __device__ static float sfp_add_signed(float a, float b, int subtract)
     }
     int32_t exp_diff = ua.exp - ub.exp;
 
-    /* Widen both mantissas into the upper bits of a 64-bit
-     * register, leaving 24 lane bits below for guard/sticky.
-     * Shift ub right by exp_diff to align; if the shift would
-     * push everything off the bottom we set sticky to 1 since
-     * any nonzero remainder rounds up by the smallest amount. */
+    /* Widen both mantissas high in a 64-bit register (24 lane bits for
+     * guard/sticky); align ub down by exp_diff, keeping any lost bits as sticky. */
     uint64_t ma = (uint64_t)ua.mant << 24;
     uint64_t mb = (uint64_t)ub.mant << 24;
     uint64_t sticky = 0;
@@ -320,10 +228,7 @@ __device__ static float sfp_add_signed(float a, float b, int subtract)
             result_mant = mb - ma;
             result_sign = ub.sign;
         }
-        /* Cancellation can leave the mantissa zero; that is an
-         * exact zero, return +0 by convention (round-to-nearest
-         * makes the sign positive when the difference is
-         * exactly representable). */
+        /* Exact cancellation returns +0 (round-to-nearest sign convention). */
         if (result_mant == 0u) {
             sfp_unpacked_t z;
             z.sign = 0; z.is_zero = 1; z.is_inf = 0; z.is_nan = 0;
@@ -344,18 +249,8 @@ __device__ float __addsf3(float a, float b) { return sfp_add_signed(a, b, 0); }
 __device__ float __subsf3(float a, float b) { return sfp_add_signed(a, b, 1); }
 
 /* ---- Multiplication ----
- *
- * Conceptually simpler than addition because there is no
- * alignment step. Sign of the result is XOR of the input signs;
- * exponent is the sum (we subtract one bias from the result to
- * stay in normal range); mantissa is the product of the two
- * 24-bit values (a 48-bit number), normalised and rounded.
- *
- * Special cases:
- *   NaN propagates.
- *   Inf * 0 = NaN; Inf * anything-else = Inf with XOR sign.
- *   0 * x = signed zero.
- */
+ * No alignment: XOR the signs, sum the exponents (less one bias), multiply the
+ * 24-bit mantissas to a 48-bit product, then normalise and round. Inf*0 = NaN. */
 __device__ float __mulsf3(float a, float b)
 {
     sfp_unpacked_t ua = sfp_unpack(sfp_to_bits(a));
@@ -380,9 +275,8 @@ __device__ float __mulsf3(float a, float b)
         return sfp_from_bits(sfp_pack(z));
     }
 
-    /* Product of two 24-bit mantissas is at most 48 bits, with
-     * the leading bit at position 46 (if both are exactly 1.0)
-     * or 47 (otherwise). round_normal normalises and rounds. */
+    /* Two 24-bit mantissas give a 48-bit product (leading bit at 46 or 47);
+     * round_normal normalises and rounds. */
     uint64_t product = (uint64_t)ua.mant * (uint64_t)ub.mant;
     int32_t result_exp = ua.exp + ub.exp;
     return sfp_from_bits(sfp_round_normal(out_sign, result_exp,
@@ -390,13 +284,8 @@ __device__ float __mulsf3(float a, float b)
 }
 
 /* ---- Division ----
- *
- * Bit-by-bit non-restoring division of the 24-bit mantissas.
- * Shift the dividend left and subtract the divisor, accumulating
- * a quotient bit per shift. We compute one bit more than we need
- * so the round/sticky lane has full precision. The exponent is
- * the difference of input exponents.
- */
+ * Scale the numerator, divide the 24-bit mantissas as a 64-bit quotient with the
+ * remainder folded in as sticky; exponent is the difference of input exponents. */
 __device__ float __divsf3(float a, float b)
 {
     sfp_unpacked_t ua = sfp_unpack(sfp_to_bits(a));
@@ -421,20 +310,8 @@ __device__ float __divsf3(float a, float b)
         return sfp_from_bits(sfp_pack(z));
     }
 
-    /* Scale numerator up by 2^28 so the quotient has the leading
-     * bit at position 28 when Q >= 1, or 27 when Q < 1 (since the
-     * true mantissa ratio is in [0.5, 2)). round_normal will use
-     * normalisation loop handles the Q < 1 case by shifting left
-     * and decrementing the exponent. The 5 lane bits below
-     * target_top=28 give us round + 4 sticky bits, which is more
-     * precision than we actually need but costs nothing in this
-     * fixed-shift formulation.
-     *
-     * On the host this `/` is a native uint64_t division. When
-     * the runtime gets compiled FOR the baby cores, this lowers
-     * to a __udivdi3 libcall that the soft-int half of the
-     * runtime will eventually provide; that work is tracked
-     * separately from soft-float and will not block this sitting. */
+    /* Scale numerator by 2^28: quotient leads at bit 28 (Q>=1) or 27 (Q<1, ratio
+     * [0.5,2)); 5 lane bits carry round+sticky. On baby cores `/` becomes __udivdi3. */
     uint64_t num = (uint64_t)ua.mant << 28;
     uint64_t den = (uint64_t)ub.mant;
     uint64_t quot = num / den;
@@ -447,13 +324,8 @@ __device__ float __divsf3(float a, float b)
 }
 
 /* ---- Comparisons ----
- *
- * The libgcc convention is documented in the public header; we
- * implement straight from there. NaN is unordered: __unordsf2
- * is the dedicated check, and the magnitude comparisons return
- * "not equal, not less, not greater" in a way that makes
- * "if (a < b)" read false when either is NaN.
- */
+ * libgcc convention (see public header). NaN is unordered: __unordsf2 is the
+ * dedicated check; ordered relations report so "if (a < b)" is false on NaN. */
 __device__ int __unordsf2(float a, float b)
 {
     sfp_unpacked_t ua = sfp_unpack(sfp_to_bits(a));
@@ -461,14 +333,8 @@ __device__ int __unordsf2(float a, float b)
     return (ua.is_nan || ub.is_nan) ? 1 : 0;
 }
 
-/*
- * Numerical compare used by all the ordered relations. Returns
- * -1 if a < b, 0 if equal, +1 if a > b. For NaN inputs the
- * caller should already have checked via __unordsf2; here we
- * report +1 by convention (matches what libgcc does, so the
- * downstream branch ends up taking the same arm as it would on
- * hardware FP comparisons).
- */
+/* Ordered compare: -1 if a < b, 0 if equal, +1 if a > b. NaN returns +1 to match
+ * libgcc (caller should screen NaN via __unordsf2 first). */
 __device__ static int sfp_cmp(float a, float b)
 {
     uint32_t ab = sfp_to_bits(a);
@@ -484,12 +350,8 @@ __device__ static int sfp_cmp(float a, float b)
     /* Different signs: negative is always less. */
     if (ua.sign != ub.sign) return ua.sign ? -1 : 1;
 
-    /* Same sign: compare bit patterns. The IEEE encoding has the
-     * convenient property that for positive values, "more
-     * positive" means larger bit pattern; for negative values,
-     * the order is reversed. So we compare bit patterns with
-     * the sign-bit cleared, then negate the result if both were
-     * negative. */
+    /* Same sign: magnitude order follows bit-pattern order (IEEE encoding);
+     * negate for two negatives, whose order is reversed. */
     uint32_t mag_a = ab & 0x7FFFFFFFu;
     uint32_t mag_b = bb & 0x7FFFFFFFu;
     if (mag_a == mag_b) return 0;
@@ -534,12 +396,8 @@ __device__ int __gesf2(float a, float b)
 }
 
 /* ---- Integer to float ----
- *
- * For signed: take absolute value, convert, restore sign. For
- * unsigned: skip the sign handling. Finding the leading bit gives
- * us the unbiased exponent immediately; the bits below it become
- * the mantissa (with rounding from any bits beyond the 24th).
- */
+ * Leading-bit position gives the unbiased exponent; bits below become the
+ * mantissa (rounded past the 24th). Signed path negates by magnitude. */
 __device__ static float sfp_uint_to_float(uint32_t v, uint8_t sign)
 {
     if (v == 0u) {
@@ -553,16 +411,12 @@ __device__ static float sfp_uint_to_float(uint32_t v, uint8_t sign)
 #endif
         return sfp_from_bits(sfp_pack(z));
     }
-    /* Find the position of the leading 1 bit. The mantissa
-     * starts with that bit; the unbiased exponent equals that
-     * of bit index. */
+    /* Leading 1 bit gives the unbiased exponent. */
     int top = 31;
     while (((v >> top) & 1u) == 0u) top--;
     int32_t exp = top;
-    /* Place leading bit at position 47 in a wide value so we can
-     * round consistently with the multiply path. shift_amount in
-     * sfp_round_normal is 24 below the target, so we need the
-     * leading bit at position 23+24 = 47. */
+    /* Put the leading bit at position 47 (23 + shift_amount 24) so rounding
+     * matches the multiply path. */
     uint64_t wide;
     if (top >= 23) wide = (uint64_t)v << (47 - top);
     else           wide = (uint64_t)v << (47 - top);
@@ -572,9 +426,8 @@ __device__ static float sfp_uint_to_float(uint32_t v, uint8_t sign)
 __device__ float __floatsisf(int32_t i)
 {
     if (i >= 0) return sfp_uint_to_float((uint32_t)i, 0);
-    /* The most-negative int32 (0x80000000) has no positive
-     * counterpart; cast through uint32_t to do the negation
-     * unsigned and get the right magnitude. */
+    /* INT_MIN has no positive counterpart; negate through uint32_t for the
+     * right magnitude. */
     return sfp_uint_to_float((uint32_t)(-(int64_t)i), 1);
 }
 
@@ -584,12 +437,8 @@ __device__ float __floatunsisf(uint32_t u)
 }
 
 /* ---- Float to integer (truncate toward zero) ----
- *
- * IEEE-754 says conversions that overflow the integer range
- * return an implementation-defined value. We follow the LLVM /
- * gcc convention: clamp to INT_MIN or INT_MAX for signed, 0 or
- * UINT_MAX for unsigned.
- */
+ * Overflow is implementation-defined per IEEE; follow LLVM/gcc and clamp to
+ * INT_MIN/INT_MAX (signed) or 0/UINT_MAX (unsigned). */
 __device__ int32_t __fixsfsi(float a)
 {
     sfp_unpacked_t u = sfp_unpack(sfp_to_bits(a));

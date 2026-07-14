@@ -1,8 +1,5 @@
 /* sysprint.c -- structured kernel output routing.
- *
- * The class table and sink registry are file-scope. There is one
- * of each per process, in the time-honoured fashion of singletons
- * that thought they were getting away with something. */
+ * Class table and sink registry are file-scope singletons, one set per process. */
 
 #include "sysprint.h"
 
@@ -11,9 +8,8 @@
 #include <stdio.h>
 
 /* ---- Class Interning ----
- * Linear search. The table is small and the lookup is not hot.
- * If it becomes hot we will sort it. We are not sorting it
- * speculatively. */
+ * Linear search; the table is small and the lookup isn't hot. Sort it if that
+ * ever changes. */
 
 typedef struct {
     char name[BC_SP_MAX_CLASS_NAME];
@@ -52,8 +48,7 @@ const char *bc_sp_class_name(uint32_t class_id)
 }
 
 /* ---- Sink Registry ----
- * Patterns are stored in order. The first match wins, as is
- * traditional in matters of precedence. */
+ * Patterns stored in order; first match wins. */
 
 typedef struct {
     char         pattern[BC_SP_MAX_CLASS_NAME];
@@ -75,8 +70,7 @@ int bc_sp_register_sink(const char *pattern, bc_sp_sink_t sink, void *user)
     if (n == 0 || n >= BC_SP_MAX_CLASS_NAME) return -1;
 
     bc_sp_sink_entry_t *e = &g_sinks[g_num_sinks];
-    /* Trailing * marks a prefix match. Everything else is exact.
-     * If you wanted regex you can write a regex. */
+    /* Trailing * marks a prefix match; everything else is exact. */
     if (pattern[n - 1] == '*') {
         e->is_prefix = 1;
         memcpy(e->pattern, pattern, n - 1);
@@ -115,11 +109,8 @@ static bc_sp_sink_entry_t *sp_match_sink(const char *class_name, uint8_t cname_l
 }
 
 /* ---- Buffer ----
- * Linear append with 4-byte alignment on each record. The header
- * is 8 bytes (class_id, payload_len) and the payload follows. The
- * buffer does not wrap; when full, emits are dropped and the
- * dropped counter is incremented. The kernel author may inspect
- * dropped after the run to discover whether they were too chatty. */
+ * Linear append, records 4-byte aligned after an 8-byte header (class_id,
+ * payload_len). No wrap: when full, emits drop and bump the dropped counter. */
 
 void bc_sp_buf_init(bc_sp_buf_t *buf, void *bytes, uint32_t size)
 {
@@ -157,9 +148,7 @@ void bc_sp_emit(bc_sp_buf_t *buf, uint32_t class_id,
 void bc_sp_emitf(bc_sp_buf_t *buf, uint32_t class_id,
                  const char *fmt, ...)
 {
-    /* The stack buffer is 256 bytes. If your message needs more
-     * than that it is not a message, it is a novella, and the
-     * runtime is not a publishing house. */
+    /* 256-byte stack buffer; longer messages get truncated. */
     char tmp[256];
     va_list ap;
     va_start(ap, fmt);
@@ -199,11 +188,8 @@ void bc_sp_drain(bc_sp_buf_t *buf)
 }
 
 /* ---- Stock Sinks ----
- * Provided so the kernel author does not have to think about what
- * a sink looks like. They are deliberately plain. If you wanted
- * JSON, structured logging, OpenTelemetry, or any of the other
- * things modern people have invented, you can write them yourself
- * in fewer than thirty lines of C. */
+ * Deliberately plain reference sinks; write your own for JSON or structured
+ * logging. */
 
 void bc_sp_sink_stdout(uint32_t class_id, const char *class_name,
                        const void *payload, uint32_t len, void *user)
@@ -232,9 +218,8 @@ void bc_sp_sink_file(uint32_t class_id, const char *class_name,
 }
 
 /* ---- Reset ----
- * For tests that want a clean table between cases. Production code
- * has no reason to forget a class; once named, it is named forever,
- * which is also how things work in the church. */
+ * Clears the class table and sink registry between test cases; production never
+ * needs it. */
 
 void bc_sp_reset_globals(void)
 {

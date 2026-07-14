@@ -1,10 +1,6 @@
 /* sysprint.h -- structured kernel output routing.
- *
- * Kernels emit class-tagged records into a buffer. The host drains
- * the buffer and dispatches each record to a sink registered for
- * its class. This is the SYSPRINT idiom from IBM mainframes, which
- * solved this problem in 1965 and has been waiting patiently for
- * GPUs to notice ever since. */
+ * Kernels emit class-tagged records into a buffer; the host drains it and
+ * dispatches each record to the sink registered for its class. SYSPRINT, for GPUs. */
 
 #ifndef BARRACUDA_SYSPRINT_H
 #define BARRACUDA_SYSPRINT_H
@@ -14,9 +10,7 @@
 #include <stdio.h>
 
 /* ---- Limits ----
- * Fixed pools, in the tradition of compute that knows what it's
- * doing. If you need more classes than this you have problems
- * the runtime cannot help you with. */
+ * Fixed pools. Need more classes than this and you have other problems. */
 
 #define BC_SP_MAX_CLASSES        128
 #define BC_SP_MAX_CLASS_NAME     64
@@ -26,9 +20,8 @@
 #define BC_SP_CLASS_NONE         0u
 
 /* ---- Record ----
- * Each record is class_id, payload length, payload bytes. The
- * payload is opaque to the dispatcher; the sink knows what to do
- * with it. We do not concern ourselves with the sink's business. */
+ * class_id, payload length, then payload bytes; the payload is opaque to the
+ * dispatcher and meaningful only to the sink. */
 
 typedef struct {
     uint32_t class_id;
@@ -37,10 +30,8 @@ typedef struct {
 } bc_sp_record_t;
 
 /* ---- Buffer ----
- * Linear append. When full, subsequent emits are silently dropped,
- * as is proper for telemetry that may or may not have a reader.
- * The same layout is repeated in sysprint_device.h for kernels;
- * the include guard below stops them treading on each other. */
+ * Linear append; full means silent drop. Layout is mirrored in sysprint_device.h,
+ * and the guard below stops a double typedef. */
 
 #ifndef BC_SP_BUF_T_DEFINED
 #define BC_SP_BUF_T_DEFINED
@@ -53,9 +44,7 @@ typedef struct {
 #endif
 
 /* ---- Sink ----
- * Called once per record matching the sink's pattern. The runtime
- * supplies the class name in resolved form so the sink does not
- * have to look it up. */
+ * Called once per matching record; the runtime passes the resolved class name. */
 
 typedef void (*bc_sp_sink_t)(uint32_t class_id,
                              const char *class_name,
@@ -65,63 +54,48 @@ typedef void (*bc_sp_sink_t)(uint32_t class_id,
 
 /* ---- Public API ---- */
 
-/* Initialise a buffer with the given backing storage. The caller
- * owns the bytes; we just record where they are. */
+/* Initialise a buffer over caller-owned backing storage. */
 void bc_sp_buf_init(bc_sp_buf_t *buf, void *bytes, uint32_t size);
 
-/* Intern a class name and return its id. Repeated calls with the
- * same name return the same id. Returns BC_SP_CLASS_NONE if the
- * table is full, which is the kernel author's problem. */
+/* Intern a class name to a stable id; same name returns the same id, or
+ * BC_SP_CLASS_NONE if the table is full. */
 uint32_t bc_sp_intern(const char *class_name);
 
-/* Look up the name a class id was interned under. Returns NULL
- * for ids we have no record of. */
+/* Return the name an id was interned under, or NULL if unknown. */
 const char *bc_sp_class_name(uint32_t class_id);
 
-/* Emit a record. Payload bytes are copied into the buffer. If
- * the buffer is full, the record is dropped and the buffer's
- * dropped counter is incremented. */
+/* Emit a record; payload is copied in. Full buffer drops it and bumps dropped. */
 void bc_sp_emit(bc_sp_buf_t *buf, uint32_t class_id,
                 const void *payload, uint32_t payload_len);
 
-/* Convenience: emit a record whose payload is a printf-formatted
- * string. The string is formatted into a small stack buffer; if
- * your message exceeds it, it is truncated, in accordance with the
- * usual customs. */
+/* Emit a printf-formatted record; formatted via a small stack buffer, truncated
+ * if it overflows. */
 void bc_sp_emitf(bc_sp_buf_t *buf, uint32_t class_id,
                  const char *fmt, ...);
 
-/* Register a sink for records whose class name matches the
- * pattern. Patterns support trailing-* wildcards: "STEP1.*"
- * matches STEP1.TRACE and STEP1.ERROR but not STEP2.TRACE. The
- * pattern "*" matches everything, as it always has. Sinks are
- * checked in registration order; the first match wins. We do not
- * multicast. If you wanted multicast you should have said so. */
+/* Register a sink for class names matching pattern. Trailing-* is a prefix
+ * wildcard ("STEP1.*"), "*" matches all. First match in registration order wins;
+ * no multicast. */
 int bc_sp_register_sink(const char *pattern,
                         bc_sp_sink_t sink,
                         void *user);
 
-/* Drain the buffer, dispatching each record to its sink. After
- * the drain the buffer is empty and ready for reuse. Records
- * whose class matches no sink are silently discarded, on the
- * grounds that nobody asked. */
+/* Drain the buffer, dispatching each record to its sink and leaving it empty.
+ * Records matching no sink are discarded. */
 void bc_sp_drain(bc_sp_buf_t *buf);
 
 /* Reset the interning table and the sink registry. Mostly for
  * tests; nothing in production needs to forget a class. */
 void bc_sp_reset_globals(void);
 
-/* Two stock sinks for the common cases, supplied so the kernel
- * author does not have to write them. */
+/* Two stock sinks for the common cases. */
 void bc_sp_sink_stdout(uint32_t class_id, const char *class_name,
                        const void *payload, uint32_t len, void *user);
 void bc_sp_sink_stderr(uint32_t class_id, const char *class_name,
                        const void *payload, uint32_t len, void *user);
 
-/* A FILE* sink. Pass the FILE* as the user argument when
- * registering. Records are written one per line, class name then
- * a colon then the payload interpreted as text. The format is
- * deliberately plain; if you wanted JSON you should have asked. */
+/* FILE* sink; pass the FILE* as user. Writes one line per record: class name,
+ * colon, payload as text. */
 void bc_sp_sink_file(uint32_t class_id, const char *class_name,
                      const void *payload, uint32_t len, void *user);
 
