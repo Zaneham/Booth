@@ -497,7 +497,7 @@ void bir_print_module(const bir_module_t *M, FILE *out)
     char tbuf[128];
     uint32_t i;
 
-    fprintf(out, "; BarraCUDA IR\n");
+    fprintf(out, "; Booth IR\n");
 
     /* Globals */
     for (i = 0; i < M->num_globals; i++) {

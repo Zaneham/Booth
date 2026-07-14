@@ -1,4 +1,4 @@
-/* nv_rt.h — BarraCUDA NVIDIA Runtime Launcher
+/* nv_rt.h — Booth NVIDIA Runtime Launcher
  *
  * Thin wrapper around the CUDA Driver API for dispatching PTX kernels
  * on NVIDIA GPUs. Loads nvcuda.dll / libcuda.so at runtime via

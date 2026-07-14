@@ -1,4 +1,4 @@
-/* nv_rt.c — BarraCUDA NVIDIA Runtime Launcher
+/* nv_rt.c — Booth NVIDIA Runtime Launcher
  *
  * Loads nvcuda.dll (Windows) or libcuda.so (Linux) at runtime.
  * No CUDA SDK needed at compile time. Just a working NVIDIA driver.

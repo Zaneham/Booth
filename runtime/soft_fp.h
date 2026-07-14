@@ -7,7 +7,7 @@
  * IEEE-754 fp32 soft-float runtime for the Tenstorrent baby
  * RISC-V cores. These functions implement floating-point arithmetic
  * using only RV32IM integer operations. They are called by code
- * the BarraCUDA compiler emits whenever a BIR_FADD, BIR_FMUL,
+ * the Booth compiler emits whenever a BIR_FADD, BIR_FMUL,
  * BIR_FCMP, etc. needs to lower on a target without hardware
  * floating point.
  *

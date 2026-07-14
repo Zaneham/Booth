@@ -1,4 +1,4 @@
-/* bc_err.c — Error localisation for BarraCUDA
+/* bc_err.c — Error localisation for Booth
  *
  * Compiled-in English defaults + optional external translation file.
  * Fixed 32KB buffer for translations. No malloc. Bounded loops.

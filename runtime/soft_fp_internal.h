@@ -7,7 +7,7 @@
 /*
  * On the host the runtime is plain C and __device__ has no meaning;
  * we erase it so the host test compile sees ordinary functions.
- * When barracuda compiles the same .c file as part of a kernel
+ * When Booth compiles the same .c file as part of a kernel
  * compilation unit, __device__ marks each runtime function as
  * callable from kernel code, which is exactly what the float
  * lowering pass needs to be able to BIR_CALL into them.

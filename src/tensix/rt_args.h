@@ -6,7 +6,7 @@
  *
  * Shared contract between two pieces:
  *
- *   1. The BarraCUDA RV32IM isel (rv_isel.c), which emits LW from
+ *   1. The Booth RV32IM isel (rv_isel.c), which emits LW from
  *      these offsets when lowering BIR_PARAM and the four CUDA
  *      coordinate intrinsics (threadIdx, blockIdx, blockDim,
  *      gridDim) into baby-core code.

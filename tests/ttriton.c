@@ -13,7 +13,7 @@ static char obuf[TH_BUFSZ];
 
 /* ---- Helpers ---- */
 
-/* Run barracuda with the given args, capture stdout+stderr in obuf,
+/* Run kath with the given args, capture stdout+stderr in obuf,
  * return the exit code. The harness's th_run handles popen-with-2>&1
  * on every platform that matters. */
 static int tt_run(const char *args)

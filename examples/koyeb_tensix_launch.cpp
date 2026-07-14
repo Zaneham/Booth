@@ -1,10 +1,10 @@
 /*
  * koyeb_tensix_launch.cpp
  *
- * Host launcher template for running a BarraCUDA-produced RV32IM
+ * Host launcher template for running a Booth-produced RV32IM
  * ELF on a Tenstorrent Wormhole n300, intended for Koyeb deploys
  * with a tt-metal SDK installed on the runner. This is a TEMPLATE,
- * not a built artefact in the BarraCUDA tree: compile it on the
+ * not a built artefact in the Booth tree: compile it on the
  * deploy box where tt-metal headers exist.
  *
  * Build (on the deploy host with tt-metal installed):
@@ -15,20 +15,20 @@
  *         -L$TT_METAL_HOME/build/lib -ltt_metal \
  *         -o koyeb_tensix_launch
  *
- * Then drop the BarraCUDA-produced ELF alongside and invoke:
+ * Then drop the Booth-produced ELF alongside and invoke:
  *     ./koyeb_tensix_launch ./kernel.elf
  *
  * What this template does:
  *   1. Opens the n300 device via tt-metal's device API.
  *   2. Allocates one DRAM buffer for the output integer.
- *   3. Loads the BarraCUDA ELF onto the compute baby core (T0).
+ *   3. Loads the Booth ELF onto the compute baby core (T0).
  *   4. Sets runtime args matching the kernel's parameter shape.
  *      (For a kernel `void k(int *out, int a, int b)`: out pointer,
  *      then the two scalars.)
  *   5. Launches, waits, reads back, prints the result.
  *
  * What the template does NOT yet do:
- *   - Float arithmetic (BarraCUDA's RV32IM path has no soft-float
+ *   - Float arithmetic (Booth's RV32IM path has no soft-float
  *     runtime linked yet; integer kernels only for the first cut).
  *   - Multi-core dispatch (single Tensix, single baby core).
  *   - Three-kernel reader/compute/writer fission (our --rv-elf
@@ -56,7 +56,7 @@
 #include <vector>
 
 /*
- * Runtime args layout shared with the BarraCUDA isel. Both sides
+ * Runtime args layout shared with the Booth isel. Both sides
  * must keep this in sync; the canonical version of these offsets
  * lives in src/tensix/rt_args.h in the compiler tree. They are
  * duplicated here because the launcher does not include the
@@ -74,7 +74,7 @@ struct kernel_rt_args_t {
 static_assert(sizeof(kernel_rt_args_t) == 176,
               "rt_args layout drift; must match src/tensix/rt_args.h");
 
-/* Base L1 address where the BarraCUDA isel reads from. Lifted
+/* Base L1 address where the Booth isel reads from. Lifted
  * from tdf.h's TD_L1_RTARG_BASE. */
 constexpr uint32_t BC_RT_ARGS_L1_ADDR = 0x00008000u;
 
@@ -82,7 +82,7 @@ using namespace tt;
 using namespace tt::tt_metal;
 
 /* Read the entire ELF file into a byte vector. The contents are
- * what BarraCUDA wrote with --rv-elf and the tt-metal kernel-loader
+ * what Booth wrote with --rv-elf and the tt-metal kernel-loader
  * memcpys the PT_LOAD payload onto the baby core's L1. */
 static std::vector<uint8_t> slurp_elf(const std::string &path)
 {
@@ -114,7 +114,7 @@ int main(int argc, char *argv[])
      *         *out = a + b;
      *     }
      *
-     * BarraCUDA compiles this to a single baby-core function whose
+     * Booth compiles this to a single baby-core function whose
      * RV32IM body lives in the supplied ELF. */
     constexpr CoreCoord core = {0, 0};
     Program program = CreateProgram();
@@ -128,7 +128,7 @@ int main(int argc, char *argv[])
         .buffer_type = BufferType::DRAM};
     auto out_buf = CreateBuffer(dram_cfg);
 
-    /* ---- Load the BarraCUDA ELF onto the baby compute core. ----
+    /* ---- Load the Booth ELF onto the baby compute core. ----
      *
      * tt-metal's standard path is to point CreateKernel at a .cpp
      * source file that SFPI gcc compiles. Loading a pre-built ELF

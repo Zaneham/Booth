@@ -12,8 +12,8 @@ kernel gives a wrong answer, is it the maths or the codegen?
 bash tests/diff/run_diff.sh
 ```
 
-It runs on Linux or WSL, not MinGW (see the ABI note below). `$BARRACUDA`
-points at the compiler (default `./barracuda`). Each case runs twice, clean
+It runs on Linux or WSL, not MinGW (see the ABI note below). `$KATH`
+points at the compiler (default `./kath`). Each case runs twice, clean
 and `--inject`, because a harness that can't fail isn't testing anything.
 
 Two kinds of test:

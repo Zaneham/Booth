@@ -373,7 +373,7 @@ static void dump_tokens(const lexer_t *L)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "BarraCUDA - CUDA Compiler\n"
+        "Booth - CUDA Compiler\n"
         "Usage: %s [options] <file.cu>\n"
         "\n"
         "Options:\n"
@@ -470,7 +470,7 @@ int main(int argc, char *argv[])
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0) {
-            printf("BarraCUDA %s\n", BC_VERSION_STRING);
+            printf("Booth %s\n", BC_VERSION_STRING);
             printf("From-scratch CUDA/HIP/Triton compiler.\n");
             return 0;
         }
@@ -636,7 +636,7 @@ int main(int argc, char *argv[])
      * Auto-detection: if the filename ends in ".hip", we assume HIP mode
      * without making the user say so on the command line, since the
      * extension is a strong enough signal for anyone using a HIP build
-     * pipeline to drop their files into BarraCUDA unchanged. */
+     * pipeline to drop their files into Booth unchanged. */
     if (file) {
         size_t flen = strlen(file);
         if (flen >= 4 && strcmp(file + flen - 4, ".hip") == 0)

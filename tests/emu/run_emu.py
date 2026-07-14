@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BarraCUDA RDNA3/RDNA4 emulator harness. Powered by tinygrad's mockgpu."""
+"""Booth RDNA3/RDNA4 emulator harness. Powered by tinygrad's mockgpu."""
 import struct, sys, ctypes, os
 
 TGDIR = os.environ.get('TINYGRAD_PATH', '')

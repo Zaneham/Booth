@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_diff.sh -- build and run the BarraCUDA differential tests.
+# run_diff.sh -- build and run the Booth differential tests.
 #
 # The idea: one BIR, many targets, so run the same kernel through two of
 # them and diff. If they disagree, one backend's codegen is lying, and the
@@ -16,10 +16,10 @@
 #
 # Every case runs twice, clean (must PASS) and --inject (must FAIL), so a
 # green result actually means something. The compiler is found via
-# $BARRACUDA (default ./barracuda); point it at a Linux-built one.
+# $KATH (default ./kath); point it at a Linux-built one.
 set -u
 
-BARRACUDA="${BARRACUDA:-./barracuda}"
+KATH="${KATH:-./kath}"
 DIFFDIR="tests/diff"
 CC="${CC:-gcc}"
 RVCC="${RVCC:-riscv64-unknown-elf-gcc}"
@@ -36,7 +36,7 @@ expect_fail() { if "$@" >/dev/null; then echo "  inject: no FAIL, harness has no
 cpu_vs_host() {
     local src="$1" driver="$2" obj="$WORK/h.o" bin="$WORK/h"
     echo "== cpu vs host: $src =="
-    "$BARRACUDA" --triton --cpu -o "$obj" "$src" 2>/dev/null \
+    "$KATH" --triton --cpu -o "$obj" "$src" 2>/dev/null \
         && "$CC" -no-pie -O2 -I"$DIFFDIR" "$DIFFDIR/$driver" "$obj" -o "$bin" -lm 2>/dev/null \
         || { echo "  build failed"; fail=1; return; }
     "$bin"; expect_pass "$bin"; expect_fail "$bin" --inject
@@ -50,8 +50,8 @@ cpu_vs_rv64() {
         echo "  SKIP (need $RVCC and $QEMU)"; return
     fi
     local cpuobj="$WORK/x.o" rvobj="$WORK/r.o" runner="$WORK/rvrun" out="$WORK/rv.bin" bin="$WORK/xb"
-    "$BARRACUDA" --triton --cpu  -o "$cpuobj" "$src" 2>/dev/null \
-        && "$BARRACUDA" --triton --rv64 -o "$rvobj" "$src" 2>/dev/null \
+    "$KATH" --triton --cpu  -o "$cpuobj" "$src" 2>/dev/null \
+        && "$KATH" --triton --rv64 -o "$rvobj" "$src" 2>/dev/null \
         && "$RVCC" -nostdlib -static -march=rv64imfd -mabi=lp64d -I"$DIFFDIR" "$DIFFDIR/$rvrunner" "$rvobj" -o "$runner" 2>/dev/null \
         && "$QEMU" "$runner" > "$out" \
         && "$CC" -no-pie -O2 -I"$DIFFDIR" "$DIFFDIR/$cmp" "$cpuobj" -o "$bin" -lm 2>/dev/null \

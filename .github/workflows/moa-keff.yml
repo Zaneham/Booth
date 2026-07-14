@@ -22,7 +22,7 @@ jobs:
   godiva:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out BarraCUDA
+      - name: Check out Booth
         uses: actions/checkout@v4
 
       - name: Build the compiler

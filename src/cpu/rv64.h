@@ -1,4 +1,4 @@
-/* rv64.h -- RISC-V 64 (RV64IMFD) CPU backend for BarraCUDA.
+/* rv64.h -- RISC-V 64 (RV64IMFD) CPU backend for Booth.
  *
  * Same idea as the x86 --cpu backend, different chip: turn a kernel into
  * a host-runnable RV64 object so you can run CUDA and Triton on a RISC-V

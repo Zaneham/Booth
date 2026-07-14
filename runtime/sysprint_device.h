@@ -7,7 +7,7 @@
  *
  * The emit is a macro rather than a function so the kernel does
  * not depend on device-call support. Same .cu file compiles
- * through barracuda (for the GPU) and host gcc (for development
+ * through Booth (for the GPU) and host gcc (for development
  * and the runtime test path). */
 
 #ifndef BARRACUDA_SYSPRINT_DEVICE_H
@@ -15,7 +15,7 @@
 
 #include <stdint.h>
 
-/* Host-build fallback for atomicAdd. The barracuda frontend
+/* Host-build fallback for atomicAdd. The Booth frontend
  * recognises atomicAdd as an intrinsic; under host gcc we route
  * it through gcc's __atomic builtin so a .cu file is portable
  * to the CPU for the runtime test path. */

@@ -5,7 +5,7 @@
 #include <ctype.h>
 
 /*
- * Semantic analysis for BarraCUDA.
+ * Semantic analysis for Booth.
  * Two passes: collect declarations, then type-check function bodies.
  * Writes node_types[] side table so the BIR lowerer can stop guessing.
  */

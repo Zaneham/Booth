@@ -1,4 +1,4 @@
-/* tiny_runner.hip — load BarraCUDA .hsaco and run 'tiny' kernel on MI300X
+/* tiny_runner.hip — load Booth .hsaco and run 'tiny' kernel on MI300X
  *
  * Compile on target: hipcc tiny_runner.hip -o tiny_runner
  * Run: ./tiny_runner tiny.hsaco

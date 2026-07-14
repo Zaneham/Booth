@@ -8,7 +8,7 @@
  * produce its answer; judging it happens somewhere with a printf.
  *
  * Build (Linux / WSL):
- *   ./barracuda --triton --rv64 -o rv.o tests/tri_vadd.py
+ *   ./kath --triton --rv64 -o rv.o tests/tri_vadd.py
  *   riscv64-unknown-elf-gcc -nostdlib -static -march=rv64imfd -mabi=lp64d \
  *       -Itests/diff tests/diff/diff_vadd_rv.c rv.o -o rv_runner
  *   qemu-riscv64 ./rv_runner > rvout.bin

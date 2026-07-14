@@ -1,4 +1,4 @@
-/* bc_runtime.h — BarraCUDA HSA Runtime Launcher
+/* bc_runtime.h — Booth HSA Runtime Launcher
  * Thin wrapper around libhsa-runtime64.so for dispatching .hsaco kernels
  * on AMD GPUs. Linux/ROCm only. Loads libhsa at runtime via dlopen. */
 

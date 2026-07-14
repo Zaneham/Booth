@@ -793,7 +793,7 @@ static int sel_store(const bir_module_t *M,
                      const bir_inst_t *I, rv_buf_t *out)
 {
     /* BIR_STORE ops[0] = value, ops[1] = address (per the memory
-     * note in the BarraCUDA codebase: store operand order is
+     * note in the Booth codebase: store operand order is
      * value, address, NOT address, value). */
     int rc;
     if ((rc = load_operand(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;

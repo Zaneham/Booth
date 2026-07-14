@@ -1,7 +1,7 @@
 /* cpu_launch_matmul.c -- run a Triton matmul kernel on the CPU.
  *
  * The headline 0.5 demo: take the matmul kernel from tests/tri_matmul.py,
- * compile it through BarraCUDA's --cpu backend, link it here, and run it
+ * compile it through Booth's --cpu backend, link it here, and run it
  * natively against a host reference. No GPU, no LLVM anywhere.
  *
  * The kernel is one 4x4 output tile (BLOCK_M = BLOCK_N = BLOCK_K = 4).
@@ -11,7 +11,7 @@
  * thread, so nthreads = 1.
  *
  * Build (Linux / WSL):
- *   ./barracuda --triton --cpu -o matmul.o tests/tri_matmul.py
+ *   ./kath --triton --cpu -o matmul.o tests/tri_matmul.py
  *   gcc -no-pie examples/cpu_launch_matmul.c matmul.o -o cpu_matmul
  *   ./cpu_matmul
  */

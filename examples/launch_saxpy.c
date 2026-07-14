@@ -1,9 +1,9 @@
-/* launch_saxpy.c — Run a BarraCUDA-compiled SAXPY kernel on real hardware.
+/* launch_saxpy.c — Run a Booth-compiled SAXPY kernel on real hardware.
  *
  * Build:  gcc -std=c99 -O2 -I src/runtime
  *             examples/launch_saxpy.c src/runtime/bc_runtime.c
  *             -ldl -lm -o launch_saxpy
- * Run:    ./barracuda --amdgpu-bin -o test.hsaco tests/canonical.cu
+ * Run:    ./kath --amdgpu-bin -o test.hsaco tests/canonical.cu
  *         ./launch_saxpy test.hsaco
  */
 
@@ -22,7 +22,7 @@ int main(int argc, char *argv[])
 {
     const char *hsaco = (argc > 1) ? argv[1] : "test.hsaco";
 
-    printf("BarraCUDA SAXPY launcher\n");
+    printf("Booth SAXPY launcher\n");
     printf("  .hsaco:  %s\n", hsaco);
     printf("  N:       %d\n", N);
     printf("  a:       %.1f\n", A_VAL);

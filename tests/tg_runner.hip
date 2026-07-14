@@ -1,4 +1,4 @@
-/* tg_runner.hip — load BarraCUDA .hsaco and run tg_smoke on MI300X
+/* tg_runner.hip — load Booth .hsaco and run tg_smoke on MI300X
  *
  * Compile on target: hipcc tg_runner.hip -o tg_runner
  * Run: ./tg_runner tg_compat.hsaco
