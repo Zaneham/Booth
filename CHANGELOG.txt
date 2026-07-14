@@ -1,6 +1,27 @@
 Booth — Changelog
 =================
 
+2026-07-14 — Version 5.01. So long, and thanks for all the fish.
+BarraCUDA was a good pun and a bad description, so it swam off: the
+compiler is Booth now, the binary is `kath`, and the version jumps
+to mark the line. First release under the new name; the rename note
+below has the why.
+
+Since 0.5 the compiler grew a spine on the CPU side. x86-64 and RV64
+both gained most of their scalar arithmetic, so a CUDA, HIP or Triton
+kernel now compiles and runs on a machine with no GPU in it at all.
+Tensix learned to emit native machine code for the baby RISC-V cores
+instead of leaning on a C++ handoff. `__device__` calls are inlined
+away before isel, so device helpers with control flow finally work on
+the GPU and vector backends. Diagnostics were rebuilt to read like
+Clang's, carets and colour and all, and the frontend picked up a pile
+of coverage.
+
+Thanks to the people who sent patches this cycle: @GauthamMK-0 for
+`__hip_bfloat16` and the `warpSize` builtin, @nataliakokoromyti for
+lowering `tl.where` to select and keeping the PTX header ASCII, and
+@kstppd for fixing the Makefile on non-x86 machines. Much appreciated.
+
 2026-06-29 — Renamed from BarraCUDA to Booth. The fish pun said
 "CUDA" while the whole point of the project is not needing CUDA, so
 it had to go. Booth honours Kathleen Booth: she wrote the first
