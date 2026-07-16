@@ -2,7 +2,7 @@
  *
  * The headline 0.5 demo: take the matmul kernel from tests/tri_matmul.py,
  * compile it through Booth's --cpu backend, link it here, and run it
- * natively against a host reference. No GPU, no LLVM anywhere.
+ * natively against a host reference.
  *
  * The kernel is one 4x4 output tile (BLOCK_M = BLOCK_N = BLOCK_K = 4).
  * The constexpr values fold into the body during lowering, and the
