@@ -24,6 +24,18 @@ LDFLAGS = -pie
 LIBS    = -lm
 # Linux/ELF only: -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 
+# Host-side launchers. They dlopen a vendor driver and link into trunner only,
+# never into kath. nv_rt is portable (LoadLibraryA on Windows, dlopen elsewhere);
+# bc_runtime is Linux, bare dlfcn.h and libhsa. -ldl names Linux rather than
+# "not Windows" because macOS keeps dlopen in libSystem and ships no libdl.
+UNAME_S := $(shell uname -s 2>/dev/null)
+HOSTRT   = src/nvidia/nv_rt.o
+DL_LIB   =
+ifeq ($(UNAME_S),Linux)
+  HOSTRT += src/runtime/bc_runtime.o
+  DL_LIB  = -ldl
+endif
+
 SOURCES = src/main.c \
           src/fe/bc_err.c src/fe/bc_render.c src/fe/preproc.c src/fe/lexer.c src/fe/parser.c src/fe/sema.c \
           src/ir/bir.c src/ir/bir_print.c src/ir/bir_lower.c src/ir/bir_mem2reg.c src/ir/bir_cfold.c src/ir/bir_dce.c src/ir/bir_struct.c src/ir/bir_insert.c src/ir/bir_sroa.c src/ir/bir_inline.c \
@@ -77,18 +89,23 @@ COBJS   = src/ir/bir.o src/ir/bir_print.o src/ir/bir_lower.o src/ir/bir_mem2reg.
           runtime/soft_fp.o runtime/sysprint.o \
           src/amdgpu/amd_rplan.o src/amdgpu/encode.o src/amdgpu/enc_tab.o src/amdgpu/isel.o src/amdgpu/emit.o src/amdgpu/ra_ssa.o src/amdgpu/sched.o src/amdgpu/verify.o \
           src/fe/bc_err.o src/fe/lexer.o src/fe/parser.o src/fe/preproc.o src/fe/sema.o \
-          src/runtime/bc_abend.o
+          src/runtime/bc_abend.o $(HOSTRT)
 
 test: $(TARGET) trunner
 	./trunner --all
 
 trunner: $(TOBJS) $(COBJS)
-	$(CC) $(TCFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(TCFLAGS) -o $@ $^ $(LIBS) $(DL_LIB)
 
 tests/%.o: tests/%.c
 	$(CC) $(TCFLAGS) -c $< -o $@
 
 src/runtime/%.o: src/runtime/%.c
+	$(CC) $(TCFLAGS) -c $< -o $@
+
+# Explicit, so it beats the generic %.o rule: nv_rt needs the POSIX visibility
+# TCFLAGS carries, and its neighbours in src/nvidia are compiler files that don't.
+src/nvidia/nv_rt.o: src/nvidia/nv_rt.c
 	$(CC) $(TCFLAGS) -c $< -o $@
 
 # Target-side runtime (soft-float, etc). Built with host gcc here
@@ -98,6 +115,6 @@ runtime/%.o: runtime/%.c
 	$(CC) $(TCFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJECTS) $(TARGET) $(TARGET).exe trunner trunner.exe $(TOBJS) src/runtime/*.o runtime/*.o
+	rm -f $(OBJECTS) $(TARGET) $(TARGET).exe trunner trunner.exe $(TOBJS) $(HOSTRT) src/runtime/*.o runtime/*.o
 
 .PHONY: all clean test

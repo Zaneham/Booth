@@ -717,9 +717,12 @@ int main(int argc, char *argv[])
                    tn_lex_state.num_tokens, tn_lex_state.num_errors);
             return trc != BC_OK ? 1 : 0;
         }
-        if (mode_parse || mode_sema || mode_ir ||
-            mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
-            mode_nvidia || mode_metal || mode_intel) {
+        /* One list, used by both the gate and the sema/lower decision below.
+         * It was two, they disagreed, and --cpu fell down the gap. */
+        int want_backend = mode_amdgpu || mode_amdgpu_bin ||
+                           mode_tensix || mode_nvidia ||
+                           mode_metal || mode_intel || mode_cpu || mode_rv64;
+        if (mode_parse || mode_sema || mode_ir || want_backend) {
             tn_parse_t *tnp = (tn_parse_t *)malloc(sizeof(tn_parse_t));
             if (!tnp) {
                 fprintf(stderr, "error: failed to allocate Triton parser\n");
@@ -728,9 +731,6 @@ int main(int argc, char *argv[])
             tn_parse_init(tnp, &tn_lex_state);
             int prc = tn_parse(tnp);
             bc_diag(file, source_buf, tnp->errors, tnp->num_errors);
-            int want_backend = mode_amdgpu || mode_amdgpu_bin ||
-                               mode_tensix || mode_nvidia ||
-                               mode_metal || mode_intel || mode_cpu || mode_rv64;
             if (mode_sema || mode_ir || want_backend) {
                 tn_sema_t *tns = (tn_sema_t *)malloc(sizeof(tn_sema_t));
                 if (!tns) {
@@ -799,12 +799,14 @@ int main(int argc, char *argv[])
             free(tnp);
             return prc != BC_OK ? 1 : 0;
         }
-        /* Anything beyond the supported modes falls through here. */
+        /* Anything beyond the supported modes falls through here. Reaching
+         * this point means we did not do what was asked, so never report 0
+         * however well the lexer did. */
         fprintf(stderr,
             "triton: use --lex / --parse / --sema / --ir, or pair\n"
-            "        --triton with a backend (--amdgpu-bin /\n"
-            "        --nvidia-ptx / --tensix / --metal / --intel-spirv).\n");
-        return trc != BC_OK ? 1 : 0;
+            "        --triton with a backend (--amdgpu-bin / --nvidia-ptx /\n"
+            "        --tensix / --metal / --intel-spirv / --cpu / --rv64).\n");
+        return 1;
     }
 
     /* Preprocessing */
