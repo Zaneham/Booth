@@ -148,3 +148,6 @@ CLAUDE.md
 /e2e_rv.elf
 /a_compute.bin
 /a_compute.ttinsn
+
+# Header dependency files from -MMD
+*.d
