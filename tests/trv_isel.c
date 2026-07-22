@@ -1802,3 +1802,44 @@ static void rv_isel_max_frame_slots_in_range(void)
     PASS();
 }
 TH_REG("rv_enc", rv_isel_max_frame_slots_in_range);
+
+/* i64 has no RV32 representation. This used to compile, with the mul becoming
+ * 32-bit and the shift by 32 becoming a shift by zero. No diagnostic. */
+static void rv_isel_refuses_i64_arith(void)
+{
+    memset(&fake_bir, 0, sizeof(fake_bir));
+    fake_bir.num_types = 3;
+    fake_bir.types[0].kind = BIR_TYPE_INT;
+    fake_bir.types[0].width = 32;
+    fake_bir.types[1].kind = BIR_TYPE_INT;
+    fake_bir.types[1].width = 64;
+    fake_bir.types[2].kind = BIR_TYPE_VOID;
+
+    fake_bir.num_funcs = 1;
+    fake_bir.num_blocks = 1;
+    fake_bir.num_insts = 3;
+    fake_bir.funcs[0].first_block = 0;
+    fake_bir.funcs[0].num_blocks = 1;
+    fake_bir.funcs[0].num_params = 1;
+    fake_bir.funcs[0].total_insts = 3;
+    fake_bir.funcs[0].cuda_flags = CUDA_GLOBAL;
+    fake_bir.blocks[0].first_inst = 0;
+    fake_bir.blocks[0].num_insts = 3;
+
+    fake_bir.insts[0].op = BIR_PARAM;
+    fake_bir.insts[0].subop = 0;
+    fake_bir.insts[0].type = 0;
+    /* zext i32 -> i64: the i64 result is what must be refused. */
+    fake_bir.insts[1].op = BIR_ZEXT;
+    fake_bir.insts[1].type = 1;
+    fake_bir.insts[1].num_operands = 1;
+    fake_bir.insts[1].operands[0] = BIR_MAKE_VAL(0);
+    fake_bir.insts[2].op = BIR_RET;
+    fake_bir.insts[2].type = 2;
+    fake_bir.insts[2].num_operands = 0;
+
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_refuses_i64_arith);

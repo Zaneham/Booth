@@ -418,6 +418,15 @@ static uint32_t instwid(const bir_module_t *M, const bir_inst_t *I)
     return 32u;
 }
 
+/* i64 does not fit an RV32 register. A 64-bit mul would keep only the low half,
+ * and a shift by 32 would shift by zero, since RV32 reads shamt[4:0]. */
+static int wide64(const bir_module_t *M, const bir_inst_t *I)
+{
+    if (I->type >= M->num_types) return 0;
+    const bir_type_t *t = &M->types[I->type];
+    return t->kind == BIR_TYPE_INT && t->width > 32u;
+}
+
 static int sel_zext(const bir_module_t *M, uint32_t inst_idx,
                     const bir_inst_t *I, rv_buf_t *out)
 {
@@ -1418,6 +1427,13 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
         for (uint32_t ii = 0; ii < B->num_insts; ii++) {
             uint32_t idx = B->first_inst + ii;
             const bir_inst_t *I = &M->insts[idx];
+            if (wide64(M, I)) {
+                fprintf(stderr,
+                        "rv_isel: %u-bit integer result at inst %u has no RV32 "
+                        "representation; 64-bit arithmetic is not supported\n",
+                        instwid(M, I), idx);
+                return BC_ERR_TDF;
+            }
             switch (I->op) {
             case BIR_PARAM:
                 rc = sel_param(idx, I, out);
