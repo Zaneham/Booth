@@ -143,3 +143,8 @@ CLAUDE.md
 /kath
 /trunner
 /tdf_*.elf
+
+# Test-run outputs from the Tensix/RV e2e suite
+/e2e_rv.elf
+/a_compute.bin
+/a_compute.ttinsn
