@@ -189,11 +189,20 @@ static void reg_tname(parser_t *P, uint32_t off, uint16_t len)
     P->num_tnames++;
 }
 
+/* Text for a name offset. Anonymous struct names are sentinels into anon_buf,
+ * not source positions, so they cannot be added to P->src. */
+static const char *tntxt(const parser_t *P, uint32_t off)
+{
+    return off >= BC_ANON_BASE ? P->anon_buf + (off - BC_ANON_BASE)
+                               : P->src + off;
+}
+
 static int is_reg_type(const parser_t *P, uint32_t off, uint16_t len)
 {
+    const char *q = tntxt(P, off);
     for (int i = 0; i < P->num_tnames; i++) {
         if (P->tnames[i].len == len &&
-            memcmp(P->src + P->tnames[i].off, P->src + off, len) == 0)
+            memcmp(tntxt(P, P->tnames[i].off), q, len) == 0)
             return 1;
     }
     return 0;
