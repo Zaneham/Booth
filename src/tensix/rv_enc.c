@@ -36,7 +36,7 @@ static uint32_t enc_i(int16_t imm, uint8_t rs1, uint32_t f3,
          |  (op & 0x7Fu);
 }
 
-static uint32_t enc_i_shift(uint32_t f7, uint8_t shamt, uint8_t rs1,
+static uint32_t enc_ish(uint32_t f7, uint8_t shamt, uint8_t rs1,
                             uint32_t f3, uint8_t rd, uint32_t op)
 {
     /* I-type immediate split for shifts: bits[24:20] are the 5-bit
@@ -136,9 +136,9 @@ uint32_t rv_xori (uint8_t rd, uint8_t rs1, int16_t imm) { return enc_i(imm, rs1,
 uint32_t rv_slti (uint8_t rd, uint8_t rs1, int16_t imm) { return enc_i(imm, rs1, 0x2, rd, 0x13); }
 uint32_t rv_sltiu(uint8_t rd, uint8_t rs1, int16_t imm) { return enc_i(imm, rs1, 0x3, rd, 0x13); }
 
-uint32_t rv_slli(uint8_t rd, uint8_t rs1, uint8_t shamt) { return enc_i_shift(0x00, shamt, rs1, 0x1, rd, 0x13); }
-uint32_t rv_srli(uint8_t rd, uint8_t rs1, uint8_t shamt) { return enc_i_shift(0x00, shamt, rs1, 0x5, rd, 0x13); }
-uint32_t rv_srai(uint8_t rd, uint8_t rs1, uint8_t shamt) { return enc_i_shift(0x20, shamt, rs1, 0x5, rd, 0x13); }
+uint32_t rv_slli(uint8_t rd, uint8_t rs1, uint8_t shamt) { return enc_ish(0x00, shamt, rs1, 0x1, rd, 0x13); }
+uint32_t rv_srli(uint8_t rd, uint8_t rs1, uint8_t shamt) { return enc_ish(0x00, shamt, rs1, 0x5, rd, 0x13); }
+uint32_t rv_srai(uint8_t rd, uint8_t rs1, uint8_t shamt) { return enc_ish(0x20, shamt, rs1, 0x5, rd, 0x13); }
 
 /* ---- Loads (LOAD, opcode=0x03) ---- */
 

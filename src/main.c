@@ -288,13 +288,16 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             fprintf(stderr, "error: BIR module has no functions\n");
             return BC_ERR_TDF;
         }
-        int irc = rv_isel_func(bir, 0u, &rv_code);
+        /* Module, not just function 0: rv_isel_func records call patches but
+         * only rv_isel_module resolves them, so a BIR_CALL through this path
+         * would otherwise keep its placeholder and trap as an illegal insn. */
+        int irc = rv_isel_module(bir, &rv_code);
         if (irc != BC_OK) return irc;
         const char *path = cfg->output_file ? cfg->output_file : "a.elf";
         int erc = rv_elf_write(&rv_code, path);
         if (erc != BC_OK) return erc;
         fprintf(stderr, "wrote %s (%u bytes code, %u instructions)\n",
-                path, rv_buf_pos_bytes(&rv_code),
+                path, rv_buf_nbytes(&rv_code),
                 rv_buf_n_words(&rv_code));
     }
 

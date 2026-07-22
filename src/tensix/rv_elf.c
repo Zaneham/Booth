@@ -3,13 +3,9 @@
 #include <string.h>
 
 /*
- * ELF32 little-endian header writer. The constants are inlined as literals
- * rather than pulled from elf.h because there's no portable elf.h on
- * Windows/MinGW, and inlining keeps the build dependency-free, which is the
- * whole point of this compiler. All multibyte fields are written little-endian,
- * matching both the ELFDATA2LSB declaration and the host x86-64 byte order the
- * compiler runs on. Porting to a big-endian host would need explicit
- * byte-swizzling, which is a problem we can have when we have it.
+ * ELF32 little-endian writer. Constants are inlined rather than pulled from
+ * elf.h because MinGW has no portable one. All fields are written
+ * little-endian; a big-endian host would need byte-swizzling.
  */
 
 /* ---- Constants ---- */
@@ -29,53 +25,81 @@
 
 #define PT_LOAD        1u
 #define PF_X           1u
-#define PF_W           2u
 #define PF_R           4u
 
 #define SHT_NULL       0u
 #define SHT_PROGBITS   1u
+#define SHT_SYMTAB     2u
 #define SHT_STRTAB     3u
+#define SHT_RELA       4u
 
 #define SHF_ALLOC      2u
 #define SHF_EXECINSTR  4u
 
+#define STB_GLOBAL     1u
+#define STT_FUNC       2u
+
 #define EHDR_SIZE      52u
 #define PHDR_SIZE      32u
 #define SHDR_SIZE      40u
+#define SYM_SIZE       16u
+#define RELA_SIZE      12u
+
+/* Section header indices, in the order we emit them. */
+#define SEC_NULL       0u
+#define SEC_TEXT       1u
+#define SEC_RELA       2u
+#define SEC_SYMTAB     3u
+#define SEC_STRTAB     4u
+#define SEC_SEGS       5u
+#define SEC_SHSTR      6u
+#define SEC_COUNT      7u
+
+/* ---- String tables ---- */
+
+static const char k_shstr[] =
+    "\0.text\0.rela.text\0.symtab\0.strtab\0.segments\0.shstrtab\0";
+#define SHSTR_SIZE      54u
+#define SHSTR_TEXT      1u
+#define SHSTR_RELA      7u
+#define SHSTR_SYMTAB    18u
+#define SHSTR_STRTAB    26u
+#define SHSTR_SEGS      34u
+#define SHSTR_SHSTR     44u
+
+static const char k_str[] = "\0_start\0";
+#define STR_SIZE        8u
+#define STR_START       1u
 
 /* ---- Little-endian writers ---- */
 
-static void w8 (uint8_t  **p, uint8_t  v) { **p = v;       (*p)++; }
-static void w16(uint8_t  **p, uint16_t v)
+static void w8(uint8_t **p, uint8_t v) { **p = v; (*p)++; }
+
+static void w16(uint8_t **p, uint16_t v)
 {
     (*p)[0] = (uint8_t)(v & 0xFFu);
     (*p)[1] = (uint8_t)((v >> 8) & 0xFFu);
     *p += 2;
 }
-static void w32(uint8_t  **p, uint32_t v)
+
+static void w32(uint8_t **p, uint32_t v)
 {
-    (*p)[0] = (uint8_t)(v        & 0xFFu);
-    (*p)[1] = (uint8_t)((v >> 8) & 0xFFu);
+    (*p)[0] = (uint8_t)(v         & 0xFFu);
+    (*p)[1] = (uint8_t)((v >> 8)  & 0xFFu);
     (*p)[2] = (uint8_t)((v >> 16) & 0xFFu);
     (*p)[3] = (uint8_t)((v >> 24) & 0xFFu);
     *p += 4;
 }
 
+static uint32_t alignup(uint32_t x, uint32_t a)
+{
+    return (x + (a - 1u)) & ~(a - 1u);
+}
+
 /* ---- Header builders ---- */
 
-/* Section names live in a tiny 17-byte string table: offset 0 is the empty
- * string every strtab starts with, offset 1 is ".text" (5 chars plus NUL) and
- * offset 7 is ".shstrtab" (9 chars plus NUL). */
-static const char k_shstrtab[] = "\0.text\0.shstrtab\0";
-#define SHSTRTAB_SIZE   17u
-#define SHSTR_OFF_TEXT  1u
-#define SHSTR_OFF_SHSTR 7u
-
-static void write_ehdr(uint8_t **p, uint32_t e_phoff, uint32_t e_shoff,
-                       uint32_t e_phnum, uint32_t e_shnum,
-                       uint32_t e_shstrndx)
+static void w_ehdr(uint8_t **p, uint32_t shoff)
 {
-    /* e_ident: 16 bytes */
     w8(p, ELF_MAGIC0);
     w8(p, ELF_MAGIC1);
     w8(p, ELF_MAGIC2);
@@ -84,72 +108,90 @@ static void write_ehdr(uint8_t **p, uint32_t e_phoff, uint32_t e_shoff,
     w8(p, ELFDATA2LSB);
     w8(p, EV_CURRENT);
     w8(p, ELFOSABI_NONE);
-    for (int i = 0; i < 8; i++) w8(p, 0);   /* padding */
+    for (int i = 0; i < 8; i++) w8(p, 0);
 
-    w16(p, (uint16_t)ET_EXEC);                /* e_type */
-    w16(p, (uint16_t)EM_RISCV);               /* e_machine */
-    w32(p, EV_CURRENT);                       /* e_version */
-    w32(p, RV_ELF_ENTRY);                     /* e_entry */
-    w32(p, e_phoff);                          /* e_phoff */
-    w32(p, e_shoff);                          /* e_shoff */
-    w32(p, 0);                                /* e_flags, soft-float ABI */
-    w16(p, (uint16_t)EHDR_SIZE);              /* e_ehsize */
-    w16(p, (uint16_t)PHDR_SIZE);              /* e_phentsize */
-    w16(p, (uint16_t)e_phnum);                /* e_phnum */
-    w16(p, (uint16_t)SHDR_SIZE);              /* e_shentsize */
-    w16(p, (uint16_t)e_shnum);                /* e_shnum */
-    w16(p, (uint16_t)e_shstrndx);             /* e_shstrndx */
+    w16(p, (uint16_t)ET_EXEC);
+    w16(p, (uint16_t)EM_RISCV);
+    w32(p, EV_CURRENT);
+    /* Must equal the first PT_LOAD's p_vaddr or ReadImage rejects the image. */
+    w32(p, RV_ELF_ENTRY);
+    w32(p, EHDR_SIZE);
+    w32(p, shoff);
+    w32(p, 0);                        /* e_flags; the loader never reads it */
+    w16(p, (uint16_t)EHDR_SIZE);
+    w16(p, (uint16_t)PHDR_SIZE);
+    w16(p, 1u);
+    w16(p, (uint16_t)SHDR_SIZE);
+    w16(p, (uint16_t)SEC_COUNT);
+    w16(p, (uint16_t)SEC_SHSTR);
 }
 
-static void write_phdr(uint8_t **p, uint32_t p_offset, uint32_t p_vaddr,
-                       uint32_t p_filesz, uint32_t p_memsz,
-                       uint32_t p_flags, uint32_t p_align)
+static void w_phdr(uint8_t **p, uint32_t off, uint32_t sz)
 {
-    w32(p, PT_LOAD);    /* p_type */
-    w32(p, p_offset);   /* p_offset */
-    w32(p, p_vaddr);    /* p_vaddr */
-    w32(p, p_vaddr);    /* p_paddr, same as vaddr on Tensix (no MMU) */
-    w32(p, p_filesz);
-    w32(p, p_memsz);
-    w32(p, p_flags);
-    w32(p, p_align);
+    w32(p, PT_LOAD);
+    w32(p, off);
+    w32(p, RV_ELF_LOAD_ADDR);
+    w32(p, RV_ELF_LOAD_ADDR);         /* LMA equals VMA; no MMU */
+    w32(p, sz);
+    w32(p, sz);
+    w32(p, PF_R | PF_X);
+    w32(p, RV_ELF_SEG_ALIGN);
 }
 
-static void write_shdr(uint8_t **p, uint32_t name, uint32_t type,
-                       uint32_t flags, uint32_t addr, uint32_t offset,
-                       uint32_t size, uint32_t link, uint32_t info,
-                       uint32_t addralign, uint32_t entsize)
+static void w_shdr(uint8_t **p, uint32_t name, uint32_t type, uint32_t flags,
+                   uint32_t addr, uint32_t off, uint32_t sz, uint32_t link,
+                   uint32_t info, uint32_t align, uint32_t entsz)
 {
-    w32(p, name);        /* sh_name (index into .shstrtab) */
-    w32(p, type);        /* sh_type */
+    w32(p, name);
+    w32(p, type);
     w32(p, flags);
     w32(p, addr);
-    w32(p, offset);
-    w32(p, size);
+    w32(p, off);
+    w32(p, sz);
     w32(p, link);
     w32(p, info);
-    w32(p, addralign);
-    w32(p, entsize);
+    w32(p, align);
+    w32(p, entsz);
+}
+
+static void w_sym(uint8_t **p, uint32_t name, uint32_t val, uint32_t sz,
+                  uint8_t info, uint16_t shndx)
+{
+    w32(p, name);
+    w32(p, val);
+    w32(p, sz);
+    w8(p, info);
+    w8(p, 0);                         /* st_other */
+    w16(p, shndx);
 }
 
 /* ---- Layout planner ---- */
 
 typedef struct {
-    uint32_t code_off;
-    uint32_t code_sz;
+    uint32_t text_off;
+    uint32_t text_sz;
+    uint32_t segs_off;
+    uint32_t rela_off;
+    uint32_t sym_off;
+    uint32_t str_off;
     uint32_t shstr_off;
     uint32_t shdr_off;
-    uint32_t total_sz;
-} rv_elf_lay_t;
+    uint32_t total;
+} lay_t;
 
-static void plan_layout(uint32_t code_bytes, rv_elf_lay_t *l)
+/* The loader demands p_offset, p_vaddr and p_paddr share 4-byte alignment, and
+ * that every alloc, rela and symtab section is 4-byte aligned on disk. */
+static void plan(uint32_t code_bytes, lay_t *l)
 {
-    l->code_off  = EHDR_SIZE + PHDR_SIZE;
-    l->code_sz   = code_bytes;
-    l->shstr_off = l->code_off + l->code_sz;
-    l->shdr_off  = l->shstr_off + SHSTRTAB_SIZE;
-    /* Three section headers: NULL, .text, .shstrtab. */
-    l->total_sz  = l->shdr_off + 3u * SHDR_SIZE;
+    l->text_off  = alignup(EHDR_SIZE + PHDR_SIZE, RV_ELF_SEG_ALIGN);
+    l->text_sz   = code_bytes;
+    l->segs_off  = alignup(l->text_off + l->text_sz, 4u);
+    l->rela_off  = l->segs_off + 12u;
+    l->sym_off   = l->rela_off;       /* .rela.text is empty, so it occupies nothing */
+    l->str_off   = l->sym_off + 2u * SYM_SIZE;
+    l->shstr_off = l->str_off + STR_SIZE;
+    l->shdr_off  = alignup(l->shstr_off + SHSTR_SIZE, 4u);
+    l->total     = l->shdr_off + SEC_COUNT * SHDR_SIZE;
 }
 
 /* ---- Public entry point ---- */
@@ -161,73 +203,82 @@ int rv_elf_write(const rv_buf_t *code, const char *path)
         return BC_ERR_IO;
     }
 
-    uint32_t code_bytes = rv_buf_pos_bytes(code);
+    uint32_t code_bytes = rv_buf_nbytes(code);
     if (code_bytes == 0u) {
         fprintf(stderr, "rv_elf: refusing to write an empty kernel\n");
         return BC_ERR_IO;
     }
-
-    rv_elf_lay_t lay;
-    plan_layout(code_bytes, &lay);
-
-    /* Fixed maximum size of 16 KiB code plus 256 bytes of header and section
-     * metadata. The write below treats the buffer as a single blob, so we cap it
-     * here and refuse anything bigger. */
-    static uint8_t out[RV_BUF_MAX_WORDS * 4u + 256u];
-    if (lay.total_sz > sizeof(out)) {
-        fprintf(stderr,
-                "rv_elf: kernel image %u bytes exceeds buffer %lu\n",
-                lay.total_sz, (unsigned long)sizeof(out));
+    if (code_bytes > RV_ELF_TEXT_LIMIT) {
+        fprintf(stderr, "rv_elf: text %u bytes exceeds baby-core limit %u\n",
+                code_bytes, RV_ELF_TEXT_LIMIT);
         return BC_ERR_IO;
     }
 
-    memset(out, 0, lay.total_sz);
+    lay_t lay;
+    plan(code_bytes, &lay);
+
+    static uint8_t out[RV_BUF_MAX_WORDS * 4u + 512u];
+    if (lay.total > sizeof(out)) {
+        fprintf(stderr, "rv_elf: image %u bytes exceeds buffer %lu\n",
+                lay.total, (unsigned long)sizeof(out));
+        return BC_ERR_IO;
+    }
+
+    memset(out, 0, lay.total);
     uint8_t *p = out;
 
-    /* ELF header */
-    write_ehdr(&p,
-               EHDR_SIZE,                     /* e_phoff: right after ehdr */
-               lay.shdr_off,                  /* e_shoff */
-               1u,                            /* e_phnum: one PT_LOAD */
-               3u,                            /* e_shnum: NULL/.text/.shstrtab */
-               2u);                           /* e_shstrndx: .shstrtab at idx 2 */
+    w_ehdr(&p, lay.shdr_off);
+    w_phdr(&p, lay.text_off, code_bytes);
 
-    /* Program header */
-    write_phdr(&p,
-               lay.code_off,
-               RV_ELF_LOAD_ADDR,
-               code_bytes,
-               code_bytes,
-               PF_R | PF_X,
-               4u);
+    memcpy(out + lay.text_off, rv_buf_data(code), code_bytes);
 
-    /* Code bytes */
-    memcpy(out + lay.code_off, rv_buf_data(code), code_bytes);
+    /* .segments: one (vma, trim_bound, size_limit) triple per loadable segment.
+     * trim_bound equal to the vma makes the loader's head-trim a no-op. */
+    p = out + lay.segs_off;
+    w32(&p, RV_ELF_LOAD_ADDR);
+    w32(&p, RV_ELF_LOAD_ADDR);
+    w32(&p, RV_ELF_TEXT_LIMIT);
 
-    /* .shstrtab content */
-    memcpy(out + lay.shstr_off, k_shstrtab, SHSTRTAB_SIZE);
+    /* XIPify resolves relocation symbols through .symtab, so it must exist even
+     * though we emit no entries. Index 0 is the reserved null symbol. */
+    p = out + lay.sym_off;
+    w_sym(&p, 0, 0, 0, 0, 0);
+    w_sym(&p, STR_START, RV_ELF_LOAD_ADDR, code_bytes,
+          (uint8_t)((STB_GLOBAL << 4) | STT_FUNC), (uint16_t)SEC_TEXT);
 
-    /* Section header table */
+    memcpy(out + lay.str_off, k_str, STR_SIZE);
+    memcpy(out + lay.shstr_off, k_shstr, SHSTR_SIZE);
+
     p = out + lay.shdr_off;
-    write_shdr(&p, 0, SHT_NULL,     0, 0, 0, 0, 0, 0, 0, 0);
-    write_shdr(&p, SHSTR_OFF_TEXT,  SHT_PROGBITS,
-               SHF_ALLOC | SHF_EXECINSTR,
-               RV_ELF_LOAD_ADDR, lay.code_off, code_bytes,
-               0, 0, 4, 0);
-    write_shdr(&p, SHSTR_OFF_SHSTR, SHT_STRTAB,
-               0, 0, lay.shstr_off, SHSTRTAB_SIZE,
-               0, 0, 1, 0);
+    w_shdr(&p, 0, SHT_NULL, 0, 0, 0, 0, 0, 0, 0, 0);
+    w_shdr(&p, SHSTR_TEXT, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,
+           RV_ELF_LOAD_ADDR, lay.text_off, code_bytes, 0, 0, 4u, 0);
+    /* Empty, but its presence is what stops the loader throwing "there are no
+     * relocation sections". sh_info must name an alloc section inside a
+     * segment or the loader skips it and the count stays zero. */
+    w_shdr(&p, SHSTR_RELA, SHT_RELA, 0, 0, lay.rela_off, 0,
+           SEC_SYMTAB, SEC_TEXT, 4u, RELA_SIZE);
+    /* sh_info is the index of the first non-local symbol. */
+    w_shdr(&p, SHSTR_SYMTAB, SHT_SYMTAB, 0, 0, lay.sym_off, 2u * SYM_SIZE,
+           SEC_STRTAB, 1u, 4u, SYM_SIZE);
+    w_shdr(&p, SHSTR_STRTAB, SHT_STRTAB, 0, 0, lay.str_off, STR_SIZE,
+           0, 0, 1u, 0);
+    /* Non-alloc and SHT_PROGBITS, which is how the loader identifies it. */
+    w_shdr(&p, SHSTR_SEGS, SHT_PROGBITS, 0, 0, lay.segs_off, 12u,
+           0, 0, 4u, 0);
+    w_shdr(&p, SHSTR_SHSTR, SHT_STRTAB, 0, 0, lay.shstr_off, SHSTR_SIZE,
+           0, 0, 1u, 0);
 
     FILE *fp = fopen(path, "wb");
     if (!fp) {
         fprintf(stderr, "rv_elf: cannot open %s for writing\n", path);
         return BC_ERR_IO;
     }
-    size_t wrote = fwrite(out, 1, lay.total_sz, fp);
+    size_t wrote = fwrite(out, 1, lay.total, fp);
     fclose(fp);
-    if (wrote != lay.total_sz) {
+    if (wrote != lay.total) {
         fprintf(stderr, "rv_elf: short write to %s (%lu of %u)\n",
-                path, (unsigned long)wrote, lay.total_sz);
+                path, (unsigned long)wrote, lay.total);
         return BC_ERR_IO;
     }
     return BC_OK;
