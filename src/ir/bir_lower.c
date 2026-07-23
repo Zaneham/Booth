@@ -1456,18 +1456,26 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             return BIR_MAKE_VAL(inst);
         }
 
-        /* Warp shuffle: up to 4-arg (mask, val, lane/delta, [width]) */
+        /* Warp shuffle: up to 4-arg (mask, val, lane/delta, [width]) or 2..3-arg bare (val, lane/delta, [width]) */
         {
-            static const struct { const char *n; uint16_t op; } stab[] = {
-                {"__shfl_sync",      BIR_SHFL},
-                {"__shfl_up_sync",   BIR_SHFL_UP},
-                {"__shfl_down_sync", BIR_SHFL_DOWN},
-                {"__shfl_xor_sync",  BIR_SHFL_XOR},
+            static const struct { const char *n; uint16_t op; int sync; } stab[] = {
+                {"__shfl_sync",      BIR_SHFL,     1},
+                {"__shfl_up_sync",   BIR_SHFL_UP,  1},
+                {"__shfl_down_sync", BIR_SHFL_DOWN,1},
+                {"__shfl_xor_sync",  BIR_SHFL_XOR, 1},
+                {"__shfl",           BIR_SHFL,     0},
+                {"__shfl_up",        BIR_SHFL_UP,  0},
+                {"__shfl_down",      BIR_SHFL_DOWN,0},
+                {"__shfl_xor",       BIR_SHFL_XOR, 0},
             };
-            for (int bi = 0; bi < 4; bi++) {
+            for (int bi = 0; bi < 8; bi++) {
                 if (strcmp(cname, stab[bi].n) != 0) continue;
                 uint32_t sa[4];
                 int sn = 0;
+                if (!stab[bi].sync) {
+                    uint32_t t32 = bir_type_int(L->M, 32);
+                    sa[sn++] = BIR_MAKE_CONST(bir_const_int(L->M, t32, (int64_t)0xFFFFFFFFu));
+                }
                 uint32_t an = ND(L, callee_n)->next_sibling;
                 while (an && sn < 4) {
                     sa[sn++] = lower_expr(L, an);
@@ -1482,19 +1490,29 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             }
         }
 
-        /* Warp vote: 2-arg (mask, pred) */
+        /* Warp vote: 2-arg (mask, pred) or 1-arg bare (pred) */
         {
-            static const struct { const char *n; uint16_t op; } vtab[] = {
-                {"__ballot_sync", BIR_BALLOT},
-                {"__any_sync",    BIR_VOTE_ANY},
-                {"__all_sync",    BIR_VOTE_ALL},
+            static const struct { const char *n; uint16_t op; int sync; } vtab[] = {
+                {"__ballot_sync", BIR_BALLOT,   1},
+                {"__any_sync",    BIR_VOTE_ANY, 1},
+                {"__all_sync",    BIR_VOTE_ALL, 1},
+                {"__ballot",      BIR_BALLOT,   0},
+                {"__any",         BIR_VOTE_ANY, 0},
+                {"__all",         BIR_VOTE_ALL, 0},
             };
-            for (int bi = 0; bi < 3; bi++) {
+            for (int bi = 0; bi < 6; bi++) {
                 if (strcmp(cname, vtab[bi].n) != 0) continue;
                 uint32_t an = ND(L, callee_n)->next_sibling;
-                uint32_t a0 = lower_expr(L, an);
-                an = ND(L, an)->next_sibling;
-                uint32_t a1 = lower_expr(L, an);
+                uint32_t a0, a1;
+                if (vtab[bi].sync) {
+                    a0 = lower_expr(L, an);
+                    an = ND(L, an)->next_sibling;
+                    a1 = lower_expr(L, an);
+                } else {
+                    uint32_t t32 = bir_type_int(L->M, 32);
+                    a0 = BIR_MAKE_CONST(bir_const_int(L->M, t32, (int64_t)0xFFFFFFFFu));
+                    a1 = lower_expr(L, an);
+                }
                 uint32_t rt = (vtab[bi].op == BIR_BALLOT)
                     ? bir_type_int(L->M, 32) : bir_type_int(L->M, 1);
                 uint32_t inst = emit(L, vtab[bi].op, rt, 2, 0);

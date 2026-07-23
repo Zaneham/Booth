@@ -607,6 +607,13 @@ static const cuda_builtin_t cuda_builtins[] = {
     {"__shfl_up_sync",  -1, 0,  1},
     {"__shfl_down_sync",-1, 0,  1},
     {"__shfl_xor_sync", -1, 0,  1},
+    {"__ballot",         1, 0, -1},
+    {"__any",            1, 0, -1},
+    {"__all",            1, 0, -1},
+    {"__shfl",          -1, 0,  0},
+    {"__shfl_up",       -1, 0,  0},
+    {"__shfl_down",     -1, 0,  0},
+    {"__shfl_xor",      -1, 0,  0},
     {"__umul64hi",       2, 0,  0},  /* high 64 of a 64x64 product — ZK field arith */
     {"sqrtf",1,0,0},{"sqrt",1,0,0},{"__fsqrt_rn",1,0,0},{"rsqrtf",1,0,0},{"__frsqrt_rn",1,0,0},
     {"__frcp_rn",1,0,0},{"expf",1,0,0},{"__expf",1,0,0},{"exp2f",1,0,0},
@@ -1081,10 +1088,13 @@ static uint32_t check_expr(sema_ctx_t *S, uint32_t node)
                 if (b->ret_arg == 1 && nargs >= 2) {
                     rt = arg_types[1];
                 }
-            } else if (strcmp(cname, "__ballot_sync") == 0) {
+            } else if (strcmp(cname, "__ballot_sync") == 0
+                    || strcmp(cname, "__ballot") == 0) {
                 rt = st_uint(S);
             } else if (strcmp(cname, "__any_sync") == 0
-                    || strcmp(cname, "__all_sync") == 0) {
+                    || strcmp(cname, "__all_sync") == 0
+                    || strcmp(cname, "__any") == 0
+                    || strcmp(cname, "__all") == 0) {
                 rt = st_int(S);
             } else {
                 rt = st_int(S);

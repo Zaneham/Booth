@@ -2082,14 +2082,14 @@ static void isel_warp(uint32_t idx, const bir_inst_t *I)
     }
     case BIR_BALLOT: {
         /* v_cmp_ne_u32 vcc, 0, pred; v_mov_b32 vDst, vcc */
-        moperand_t pred = ensure_vgpr(resolve_val(I->operands[0], 1));
+        moperand_t pred = ensure_vgpr(resolve_val(I->operands[I->num_operands > 1 ? 1 : 0], 1));
         emit0_2(AMD_V_CMP_NE_U32, mop_imm(0), pred);
         emit1(AMD_V_MOV_B32, mop_vreg_v((uint16_t)vr), mop_special(AMD_SPEC_VCC));
         break;
     }
     case BIR_VOTE_ANY: {
         /* v_cmp_ne_u32 vcc, 0, pred; s_cmp_ne vcc, 0; materialize SCC */
-        moperand_t pred = ensure_vgpr(resolve_val(I->operands[0], 1));
+        moperand_t pred = ensure_vgpr(resolve_val(I->operands[I->num_operands > 1 ? 1 : 0], 1));
         emit0_2(AMD_V_CMP_NE_U32, mop_imm(0), pred);
         /* Check if VCC != 0 (any lane true) */
         uint32_t sv = new_vreg(0);
@@ -2107,7 +2107,7 @@ static void isel_warp(uint32_t idx, const bir_inst_t *I)
     }
     case BIR_VOTE_ALL: {
         /* v_cmp_ne vcc, 0, pred; check vcc == exec */
-        moperand_t pred = ensure_vgpr(resolve_val(I->operands[0], 1));
+        moperand_t pred = ensure_vgpr(resolve_val(I->operands[I->num_operands > 1 ? 1 : 0], 1));
         emit0_2(AMD_V_CMP_NE_U32, mop_imm(0), pred);
         uint32_t sv = new_vreg(0);
         emit1(AMD_V_READFIRSTLANE_B32, mop_vreg_s((uint16_t)sv), mop_special(AMD_SPEC_VCC));
