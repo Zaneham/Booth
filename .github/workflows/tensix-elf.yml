@@ -1,0 +1,55 @@
+name: Tensix ELF loader gate
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  tt-loader:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Booth
+        run: make
+
+      # tt-metal's own ELF reader builds standalone. Under ELF_STANDALONE it
+      # stubs out the tt-metal logging and needs nothing beyond elf.h and
+      # libstdc++, so fetching the two files beats cloning the tree.
+      #
+      # Tracking main rather than a pinned commit is deliberate: if Tenstorrent
+      # changes what the loader accepts, this job is how we find out.
+      - name: Build tt-metal's ELF loader
+        run: |
+          base=https://raw.githubusercontent.com/tenstorrent/tt-metal/main/tt_metal/llrt
+          curl -fsSL -O "$base/tt_elffile.cpp"
+          curl -fsSL -O "$base/tt_elffile.hpp"
+          g++ -std=c++20 -DELF_STANDALONE -o tt_elfload tt_elffile.cpp
+
+      # The point of the job. Our ELF writer was built by reading the loader
+      # source; this checks the loader itself agrees, rather than trusting that
+      # reading. Same idea as the Metal job proving the emitted MSL is real.
+      - name: Emitted kernels are accepted by the real loader
+        run: |
+          set -e
+          for src in tests/device_calls.cu tests/rv_shared.cu tests/rv_switch.cu; do
+            out="$(basename "$src" .cu).elf"
+            ./kath --rv-elf -o "$out" "$src"
+            ./tt_elfload "$out" "$out.objectified"
+            echo "$out accepted"
+          done
+
+      # A gate that cannot fail is theatre. Corrupt e_entry so it no longer
+      # equals the first PT_LOAD's p_vaddr, which is one of the rules the
+      # writer exists to satisfy, and confirm the loader notices.
+      - name: Loader rejects a deliberately broken ELF
+        run: |
+          cp device_calls.elf broken.elf
+          printf '\x40' | dd of=broken.elf bs=1 seek=24 count=1 conv=notrunc status=none
+          if ./tt_elfload broken.elf broken.out 2>/dev/null; then
+            echo "the loader accepted a broken ELF, so this gate is not gating"
+            exit 1
+          fi
+          echo "broken ELF rejected, gate is live"

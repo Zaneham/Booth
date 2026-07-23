@@ -1,0 +1,31 @@
+name: RV64 execution
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  rv64-qemu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the RISC-V cross toolchain and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu qemu-user
+
+      - name: Build Booth
+        run: make
+
+      # --rv64 emits a relocatable object with the kernel as a global symbol
+      # and libm calls left undefined, so the cross toolchain links it like any
+      # other .o. Running it under QEMU makes this a second backend that is
+      # checked by executing its output rather than by inspecting it.
+      - name: Compile, link and run a kernel under QEMU
+        run: |
+          ./kath --rv64 -o rv64_vadd.o tests/rv64_vadd.cu
+          riscv64-linux-gnu-gcc -static tests/rv64_host.c rv64_vadd.o -o rv64_vadd -lm
+          qemu-riscv64 ./rv64_vadd
