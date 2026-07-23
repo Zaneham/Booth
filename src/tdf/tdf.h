@@ -53,8 +53,25 @@
  * channels nine and onward (WormholeB0/.../SyncUnit.md).
  */
 #define TD_L1_BASE        0x00000000u
-#define TD_L1_END         0x0016E000u    /* one past last usable byte */
 #define TD_L1_CODE_RSV    0x00008000u    /* 32 KiB for code + stack  */
+
+/* Which part we are compiling for. Everything below that does not depend on
+ * the chip stays a #define; the two that do are accessors. */
+typedef enum {
+    TD_CHIP_WH,     /* Wormhole B0 */
+    TD_CHIP_BH,     /* Blackhole   */
+    TD_CHIP_COUNT
+} td_chip_t;
+
+uint32_t  td_l1end (td_chip_t c);   /* one past last usable L1 byte */
+uint32_t  td_txtmax(td_chip_t c);   /* largest kernel text, bytes   */
+uint32_t  td_shbase(td_chip_t c);   /* base of the __shared__ slab  */
+const char *td_cname(td_chip_t c);
+int       td_pchip (const char *s, td_chip_t *out);
+
+/* Set once from the CLI before any pass runs. A compile targets one part. */
+void      td_setchip(td_chip_t c);
+td_chip_t td_chip(void);
 /*
  * Runtime args slab sits between code and CBs. The kernel reads its CUDA
  * coordinate intrinsics (threadIdx etc.) and its scalar parameters from here,
@@ -72,10 +89,9 @@
  * hard reservation rather than an open-ended region: a baby core runs one block,
  * so the whole shared footprint is known at compile time and a kernel that wants
  * more than this is refused rather than allowed to walk into the CB area. The
- * placer's ceiling is TD_L1_SHARED_BASE, which is what keeps the two apart.
+ * placer's ceiling is td_shbase(), which is what keeps the two apart.
  */
 #define TD_L1_SHARED_SIZE 0x00010000u    /* 64 KiB */
-#define TD_L1_SHARED_BASE (TD_L1_END - TD_L1_SHARED_SIZE)
 #define TD_L1_ALIGN       16u            /* C16 NoC alignment        */
 #define TD_FIFO_BYTES     8u             /* head + tail, L1 fallback */
 #define TD_HW_SEMS        8u             /* hardware semaphore count */

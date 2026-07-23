@@ -3,6 +3,7 @@
 
 #include "barracuda.h"
 #include "rv_buf.h"
+#include "tdf.h"     /* td_txtmax, td_chip */
 
 /*
  * RV32IM ELF emitter for the Tenstorrent baby RISC-V cores. The shape is
@@ -23,10 +24,9 @@
 #define RV_ELF_LOAD_ADDR  0x00000000u
 #define RV_ELF_ENTRY      RV_ELF_LOAD_ADDR
 
-/* Tightest baby-core budget (Wormhole NCRISC IRAM), used as the .segments
- * size limit. RV_BUF_MAX_WORDS*4 happens to equal this exactly, so the guard
- * in rv_elf_write is unreachable until one of the two constants moves. */
-#define RV_ELF_TEXT_LIMIT (16u * 1024u)
+/* The .segments size limit is the target chip's text budget, td_txtmax(). The
+ * compiler's own ceiling is RV_BUF_MAX_WORDS and is reported separately, so a
+ * kernel that outgrows the buffer says so rather than blaming the hardware. */
 
 /* tt-metal links with -Wl,-z,max-page-size=16. */
 #define RV_ELF_SEG_ALIGN  16u

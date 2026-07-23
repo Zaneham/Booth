@@ -1506,7 +1506,8 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
                  * involved: this is a data address, and XIP only rewrites
                  * text-relative references. */
                 rc = ldimm32(RV_T0,
-                             (int32_t)(TD_L1_SHARED_BASE + shoff[idx - slotbas]),
+                             (int32_t)(td_shbase(td_chip())
+                                       + shoff[idx - slotbas]),
                              out);
                 if (rc == BC_OK) rc = stres(RV_T0, idx, out);
                 break;

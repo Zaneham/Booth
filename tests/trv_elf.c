@@ -289,7 +289,7 @@ static void rv_elf_segments_meta(void)
     uint32_t off = rd32(shdr(s) + 16);
     CHEQ(rd32(off + 0), RV_ELF_LOAD_ADDR);       /* vma */
     CHEQ(rd32(off + 4), RV_ELF_LOAD_ADDR);       /* trim_bound, so no trim */
-    CHEQ(rd32(off + 8), RV_ELF_TEXT_LIMIT);
+    CHEQ(rd32(off + 8), td_txtmax(td_chip()));
     PASS();
 }
 TH_REG("rv_enc", rv_elf_segments_meta);
@@ -617,7 +617,7 @@ static void e2e_rv_text_sane(void)
     uint32_t t = sfind(".text");
     uint32_t sz = rd32(shdr(t) + 20);
     CHEQ(sz % 4u, 0u);
-    CHECK(sz > 0u && sz <= RV_ELF_TEXT_LIMIT);
+    CHECK(sz > 0u && sz <= td_txtmax(td_chip()));
     PASS();
 }
 TH_REG("rv_enc", e2e_rv_text_sane);
@@ -654,7 +654,7 @@ static void e2e_rv_shared_addr(void)
     int found = 0;
     for (uint32_t i = 0; i < nw; i++) {
         uint32_t w = rd32(off + i * 4u);
-        if ((w & 0x7Fu) == 0x37u && ((w >> 12) << 12) == TD_L1_SHARED_BASE)
+        if ((w & 0x7Fu) == 0x37u && ((w >> 12) << 12) == td_shbase(td_chip()))
             found = 1;
     }
     CHECK(found);
@@ -666,8 +666,8 @@ TH_REG("rv_enc", e2e_rv_shared_addr);
  * true while the placer's ceiling is the slab base. */
 static void rv_l1_shared_below_end(void)
 {
-    CHECK(TD_L1_SHARED_BASE + TD_L1_SHARED_SIZE == TD_L1_END);
-    CHECK(TD_L1_CB_BASE < TD_L1_SHARED_BASE);
+    CHECK(td_shbase(td_chip()) + TD_L1_SHARED_SIZE == td_l1end(td_chip()));
+    CHECK(TD_L1_CB_BASE < td_shbase(td_chip()));
     PASS();
 }
 TH_REG("rv_enc", rv_l1_shared_below_end);

@@ -2,6 +2,54 @@
 #include <stdio.h>
 #include <string.h>
 
+/* ---- Chip geometry ---- */
+
+/*
+ * L1 sizes from tt-metal dev_mem_map.h, MEM_L1_SIZE and MEM_MAX_KERNEL_SIZE.
+ * Wormhole's NCRISC executes from a 16 KiB IRAM and is the binding core, so its
+ * text ceiling is that rather than MEM_MAX_KERNEL_SIZE. Blackhole has no IRAM
+ * and gives every core the full budget.
+ */
+static const struct {
+    const char *name;
+    uint32_t    l1end;
+    uint32_t    txtmax;
+} k_chips[TD_CHIP_COUNT] = {
+    { "wormhole",  1464u * 1024u,   16u * 1024u },
+    { "blackhole", 1536u * 1024u, 1497u * 1024u },
+};
+
+static td_chip_t g_chip = TD_CHIP_BH;
+
+static td_chip_t chipok(td_chip_t c)
+{
+    return c < TD_CHIP_COUNT ? c : TD_CHIP_BH;
+}
+
+uint32_t td_l1end(td_chip_t c)  { return k_chips[chipok(c)].l1end; }
+uint32_t td_txtmax(td_chip_t c) { return k_chips[chipok(c)].txtmax; }
+const char *td_cname(td_chip_t c) { return k_chips[chipok(c)].name; }
+
+uint32_t td_shbase(td_chip_t c)
+{
+    return td_l1end(c) - TD_L1_SHARED_SIZE;
+}
+
+int td_pchip(const char *s, td_chip_t *out)
+{
+    if (!s || !out) return BC_ERR_TDF;
+    for (uint32_t i = 0; i < TD_CHIP_COUNT; i++) {
+        if (strcmp(s, k_chips[i].name) == 0) {
+            *out = (td_chip_t)i;
+            return BC_OK;
+        }
+    }
+    return BC_ERR_TDF;
+}
+
+void td_setchip(td_chip_t c) { g_chip = chipok(c); }
+td_chip_t td_chip(void)      { return g_chip; }
+
 /*
  * Tile DataFlow builder, lookups, and dumper.
  *

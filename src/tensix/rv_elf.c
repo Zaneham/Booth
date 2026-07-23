@@ -208,9 +208,10 @@ int rv_elf_write(const rv_buf_t *code, const char *path)
         fprintf(stderr, "rv_elf: refusing to write an empty kernel\n");
         return BC_ERR_IO;
     }
-    if (code_bytes > RV_ELF_TEXT_LIMIT) {
-        fprintf(stderr, "rv_elf: text %u bytes exceeds baby-core limit %u\n",
-                code_bytes, RV_ELF_TEXT_LIMIT);
+    uint32_t txtmax = td_txtmax(td_chip());
+    if (code_bytes > txtmax) {
+        fprintf(stderr, "rv_elf: text %u bytes exceeds the %s limit of %u\n",
+                code_bytes, td_cname(td_chip()), txtmax);
         return BC_ERR_IO;
     }
 
@@ -237,7 +238,7 @@ int rv_elf_write(const rv_buf_t *code, const char *path)
     p = out + lay.segs_off;
     w32(&p, RV_ELF_LOAD_ADDR);
     w32(&p, RV_ELF_LOAD_ADDR);
-    w32(&p, RV_ELF_TEXT_LIMIT);
+    w32(&p, txtmax);
 
     /* XIPify resolves relocation symbols through .symtab, so it must exist even
      * though we emit no entries. Index 0 is the reserved null symbol. */
