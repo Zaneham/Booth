@@ -666,10 +666,10 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
          * back the lane's own value, a ballot is just this lane's bit, a vote
          * is the predicate itself. ---- */
         case BIR_SHFL: case BIR_SHFL_UP: case BIR_SHFL_DOWN: case BIR_SHFL_XOR:
-            load_val(X,X_RAX,I->operands[0]); st_slot(X,X_RAX,s); break;
+            load_val(X,X_RAX,I->operands[I->num_operands > 1 ? 1 : 0]); st_slot(X,X_RAX,s); break;
         case BIR_BALLOT: mov_imm(X,X_RAX,1); st_slot(X,X_RAX,s); break;
         case BIR_VOTE_ANY: case BIR_VOTE_ALL:
-            load_val(X,X_RAX,I->operands[0]); st_slot(X,X_RAX,s); break;
+            load_val(X,X_RAX,I->operands[I->num_operands > 1 ? 1 : 0]); st_slot(X,X_RAX,s); break;
         case BIR_ICMP: { load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]); rexw(X,X_RCX,X_RAX);eb(X,0x39);modrm(X,3,X_RCX,X_RAX); int cc; switch(I->subop){ case BIR_ICMP_EQ:cc=XCC_E;break; case BIR_ICMP_NE:cc=XCC_NE;break; case BIR_ICMP_SLT:cc=XCC_L;break; case BIR_ICMP_SLE:cc=XCC_LE;break; case BIR_ICMP_SGT:cc=XCC_G;break; case BIR_ICMP_SGE:cc=XCC_GE;break; case BIR_ICMP_ULT:cc=XCC_B;break; case BIR_ICMP_ULE:cc=XCC_BE;break; case BIR_ICMP_UGT:cc=XCC_A;break; case BIR_ICMP_UGE:cc=XCC_AE;break; default:cc=XCC_NE;break; } eb(X,0x0F);eb(X,(uint8_t)(0x90+cc));modrm(X,3,0,X_RAX); rexw(X,0,X_RAX);eb(X,0x0F);eb(X,0xB6);modrm(X,3,X_RAX,X_RAX); st_slot(X,X_RAX,s); break; }
         case BIR_BR: { uint32_t cur=F->first_block+b; emit_phi_copies(X,I->operands[0],cur); eb(X,0xE9); X->fix[X->n_fix].off=X->codelen; X->fix[X->n_fix++].blk=I->operands[0]; ei32(X,0); break; }
         case BIR_BR_COND: { uint32_t cur=F->first_block+b;
