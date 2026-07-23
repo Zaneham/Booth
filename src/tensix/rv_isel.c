@@ -40,10 +40,10 @@ typedef struct {
     uint8_t  rs1;            /* condition register for BEQ/BNE      */
 } patch_t;
 
-static uint32_t block_word_idx[ISEL_MAX_BLOCKS];
-static uint8_t  block_known[ISEL_MAX_BLOCKS];
+static uint32_t blkwidx[ISEL_MAX_BLOCKS];
+static uint8_t  blkknwn[ISEL_MAX_BLOCKS];
 static patch_t  patches[ISEL_MAX_PATCHES];
-static uint32_t num_patches;
+static uint32_t npatch;
 
 /*
  * PHI destruction scratch. For each PHI (block, value) pair in the
@@ -62,10 +62,10 @@ typedef struct {
     uint16_t pred_block;   /* predecessor block this copy fires in */
     uint16_t phi_inst;     /* destination slot (PHI's inst index)   */
     uint32_t src_val;      /* value handle (CONST or VAL)           */
-} phi_copy_t;
+} phicp_t;
 
-static phi_copy_t phi_copies[ISEL_MAX_PHI_COPIES];
-static uint32_t   num_phi_copies;
+static phicp_t phicp[ISEL_MAX_PHI_COPIES];
+static uint32_t   nphicp;
 
 /*
  * Per-function position tracking for inter-function calls. When a
@@ -88,50 +88,55 @@ typedef struct {
     uint32_t jal_word_idx;   /* placeholder location in the buffer */
     uint16_t callee_func;    /* target function index in M->funcs[] */
     uint16_t _pad;
-} call_patch_t;
+} calpat_t;
 
-static uint32_t     func_word_idx[ISEL_MAX_FUNCS];
-static uint8_t      func_known[ISEL_MAX_FUNCS];
-static call_patch_t call_patches[ISEL_MAX_CALLS];
-static uint32_t     num_call_patches;
-static uint32_t     current_func_idx;     /* set per-function during emit */
+static uint32_t     fnwidx[ISEL_MAX_FUNCS];
+static uint8_t      fnknwn[ISEL_MAX_FUNCS];
+static calpat_t calpat[ISEL_MAX_CALLS];
+static uint32_t     ncalpat;
+static uint32_t     curfn;     /* set per-function during emit */
 
-static void isel_reset_cf(void)
+/* Module-global index of this function's first instruction. Slot indices are
+ * biased by it so function N>0 addresses its own frame rather than the
+ * caller's, and so offsets stay inside the 12-bit immediate. */
+static uint32_t     slotbas;
+
+static void isel_rstcf(void)
 {
-    memset(block_word_idx, 0, sizeof(block_word_idx));
-    memset(block_known,    0, sizeof(block_known));
-    num_patches    = 0;
-    num_phi_copies = 0;
+    memset(blkwidx, 0, sizeof(blkwidx));
+    memset(blkknwn,    0, sizeof(blkknwn));
+    npatch    = 0;
+    nphicp = 0;
 }
 
-static void isel_reset_module(void)
+static void isel_rstmod(void)
 {
-    memset(func_word_idx, 0, sizeof(func_word_idx));
-    memset(func_known,    0, sizeof(func_known));
-    num_call_patches = 0;
-    current_func_idx = 0;
+    memset(fnwidx, 0, sizeof(fnwidx));
+    memset(fnknwn,    0, sizeof(fnknwn));
+    ncalpat = 0;
+    curfn = 0;
 }
 
-static int record_patch(uint32_t word_idx, uint16_t target,
+static int recpat(uint32_t word_idx, uint16_t target,
                         uint8_t kind, uint8_t rs1)
 {
-    if (num_patches >= ISEL_MAX_PATCHES) {
+    if (npatch >= ISEL_MAX_PATCHES) {
         fprintf(stderr,
                 "rv_isel: branch patch table full (%u entries)\n",
                 ISEL_MAX_PATCHES);
         return BC_ERR_TDF;
     }
-    patches[num_patches].word_idx     = word_idx;
-    patches[num_patches].target_block = target;
-    patches[num_patches].kind         = kind;
-    patches[num_patches].rs1          = rs1;
-    num_patches++;
+    patches[npatch].word_idx     = word_idx;
+    patches[npatch].target_block = target;
+    patches[npatch].kind         = kind;
+    patches[npatch].rs1          = rs1;
+    npatch++;
     return BC_OK;
 }
 
 /* ---- Helpers ---- */
 
-static uint32_t round_up(uint32_t x, uint32_t a)
+static uint32_t rndup(uint32_t x, uint32_t a)
 {
     return (x + (a - 1u)) & ~(a - 1u);
 }
@@ -142,11 +147,21 @@ static int emit(rv_buf_t *out, uint32_t word)
     return BC_OK;
 }
 
-static uint32_t slot_offset(uint32_t inst_idx)
+/* Each BIR inst gets one 4-byte slot off sp, after the prologue's saved ra.
+ * Refuses past 2047 because LW/SW take a 12-bit signed immediate and would
+ * otherwise wrap to a negative offset and address below the frame. */
+static int slotoff(uint32_t inst_idx, uint32_t *off)
 {
-    /* Each BIR inst inside the function gets one 4-byte slot,
-     * indexed off sp after the prologue's saved ra. */
-    return ISEL_LOCALS_BASE + inst_idx * 4u;
+    uint32_t o = ISEL_LOCALS_BASE + (inst_idx - slotbas) * 4u;
+    if (o > 2047u) {
+        fprintf(stderr,
+                "rv_isel: stack slot for inst %u at offset %u exceeds the "
+                "12-bit immediate; function too large for the bring-up isel\n",
+                inst_idx, o);
+        return BC_ERR_TDF;
+    }
+    *off = o;
+    return BC_OK;
 }
 
 /*
@@ -164,7 +179,7 @@ static uint32_t slot_offset(uint32_t inst_idx)
  * Unprivileged ISA section 2.4.1 (U-format) plus the sign-extension
  * note in section 2.3.
  */
-static int load_imm32(uint8_t reg, int32_t v, rv_buf_t *out)
+static int ldimm32(uint8_t reg, int32_t v, rv_buf_t *out)
 {
     if (v >= -2048 && v <= 2047) {
         return emit(out, rv_addi(reg, RV_ZERO, (int16_t)v));
@@ -187,8 +202,8 @@ static int load_imm32(uint8_t reg, int32_t v, rv_buf_t *out)
 
 /* Load a BIR operand into the given temp register, leaving the
  * register holding the value. Handles constants by materialising
- * via load_imm32, and instruction values by loading their stack slot. */
-static int load_operand(const bir_module_t *M, uint32_t operand,
+ * via ldimm32, and instruction values by loading their stack slot. */
+static int ldopnd(const bir_module_t *M, uint32_t operand,
                         uint8_t reg, rv_buf_t *out)
 {
     if (BIR_VAL_IS_CONST(operand)) {
@@ -209,7 +224,7 @@ static int load_operand(const bir_module_t *M, uint32_t operand,
                         (long long)v);
                 return BC_ERR_TDF;
             }
-            return load_imm32(reg, (int32_t)v, out);
+            return ldimm32(reg, (int32_t)v, out);
         }
         if (c->kind == BIR_CONST_NULL) {
             return emit(out, rv_addi(reg, RV_ZERO, 0));
@@ -225,7 +240,7 @@ static int load_operand(const bir_module_t *M, uint32_t operand,
             float fv = (float)c->d.fval;
             uint32_t bits;
             memcpy(&bits, &fv, sizeof(bits));
-            return load_imm32(reg, (int32_t)bits, out);
+            return ldimm32(reg, (int32_t)bits, out);
         }
         fprintf(stderr,
                 "rv_isel: constant kind %u not supported for RV32IM\n",
@@ -234,12 +249,18 @@ static int load_operand(const bir_module_t *M, uint32_t operand,
     }
     /* Instruction value: load from stack slot. */
     uint32_t idx = BIR_VAL_INDEX(operand);
-    return emit(out, rv_lw(reg, RV_SP, (int16_t)slot_offset(idx)));
+    uint32_t off;
+    int rc = slotoff(idx, &off);
+    if (rc != BC_OK) return rc;
+    return emit(out, rv_lw(reg, RV_SP, (int16_t)off));
 }
 
-static int store_result(uint8_t reg, uint32_t inst_idx, rv_buf_t *out)
+static int stres(uint8_t reg, uint32_t inst_idx, rv_buf_t *out)
 {
-    return emit(out, rv_sw(reg, RV_SP, (int16_t)slot_offset(inst_idx)));
+    uint32_t off;
+    int rc = slotoff(inst_idx, &off);
+    if (rc != BC_OK) return rc;
+    return emit(out, rv_sw(reg, RV_SP, (int16_t)off));
 }
 
 /* ---- Per-opcode handlers ---- */
@@ -248,8 +269,8 @@ static int sel_binop(const bir_module_t *M, uint32_t inst_idx,
                      const bir_inst_t *I, rv_buf_t *out)
 {
     int rc;
-    if ((rc = load_operand(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
-    if ((rc = load_operand(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
     uint32_t op = 0;
     switch (I->op) {
     /* RV32I integer ALU. */
@@ -266,6 +287,9 @@ static int sel_binop(const bir_module_t *M, uint32_t inst_idx,
      * sluggish; a future optimiser pass can recognise divides by
      * constant powers of two and rewrite to ASHR. */
     case BIR_MUL:  op = rv_mul (RV_T0, RV_T0, RV_T1); break;
+    /* High half of the unsigned product; the keystone for wide-integer
+     * carry chains, and RV32M gives it to us directly. */
+    case BIR_UMULHI: op = rv_mulhu(RV_T0, RV_T0, RV_T1); break;
     case BIR_SDIV: op = rv_div (RV_T0, RV_T0, RV_T1); break;
     case BIR_UDIV: op = rv_divu(RV_T0, RV_T0, RV_T1); break;
     case BIR_SREM: op = rv_rem (RV_T0, RV_T0, RV_T1); break;
@@ -275,7 +299,7 @@ static int sel_binop(const bir_module_t *M, uint32_t inst_idx,
         return BC_ERR_TDF;
     }
     if ((rc = emit(out, op)) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 /* ---- Integer comparison ----
@@ -296,8 +320,8 @@ static int sel_icmp(const bir_module_t *M, uint32_t inst_idx,
                     const bir_inst_t *I, rv_buf_t *out)
 {
     int rc;
-    if ((rc = load_operand(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
-    if ((rc = load_operand(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
 
     switch (I->subop) {
     case BIR_ICMP_EQ:
@@ -342,7 +366,7 @@ static int sel_icmp(const bir_module_t *M, uint32_t inst_idx,
         return BC_ERR_TDF;
     }
     if (rc != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 /* ---- Identity casts ----
@@ -356,9 +380,9 @@ static int sel_icmp(const bir_module_t *M, uint32_t inst_idx,
 static int sel_cast_id(const bir_module_t *M, uint32_t inst_idx,
                        const bir_inst_t *I, rv_buf_t *out)
 {
-    int rc = load_operand(M, I->operands[0], RV_T0, out);
+    int rc = ldopnd(M, I->operands[0], RV_T0, out);
     if (rc != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 /* ---- Width conversions ----
@@ -374,7 +398,7 @@ static int sel_cast_id(const bir_module_t *M, uint32_t inst_idx,
  * bits before, which is the assumption we have to make because the
  * slot store/load pipeline keeps 32-bit values without tracking
  * provenance. */
-static uint32_t value_int_width(const bir_module_t *M, uint32_t val)
+static uint32_t valwid(const bir_module_t *M, uint32_t val)
 {
     if (BIR_VAL_IS_CONST(val)) return 32u;
     uint32_t idx = BIR_VAL_INDEX(val);
@@ -386,7 +410,7 @@ static uint32_t value_int_width(const bir_module_t *M, uint32_t val)
     return 32u;
 }
 
-static uint32_t inst_int_width(const bir_module_t *M, const bir_inst_t *I)
+static uint32_t instwid(const bir_module_t *M, const bir_inst_t *I)
 {
     if (I->type >= M->num_types) return 32u;
     const bir_type_t *t = &M->types[I->type];
@@ -394,45 +418,54 @@ static uint32_t inst_int_width(const bir_module_t *M, const bir_inst_t *I)
     return 32u;
 }
 
+/* i64 does not fit an RV32 register. A 64-bit mul would keep only the low half,
+ * and a shift by 32 would shift by zero, since RV32 reads shamt[4:0]. */
+static int wide64(const bir_module_t *M, const bir_inst_t *I)
+{
+    if (I->type >= M->num_types) return 0;
+    const bir_type_t *t = &M->types[I->type];
+    return t->kind == BIR_TYPE_INT && t->width > 32u;
+}
+
 static int sel_zext(const bir_module_t *M, uint32_t inst_idx,
                     const bir_inst_t *I, rv_buf_t *out)
 {
     int rc;
-    if ((rc = load_operand(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
-    uint32_t src_w = value_int_width(M, I->operands[0]);
-    if (src_w >= 32u) return store_result(RV_T0, inst_idx, out);
+    if ((rc = ldopnd(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
+    uint32_t src_w = valwid(M, I->operands[0]);
+    if (src_w >= 32u) return stres(RV_T0, inst_idx, out);
     /* SLLI (32-src_w) then SRLI clears high bits without needing
      * a mask wider than ANDI's 12-bit immediate can express. */
     uint32_t sh = 32u - src_w;
     if ((rc = emit(out, rv_slli(RV_T0, RV_T0, (uint8_t)sh))) != BC_OK) return rc;
     if ((rc = emit(out, rv_srli(RV_T0, RV_T0, (uint8_t)sh))) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 static int sel_sext(const bir_module_t *M, uint32_t inst_idx,
                     const bir_inst_t *I, rv_buf_t *out)
 {
     int rc;
-    if ((rc = load_operand(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
-    uint32_t src_w = value_int_width(M, I->operands[0]);
-    if (src_w >= 32u) return store_result(RV_T0, inst_idx, out);
+    if ((rc = ldopnd(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
+    uint32_t src_w = valwid(M, I->operands[0]);
+    if (src_w >= 32u) return stres(RV_T0, inst_idx, out);
     uint32_t sh = 32u - src_w;
     if ((rc = emit(out, rv_slli(RV_T0, RV_T0, (uint8_t)sh))) != BC_OK) return rc;
     if ((rc = emit(out, rv_srai(RV_T0, RV_T0, (uint8_t)sh))) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 static int sel_trunc(const bir_module_t *M, uint32_t inst_idx,
                      const bir_inst_t *I, rv_buf_t *out)
 {
     int rc;
-    if ((rc = load_operand(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
-    uint32_t dst_w = inst_int_width(M, I);
-    if (dst_w >= 32u) return store_result(RV_T0, inst_idx, out);
+    if ((rc = ldopnd(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
+    uint32_t dst_w = instwid(M, I);
+    if (dst_w >= 32u) return stres(RV_T0, inst_idx, out);
     uint32_t sh = 32u - dst_w;
     if ((rc = emit(out, rv_slli(RV_T0, RV_T0, (uint8_t)sh))) != BC_OK) return rc;
     if ((rc = emit(out, rv_srli(RV_T0, RV_T0, (uint8_t)sh))) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 /* ---- Branches ----
@@ -447,14 +480,14 @@ static int sel_trunc(const bir_module_t *M, uint32_t inst_idx,
  * BEQ/BNE encode a 2-byte-aligned offset; JAL encodes the same.
  * The rv_enc layer takes a byte offset and packs the scrambled
  * immediate per the spec. */
-static int emit_br_cond(uint16_t target_block, uint8_t rs1,
+static int ebrcond(uint16_t target_block, uint8_t rs1,
                         int branch_kind, rv_buf_t *out)
 {
     /* branch_kind: 0 = BEQ (branch if rs1 == zero, i.e. false),
      *              1 = BNE (branch if rs1 != zero, i.e. true) */
-    if (target_block < ISEL_MAX_BLOCKS && block_known[target_block]) {
+    if (target_block < ISEL_MAX_BLOCKS && blkknwn[target_block]) {
         uint32_t here = rv_buf_n_words(out);
-        int32_t off = rv_buf_offset(out, here, block_word_idx[target_block]);
+        int32_t off = rv_buf_offset(out, here, blkwidx[target_block]);
         if (off < -4096 || off > 4094) {
             fprintf(stderr,
                     "rv_isel: branch offset %d out of B-type range\n", off);
@@ -468,15 +501,15 @@ static int emit_br_cond(uint16_t target_block, uint8_t rs1,
     /* Forward reference: emit a placeholder and record the patch. */
     int slot = rv_buf_emit(out, 0u);
     if (slot < 0) return BC_ERR_OVERFLOW;
-    return record_patch((uint32_t)slot, target_block,
+    return recpat((uint32_t)slot, target_block,
                         (uint8_t)branch_kind, rs1);
 }
 
-static int emit_jal_to_block(uint16_t target_block, rv_buf_t *out)
+static int ejalbk(uint16_t target_block, rv_buf_t *out)
 {
-    if (target_block < ISEL_MAX_BLOCKS && block_known[target_block]) {
+    if (target_block < ISEL_MAX_BLOCKS && blkknwn[target_block]) {
         uint32_t here = rv_buf_n_words(out);
-        int32_t off = rv_buf_offset(out, here, block_word_idx[target_block]);
+        int32_t off = rv_buf_offset(out, here, blkwidx[target_block]);
         if (off < -1048576 || off > 1048574) {
             fprintf(stderr,
                     "rv_isel: JAL offset %d out of J-type range\n", off);
@@ -486,16 +519,16 @@ static int emit_jal_to_block(uint16_t target_block, rv_buf_t *out)
     }
     int slot = rv_buf_emit(out, 0u);
     if (slot < 0) return BC_ERR_OVERFLOW;
-    return record_patch((uint32_t)slot, target_block, 2u, 0u);
+    return recpat((uint32_t)slot, target_block, 2u, 0u);
 }
 
 /*
- * Walk every PHI in the function and queue one phi_copy_t entry
+ * Walk every PHI in the function and queue one phicp_t entry
  * per incoming (block, value) pair. The PHI operand layout is
  * (block, value, block, value, ...) either inline or overflowed
  * into M->extra_operands; we handle both.
  */
-static int phi_collect(const bir_module_t *M, const bir_func_t *F)
+static int phicoll(const bir_module_t *M, const bir_func_t *F)
 {
     for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
         uint32_t bk = F->first_block + bi;
@@ -528,16 +561,16 @@ static int phi_collect(const bir_module_t *M, const bir_func_t *F)
                 return BC_ERR_TDF;
             }
             for (uint32_t p = 0; p + 1 < pair_count; p += 2) {
-                if (num_phi_copies >= ISEL_MAX_PHI_COPIES) {
+                if (nphicp >= ISEL_MAX_PHI_COPIES) {
                     fprintf(stderr,
                             "rv_isel: PHI copy table full (%u entries)\n",
                             ISEL_MAX_PHI_COPIES);
                     return BC_ERR_TDF;
                 }
-                phi_copies[num_phi_copies].pred_block = (uint16_t)pairs[p];
-                phi_copies[num_phi_copies].phi_inst   = (uint16_t)idx;
-                phi_copies[num_phi_copies].src_val    = pairs[p + 1];
-                num_phi_copies++;
+                phicp[nphicp].pred_block = (uint16_t)pairs[p];
+                phicp[nphicp].phi_inst   = (uint16_t)idx;
+                phicp[nphicp].src_val    = pairs[p + 1];
+                nphicp++;
             }
         }
     }
@@ -554,7 +587,7 @@ static int phi_collect(const bir_module_t *M, const bir_func_t *F)
  * in a future sitting; flagging it cleanly is the right thing
  * until that work lands.
  */
-static int emit_phi_copies_for_pred(const bir_module_t *M,
+static int ephicp(const bir_module_t *M,
                                     uint16_t pred_block, rv_buf_t *out)
 {
     static uint8_t written[ISEL_MAX_INSTS];
@@ -562,15 +595,15 @@ static int emit_phi_copies_for_pred(const bir_module_t *M,
      * full memset every block would be wasteful. We walk the
      * batch twice: once to mark dests, once to emit; conflict
      * detection happens during the emit pass. */
-    for (uint32_t p = 0; p < num_phi_copies; p++) {
-        if (phi_copies[p].pred_block != pred_block) continue;
-        if (phi_copies[p].phi_inst >= ISEL_MAX_INSTS) continue;
-        written[phi_copies[p].phi_inst] = 0;
+    for (uint32_t p = 0; p < nphicp; p++) {
+        if (phicp[p].pred_block != pred_block) continue;
+        if (phicp[p].phi_inst >= ISEL_MAX_INSTS) continue;
+        written[phicp[p].phi_inst] = 0;
     }
 
-    for (uint32_t p = 0; p < num_phi_copies; p++) {
-        if (phi_copies[p].pred_block != pred_block) continue;
-        uint32_t src = phi_copies[p].src_val;
+    for (uint32_t p = 0; p < nphicp; p++) {
+        if (phicp[p].pred_block != pred_block) continue;
+        uint32_t src = phicp[p].src_val;
         if (!BIR_VAL_IS_CONST(src)) {
             uint32_t sidx = BIR_VAL_INDEX(src);
             if (sidx < ISEL_MAX_INSTS && written[sidx]) {
@@ -582,12 +615,12 @@ static int emit_phi_copies_for_pred(const bir_module_t *M,
                 return BC_ERR_TDF;
             }
         }
-        int rc = load_operand(M, src, RV_T0, out);
+        int rc = ldopnd(M, src, RV_T0, out);
         if (rc != BC_OK) return rc;
-        if ((rc = store_result(RV_T0, phi_copies[p].phi_inst, out)) != BC_OK)
+        if ((rc = stres(RV_T0, phicp[p].phi_inst, out)) != BC_OK)
             return rc;
-        if (phi_copies[p].phi_inst < ISEL_MAX_INSTS)
-            written[phi_copies[p].phi_inst] = 1;
+        if (phicp[p].phi_inst < ISEL_MAX_INSTS)
+            written[phicp[p].phi_inst] = 1;
     }
     return BC_OK;
 }
@@ -602,9 +635,72 @@ static int sel_br(const bir_module_t *M, uint16_t cur_block,
         fprintf(stderr, "rv_isel: BR with no target\n");
         return BC_ERR_TDF;
     }
-    int rc = emit_phi_copies_for_pred(M, cur_block, out);
+    int rc = ephicp(M, cur_block, out);
     if (rc != BC_OK) return rc;
-    return emit_jal_to_block((uint16_t)I->operands[0], out);
+    return ejalbk((uint16_t)I->operands[0], out);
+}
+
+/* Operand count, resolving the overflow indirection. */
+static uint32_t nopnd(const bir_inst_t *I)
+{
+    return I->num_operands == BIR_OPERANDS_OVERFLOW
+         ? I->operands[1] : I->num_operands;
+}
+
+/* Operand j, resolving the overflow indirection. Returns BIR_VAL_NONE if the
+ * index is out of range, which every caller must treat as malformed. */
+static uint32_t opnd(const bir_module_t *M, const bir_inst_t *I, uint32_t j)
+{
+    if (j >= nopnd(I)) return BIR_VAL_NONE;
+    if (I->num_operands != BIR_OPERANDS_OVERFLOW) return I->operands[j];
+    uint32_t k = I->operands[0] + j;
+    if (k >= M->num_extra_ops) return BIR_VAL_NONE;
+    return M->extra_operands[k];
+}
+
+/*
+ * Switch: operand 0 is the selector, 1 the default block, then (value, block)
+ * pairs. We emit a compare chain rather than a jump table, since the case
+ * values are arbitrary and a table would need a relocated base address that
+ * XIP would have to rewrite.
+ *
+ * Each case subtracts its value from the selector and branches on zero, which
+ * reuses the BEQ-against-zero patch the block patcher already knows how to
+ * resolve instead of needing a two-register branch form.
+ */
+static int sel_switch(const bir_module_t *M, uint16_t cur_block,
+                      const bir_inst_t *I, rv_buf_t *out)
+{
+    uint32_t n = nopnd(I);
+    if (n < 2u || (n & 1u) != 0u) {
+        fprintf(stderr,
+                "rv_isel: SWITCH needs a selector, a default and whole "
+                "(value, block) pairs, got %u operands\n", n);
+        return BC_ERR_TDF;
+    }
+    uint32_t sel = opnd(M, I, 0);
+    uint32_t dflt = opnd(M, I, 1);
+    if (sel == BIR_VAL_NONE || dflt == BIR_VAL_NONE) {
+        fprintf(stderr, "rv_isel: SWITCH operands out of range\n");
+        return BC_ERR_TDF;
+    }
+
+    int rc = ephicp(M, cur_block, out);
+    if (rc != BC_OK) return rc;
+
+    for (uint32_t j = 2u; j + 1u < n; j += 2u) {
+        uint32_t cval = opnd(M, I, j);
+        uint32_t cblk = opnd(M, I, j + 1u);
+        if (cval == BIR_VAL_NONE || cblk == BIR_VAL_NONE) {
+            fprintf(stderr, "rv_isel: SWITCH case %u out of range\n", j);
+            return BC_ERR_TDF;
+        }
+        if ((rc = ldopnd(M, sel, RV_T0, out)) != BC_OK) return rc;
+        if ((rc = ldopnd(M, cval, RV_T1, out)) != BC_OK) return rc;
+        if ((rc = emit(out, rv_sub(RV_T0, RV_T0, RV_T1))) != BC_OK) return rc;
+        if ((rc = ebrcond((uint16_t)cblk, RV_T0, 0, out)) != BC_OK) return rc;
+    }
+    return ejalbk((uint16_t)dflt, out);
 }
 
 static int sel_br_cond(const bir_module_t *M, uint16_t cur_block,
@@ -620,13 +716,13 @@ static int sel_br_cond(const bir_module_t *M, uint16_t cur_block,
         fprintf(stderr, "rv_isel: BR_COND needs cond + true + false\n");
         return BC_ERR_TDF;
     }
-    int rc = load_operand(M, I->operands[0], RV_T0, out);
+    int rc = ldopnd(M, I->operands[0], RV_T0, out);
     if (rc != BC_OK) return rc;
-    if ((rc = emit_phi_copies_for_pred(M, cur_block, out)) != BC_OK) return rc;
+    if ((rc = ephicp(M, cur_block, out)) != BC_OK) return rc;
     /* BNE T0, zero, true_block; JAL zero, false_block. */
-    if ((rc = emit_br_cond((uint16_t)I->operands[1], RV_T0, 1, out)) != BC_OK)
+    if ((rc = ebrcond((uint16_t)I->operands[1], RV_T0, 1, out)) != BC_OK)
         return rc;
-    return emit_jal_to_block((uint16_t)I->operands[2], out);
+    return ejalbk((uint16_t)I->operands[2], out);
 }
 
 /* ---- Select ----
@@ -647,18 +743,18 @@ static int sel_select(const bir_module_t *M, uint32_t inst_idx,
     int rc;
     /* Load condition into T2 so we can keep T0/T1 free for the
      * value loads. */
-    if ((rc = load_operand(M, I->operands[0], RV_T2, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[0], RV_T2, out)) != BC_OK) return rc;
     /* Materialise the false value into T0 first. */
-    if ((rc = load_operand(M, I->operands[2], RV_T0, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[2], RV_T0, out)) != BC_OK) return rc;
     /* BEQ T2, zero, +N to skip past the true-arm load if cond is 0.
-     * The true arm is the next op's load_operand which can be 1 or
+     * The true arm is the next op's ldopnd which can be 1 or
      * more instructions (constant materialisation may use LUI+ADDI).
      * Easiest: emit BEQ to a placeholder, load the true value,
      * back-patch the BEQ offset once we know how big the true arm is. */
     int beq_slot = rv_buf_emit(out, 0u);
     if (beq_slot < 0) return BC_ERR_OVERFLOW;
     uint32_t before_true = rv_buf_n_words(out);
-    if ((rc = load_operand(M, I->operands[1], RV_T0, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[1], RV_T0, out)) != BC_OK) return rc;
     uint32_t after_true = rv_buf_n_words(out);
     int32_t skip_bytes = (int32_t)(after_true - before_true) * 4 + 4;
     /* +4 because the branch is at beq_slot and we want to skip to
@@ -670,7 +766,7 @@ static int sel_select(const bir_module_t *M, uint32_t inst_idx,
     if (rv_buf_patch(out, (uint32_t)beq_slot,
                      rv_beq(RV_T2, RV_ZERO, (int16_t)skip_bytes)) != 0)
         return BC_ERR_TDF;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 /* ---- Function calls ----
@@ -702,7 +798,7 @@ static int sel_call(const bir_module_t *M, uint32_t inst_idx,
                 callee, ISEL_MAX_FUNCS);
         return BC_ERR_TDF;
     }
-    if (callee == current_func_idx) {
+    if (callee == curfn) {
         /* Direct recursion would clobber the saved ra in our
          * one-slot prologue. A real recursion story needs a
          * deeper save area; until then, refusing is correct. */
@@ -722,7 +818,7 @@ static int sel_call(const bir_module_t *M, uint32_t inst_idx,
     /* Load each arg into the corresponding a-register. RISC-V
      * psABI says first arg in a0, second in a1, and so on. */
     for (uint32_t i = 0; i < nargs; i++) {
-        int rc = load_operand(M, I->operands[i + 1u],
+        int rc = ldopnd(M, I->operands[i + 1u],
                               (uint8_t)(RV_A0 + i), out);
         if (rc != BC_OK) return rc;
     }
@@ -731,21 +827,21 @@ static int sel_call(const bir_module_t *M, uint32_t inst_idx,
      * realistic function distance within a single ELF. */
     int jal_slot = rv_buf_emit(out, 0u);
     if (jal_slot < 0) return BC_ERR_OVERFLOW;
-    if (num_call_patches >= ISEL_MAX_CALLS) {
+    if (ncalpat >= ISEL_MAX_CALLS) {
         fprintf(stderr,
                 "rv_isel: call patch table full at %u entries\n",
                 ISEL_MAX_CALLS);
         return BC_ERR_TDF;
     }
-    call_patches[num_call_patches].jal_word_idx = (uint32_t)jal_slot;
-    call_patches[num_call_patches].callee_func  = callee;
-    num_call_patches++;
+    calpat[ncalpat].jal_word_idx = (uint32_t)jal_slot;
+    calpat[ncalpat].callee_func  = callee;
+    ncalpat++;
 
     /* Spill return value (in a0) to this instruction's slot, if
      * the call produces a result. A void call has no result slot
      * to write to, which is fine; the slot for BIR_CALL's inst
      * is simply never read. */
-    return store_result(RV_A0, inst_idx, out);
+    return stres(RV_A0, inst_idx, out);
 }
 
 /* ---- Unreachable ----
@@ -756,24 +852,62 @@ static int sel_call(const bir_module_t *M, uint32_t inst_idx,
  * cores, which is actually closer to the BIR meaning (the
  * compiler thinks this code is unreachable; if execution gets
  * here, something is wrong and we want to halt for inspection). */
-static int sel_unreachable(rv_buf_t *out)
+static int sel_unrch(rv_buf_t *out)
 {
     return emit(out, rv_ebreak());
+}
+
+static uint32_t tybytes(const bir_module_t *M, uint32_t ti);
+
+/* Access width in bytes from the pointer's pointee type. Returns 0 when the
+ * type is not a pointer we can size, which is what an untyped pointer into L1
+ * looks like, and the caller then assumes a word. Widths we cannot express in
+ * one RV32 access come back as-is so the caller can refuse. */
+static uint32_t accwid(const bir_module_t *M, uint32_t ptr_val)
+{
+    if (BIR_VAL_IS_CONST(ptr_val)) return 0u;
+    uint32_t idx = BIR_VAL_INDEX(ptr_val);
+    if (idx >= M->num_insts) return 0u;
+    uint32_t pt = M->insts[idx].type;
+    if (pt >= M->num_types || M->types[pt].kind != BIR_TYPE_PTR) return 0u;
+    return tybytes(M, M->types[pt].inner);
+}
+
+/* Pick the load or store for an access width, or refuse. An i64 or an
+ * aggregate would otherwise compile to a 4-byte access and quietly read or
+ * write the wrong number of bytes. */
+static int winsn(uint32_t w, int is_load, uint32_t *insn)
+{
+    switch (w) {
+    case 0u:  /* unsizable pointee; assume a word, as the isel always has */
+    case 4u: *insn = is_load ? rv_lw (RV_T0, RV_T1, 0) : rv_sw(RV_T0, RV_T1, 0); return BC_OK;
+    case 2u: *insn = is_load ? rv_lhu(RV_T0, RV_T1, 0) : rv_sh(RV_T0, RV_T1, 0); return BC_OK;
+    case 1u: *insn = is_load ? rv_lbu(RV_T0, RV_T1, 0) : rv_sb(RV_T0, RV_T1, 0); return BC_OK;
+    default:
+        fprintf(stderr,
+                "rv_isel: %u-byte %s has no single RV32 access; i64 and "
+                "aggregate memory operations are not supported\n",
+                w, is_load ? "load" : "store");
+        return BC_ERR_TDF;
+    }
 }
 
 static int sel_load(const bir_module_t *M, uint32_t inst_idx,
                     const bir_inst_t *I, rv_buf_t *out)
 {
-    /* BIR_LOAD has ops[0] = address. We trust the front end to have
-     * produced i32-aligned addresses; if it didn't, the baby core
-     * silently rounds down per BabyRISCV README, which is exactly
-     * the kind of quiet bug worth never tolerating in production,
-     * but the bring-up isel cannot enforce alignment without type
-     * info we are not yet propagating here. */
-    int rc = load_operand(M, I->operands[0], RV_T1, out);
+    /* BIR_LOAD has ops[0] = address. Sub-word loads zero-extend; BIR carries no
+     * signedness on the type, so a sign-extending source arrives as an explicit
+     * BIR_SEXT, which re-derives the sign from the low bits anyway.
+     *
+     * Alignment is still the front end's problem. A misaligned address makes
+     * the baby core round down silently, per the BabyRISCV README, and we have
+     * no type info here to catch it. */
+    int rc = ldopnd(M, I->operands[0], RV_T1, out);
     if (rc != BC_OK) return rc;
-    if ((rc = emit(out, rv_lw(RV_T0, RV_T1, 0))) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    uint32_t insn;
+    if ((rc = winsn(accwid(M, I->operands[0]), 1, &insn)) != BC_OK) return rc;
+    if ((rc = emit(out, insn)) != BC_OK) return rc;
+    return stres(RV_T0, inst_idx, out);
 }
 
 static int sel_store(const bir_module_t *M,
@@ -783,9 +917,12 @@ static int sel_store(const bir_module_t *M,
      * note in the Booth codebase: store operand order is
      * value, address, NOT address, value). */
     int rc;
-    if ((rc = load_operand(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
-    if ((rc = load_operand(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
-    return emit(out, rv_sw(RV_T0, RV_T1, 0));
+    if ((rc = ldopnd(M, I->operands[0], RV_T0, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
+    /* Narrow stores must not write the adjacent bytes. */
+    uint32_t insn;
+    if ((rc = winsn(accwid(M, I->operands[1]), 0, &insn)) != BC_OK) return rc;
+    return emit(out, insn);
 }
 
 /*
@@ -801,14 +938,14 @@ static int sel_store(const bir_module_t *M,
  * matching the standard C ABI convention. Anything wider than 4
  * bytes (we have no i64 yet on baby cores) clamps to word align.
  */
-static uint32_t nat_align(uint32_t sz)
+static uint32_t natalg(uint32_t sz)
 {
     if (sz >= 4u) return 4u;
     if (sz >= 2u) return 2u;
     return 1u;
 }
 
-static uint32_t align_up(uint32_t x, uint32_t a)
+static uint32_t algnup(uint32_t x, uint32_t a)
 {
     return (x + (a - 1u)) & ~(a - 1u);
 }
@@ -823,7 +960,7 @@ static uint32_t align_up(uint32_t x, uint32_t a)
  * contains a FUNC or an as-yet-unhandled type kind). Callers must
  * check and refuse rather than silently computing a wrong offset.
  */
-static uint32_t type_bytes(const bir_module_t *M, uint32_t ti)
+static uint32_t tybytes(const bir_module_t *M, uint32_t ti)
 {
     if (ti >= M->num_types) return 0u;
     const bir_type_t *t = &M->types[ti];
@@ -833,12 +970,12 @@ static uint32_t type_bytes(const bir_module_t *M, uint32_t ti)
     case BIR_TYPE_BFLOAT: return 2u;
     case BIR_TYPE_PTR:    return 4u;
     case BIR_TYPE_ARRAY: {
-        uint32_t es = type_bytes(M, t->inner);
+        uint32_t es = tybytes(M, t->inner);
         if (es == 0u) return 0u;
         return es * t->count;
     }
     case BIR_TYPE_VECTOR: {
-        uint32_t es = type_bytes(M, t->inner);
+        uint32_t es = tybytes(M, t->inner);
         if (es == 0u) return 0u;
         return es * (uint32_t)t->width;     /* width = lane count for VECTOR */
     }
@@ -847,9 +984,9 @@ static uint32_t type_bytes(const bir_module_t *M, uint32_t ti)
         for (uint16_t i = 0; i < t->num_fields; i++) {
             if (t->count + i >= M->num_type_fields) return 0u;
             uint32_t ft = M->type_fields[t->count + i];
-            uint32_t fs = type_bytes(M, ft);
+            uint32_t fs = tybytes(M, ft);
             if (fs == 0u) return 0u;
-            off = align_up(off, nat_align(fs)) + fs;
+            off = algnup(off, natalg(fs)) + fs;
         }
         return off;                         /* no tail padding for now */
     }
@@ -860,11 +997,11 @@ static uint32_t type_bytes(const bir_module_t *M, uint32_t ti)
 
 /*
  * Byte offset of field `fi` inside a STRUCT type, applying natural
- * alignment to each preceding field. Mirrors the type_bytes layout
+ * alignment to each preceding field. Mirrors the tybytes layout
  * walker exactly so the struct's overall layout and any per-field
  * GEP agree on where each field sits.
  */
-static uint32_t struct_field_offset(const bir_module_t *M,
+static uint32_t sfldof(const bir_module_t *M,
                                     uint32_t struct_ti,
                                     uint32_t fi)
 {
@@ -876,14 +1013,14 @@ static uint32_t struct_field_offset(const bir_module_t *M,
     for (uint16_t i = 0; i < (uint16_t)fi; i++) {
         if (t->count + i >= M->num_type_fields) return 0u;
         uint32_t ft = M->type_fields[t->count + i];
-        uint32_t fs = type_bytes(M, ft);
+        uint32_t fs = tybytes(M, ft);
         if (fs == 0u) return 0u;
-        off = align_up(off, nat_align(fs)) + fs;
+        off = algnup(off, natalg(fs)) + fs;
     }
     /* Align the START of the requested field to its own boundary. */
     if (t->count + fi < M->num_type_fields) {
-        uint32_t cur = type_bytes(M, M->type_fields[t->count + fi]);
-        if (cur != 0u) off = align_up(off, nat_align(cur));
+        uint32_t cur = tybytes(M, M->type_fields[t->count + fi]);
+        if (cur != 0u) off = algnup(off, natalg(cur));
     }
     return off;
 }
@@ -895,7 +1032,7 @@ static uint32_t struct_field_offset(const bir_module_t *M,
  * GEP base, but we handle it defensively rather than dereferencing
  * out of range).
  */
-static uint32_t base_pointee_type(const bir_module_t *M, uint32_t val)
+static uint32_t basety(const bir_module_t *M, uint32_t val)
 {
     if (BIR_VAL_IS_CONST(val)) return 0u;
     uint32_t idx = BIR_VAL_INDEX(val);
@@ -914,7 +1051,7 @@ static uint32_t base_pointee_type(const bir_module_t *M, uint32_t val)
  * LUI+ADDI and uses an ADD. Used by both the struct-field and the
  * array-stride paths so the encoding choices live in one place.
  */
-static int gep_add_byte_offset(int64_t off, rv_buf_t *out)
+static int gepoff(int64_t off, rv_buf_t *out)
 {
     if (off == 0) return BC_OK;
     if (off >= -2048 && off <= 2047) {
@@ -927,7 +1064,7 @@ static int gep_add_byte_offset(int64_t off, rv_buf_t *out)
         return BC_ERR_TDF;
     }
     int rc;
-    if ((rc = load_imm32(RV_T1, (int32_t)off, out)) != BC_OK) return rc;
+    if ((rc = ldimm32(RV_T1, (int32_t)off, out)) != BC_OK) return rc;
     return emit(out, rv_add(RV_T0, RV_T0, RV_T1));
 }
 
@@ -957,7 +1094,7 @@ static int sel_gep(const bir_module_t *M, uint32_t inst_idx,
         return BC_ERR_TDF;
     }
 
-    int rc = load_operand(M, I->operands[0], RV_T0, out);
+    int rc = ldopnd(M, I->operands[0], RV_T0, out);
     if (rc != BC_OK) return rc;
 
     /* Identify the base's pointee type. A struct-field GEP has a
@@ -968,7 +1105,7 @@ static int sel_gep(const bir_module_t *M, uint32_t inst_idx,
      * struct, and the index is a byte multiplier rather than a
      * field number. The two are distinguished by the front end's
      * encoding choice and we honour that here. */
-    uint32_t base_pointee = base_pointee_type(M, I->operands[0]);
+    uint32_t base_pointee = basety(M, I->operands[0]);
     uint32_t result_pointee = M->types[I->type].inner;
     int is_struct_gep = (base_pointee != 0u &&
                          base_pointee < M->num_types &&
@@ -996,7 +1133,7 @@ static int sel_gep(const bir_module_t *M, uint32_t inst_idx,
          * short-circuit before computing elem_size. This unblocks
          * the common "gep base, 0" idiom that bir_lower emits as
          * the first step of a struct member chain. */
-        if (idx_v == 0) return store_result(RV_T0, inst_idx, out);
+        if (idx_v == 0) return stres(RV_T0, inst_idx, out);
 
         int64_t off;
         if (is_struct_gep) {
@@ -1006,18 +1143,18 @@ static int sel_gep(const bir_module_t *M, uint32_t inst_idx,
                         (long long)idx_v);
                 return BC_ERR_TDF;
             }
-            off = (int64_t)struct_field_offset(M, base_pointee,
+            off = (int64_t)sfldof(M, base_pointee,
                                                (uint32_t)idx_v);
         } else {
-            uint32_t elem_sz = type_bytes(M, M->types[I->type].inner);
+            uint32_t elem_sz = tybytes(M, M->types[I->type].inner);
             if (elem_sz == 0u) {
                 fprintf(stderr, "rv_isel: unknown GEP pointee size\n");
                 return BC_ERR_TDF;
             }
             off = idx_v * (int64_t)elem_sz;
         }
-        if ((rc = gep_add_byte_offset(off, out)) != BC_OK) return rc;
-        return store_result(RV_T0, inst_idx, out);
+        if ((rc = gepoff(off, out)) != BC_OK) return rc;
+        return stres(RV_T0, inst_idx, out);
     }
 
     /* Non-constant index path: stride lowering only. Field-index
@@ -1030,18 +1167,18 @@ static int sel_gep(const bir_module_t *M, uint32_t inst_idx,
                 "rv_isel: non-constant struct GEP index is illegal\n");
         return BC_ERR_TDF;
     }
-    uint32_t elem_sz = type_bytes(M, M->types[I->type].inner);
+    uint32_t elem_sz = tybytes(M, M->types[I->type].inner);
     if (elem_sz == 0u) {
         fprintf(stderr, "rv_isel: unknown GEP pointee size\n");
         return BC_ERR_TDF;
     }
-    if ((rc = load_operand(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
+    if ((rc = ldopnd(M, I->operands[1], RV_T1, out)) != BC_OK) return rc;
     if (elem_sz != 1u) {
-        if ((rc = load_imm32(RV_T2, (int32_t)elem_sz, out)) != BC_OK) return rc;
+        if ((rc = ldimm32(RV_T2, (int32_t)elem_sz, out)) != BC_OK) return rc;
         if ((rc = emit(out, rv_mul(RV_T1, RV_T1, RV_T2))) != BC_OK) return rc;
     }
     if ((rc = emit(out, rv_add(RV_T0, RV_T0, RV_T1))) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 /*
@@ -1050,7 +1187,7 @@ static int sel_gep(const bir_module_t *M, uint32_t inst_idx,
  * specifically so this is one instruction; if it ever moves we
  * need either a LUI+ADDI pair or a different free register slot.
  */
-static int load_rtarg_base(uint8_t reg, rv_buf_t *out)
+static int ldrtarg(uint8_t reg, rv_buf_t *out)
 {
     return emit(out, rv_lui(reg, TD_L1_RTARG_BASE >> 12));
 }
@@ -1073,10 +1210,10 @@ static int sel_param(uint32_t inst_idx, const bir_inst_t *I, rv_buf_t *out)
         return BC_ERR_TDF;
     }
     int rc;
-    if ((rc = load_rtarg_base(RV_T1, out)) != BC_OK) return rc;
+    if ((rc = ldrtarg(RV_T1, out)) != BC_OK) return rc;
     if ((rc = emit(out, rv_lw(RV_T0, RV_T1,
             (int16_t)RT_ARG_OFF_KARG(pi)))) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 /*
@@ -1088,7 +1225,7 @@ static int sel_param(uint32_t inst_idx, const bir_inst_t *I, rv_buf_t *out)
  * model means threadIdx is always (0,0,0) and the launcher records
  * exactly that.
  */
-static int sel_intrinsic(uint32_t inst_idx, const bir_inst_t *I, rv_buf_t *out)
+static int sel_intrin(uint32_t inst_idx, const bir_inst_t *I, rv_buf_t *out)
 {
     uint8_t dim = I->subop;
     if (dim > 2u) {
@@ -1107,9 +1244,9 @@ static int sel_intrinsic(uint32_t inst_idx, const bir_inst_t *I, rv_buf_t *out)
         return BC_ERR_TDF;
     }
     int rc;
-    if ((rc = load_rtarg_base(RV_T1, out)) != BC_OK) return rc;
+    if ((rc = ldrtarg(RV_T1, out)) != BC_OK) return rc;
     if ((rc = emit(out, rv_lw(RV_T0, RV_T1, (int16_t)off))) != BC_OK) return rc;
-    return store_result(RV_T0, inst_idx, out);
+    return stres(RV_T0, inst_idx, out);
 }
 
 
@@ -1118,7 +1255,12 @@ static int sel_ret(const bir_module_t *M, uint32_t frame_sz,
 {
     int rc;
     if (I->num_operands > 0u) {
-        if ((rc = load_operand(M, I->operands[0], RV_A0, out)) != BC_OK) return rc;
+        if ((rc = ldopnd(M, I->operands[0], RV_A0, out)) != BC_OK) return rc;
+    } else {
+        /* tt-metal calls the kernel entry as uint32_t(*)() and feeds a0 to
+         * record_stack_usage, where zero means "not computed". Leaving a0
+         * dirty would report a bogus watermark. */
+        if ((rc = emit(out, rv_addi(RV_A0, RV_ZERO, 0))) != BC_OK) return rc;
     }
     /* Epilogue: restore ra, deallocate the frame, jalr to ra. */
     if ((rc = emit(out, rv_lw(RV_RA, RV_SP, 0))) != BC_OK) return rc;
@@ -1138,14 +1280,21 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
     }
     /* Record this function's starting position so any other
      * function in the same module that calls into us can patch
-     * the JAL offset later. current_func_idx tracks which function
+     * the JAL offset later. curfn tracks which function
      * we're emitting so sel_call can detect direct recursion. */
     if (func_idx < ISEL_MAX_FUNCS) {
-        func_word_idx[func_idx] = rv_buf_n_words(out);
-        func_known[func_idx] = 1;
+        fnwidx[func_idx] = rv_buf_n_words(out);
+        fnknwn[func_idx] = 1;
     }
-    current_func_idx = (uint16_t)func_idx;
+    curfn = (uint16_t)func_idx;
     const bir_func_t *F = &M->funcs[func_idx];
+
+    /* Instruction indices are module-global, so bias them by this function's
+     * first one to get frame-local slot numbers. */
+    slotbas = 0;
+    if (F->num_blocks > 0u && F->first_block < M->num_blocks) {
+        slotbas = M->blocks[F->first_block].first_inst;
+    }
 
     if (F->total_insts > ISEL_MAX_INSTS) {
         fprintf(stderr,
@@ -1159,8 +1308,8 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
      * emit pass so the frame size includes both the per-inst slots
      * and the alloca region, and the main pass can hand each
      * BIR_ALLOCA its absolute frame offset. */
-    static uint32_t alloca_off[ISEL_MAX_INSTS];
-    uint32_t alloca_total = 0;
+    static uint32_t alcoff[ISEL_MAX_INSTS];
+    uint32_t alctot = 0;
     for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
         uint32_t bk = F->first_block + bi;
         if (bk >= M->num_blocks) break;
@@ -1169,7 +1318,8 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
             uint32_t idx = B->first_inst + ii;
             const bir_inst_t *I = &M->insts[idx];
             if (I->op != BIR_ALLOCA) continue;
-            if (idx >= ISEL_MAX_INSTS) {
+            uint32_t lidx = idx - slotbas;
+            if (lidx >= ISEL_MAX_INSTS) {
                 fprintf(stderr,
                         "rv_isel: alloca at idx %u past table\n", idx);
                 return BC_ERR_TDF;
@@ -1178,12 +1328,54 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
             uint32_t pointee_sz = 0;
             if (I->type < M->num_types &&
                 M->types[I->type].kind == BIR_TYPE_PTR) {
-                pointee_sz = type_bytes(M, M->types[I->type].inner);
+                pointee_sz = tybytes(M, M->types[I->type].inner);
             }
             if (pointee_sz == 0u) pointee_sz = 4u;  /* default i32-shaped */
-            alloca_total = round_up(alloca_total, ISEL_ALLOCA_ALIGN);
-            alloca_off[idx] = alloca_total;
-            alloca_total += pointee_sz;
+            alctot = rndup(alctot, ISEL_ALLOCA_ALIGN);
+            alcoff[lidx] = alctot;
+            alctot += pointee_sz;
+        }
+    }
+
+    /* Same walk for __shared__, but the region is a fixed slab at the top of
+     * L1 rather than stack, and it is laid out once per kernel because a baby
+     * core runs a single block. */
+    static uint32_t shoff[ISEL_MAX_INSTS];
+    uint32_t shtot = 0;
+    for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
+        uint32_t bk = F->first_block + bi;
+        if (bk >= M->num_blocks) break;
+        const bir_block_t *B = &M->blocks[bk];
+        for (uint32_t ii = 0; ii < B->num_insts; ii++) {
+            uint32_t idx = B->first_inst + ii;
+            const bir_inst_t *I = &M->insts[idx];
+            if (I->op != BIR_SHARED_ALLOC) continue;
+            uint32_t lidx = idx - slotbas;
+            if (lidx >= ISEL_MAX_INSTS) {
+                fprintf(stderr,
+                        "rv_isel: shared_alloc at idx %u past table\n", idx);
+                return BC_ERR_TDF;
+            }
+            uint32_t sz = 0;
+            if (I->type < M->num_types &&
+                M->types[I->type].kind == BIR_TYPE_PTR) {
+                sz = tybytes(M, M->types[I->type].inner);
+            }
+            if (sz == 0u) {
+                fprintf(stderr,
+                        "rv_isel: shared_alloc at idx %u has unsizable "
+                        "pointee type\n", idx);
+                return BC_ERR_TDF;
+            }
+            shtot = rndup(shtot, TD_L1_ALIGN);
+            shoff[lidx] = shtot;
+            shtot += sz;
+            if (shtot > TD_L1_SHARED_SIZE) {
+                fprintf(stderr,
+                        "rv_isel: __shared__ needs %u bytes, slab is %u\n",
+                        shtot, TD_L1_SHARED_SIZE);
+                return BC_ERR_TDF;
+            }
         }
     }
 
@@ -1191,11 +1383,20 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
      * slot + the alloca region, rounded up to the 16-byte alignment
      * the RISC-V soft-float psABI requires for the stack pointer
      * at function entry. */
-    uint32_t frame_sz = round_up(
-        ISEL_LOCALS_BASE + F->total_insts * 4u + alloca_total,
+    uint32_t frame_sz = rndup(
+        ISEL_LOCALS_BASE + F->total_insts * 4u + alctot,
         ISEL_FRAME_ALIGN);
     /* Alloca region starts immediately after the per-inst slots. */
-    uint32_t alloca_base = ISEL_LOCALS_BASE + F->total_insts * 4u;
+    uint32_t alcbase = ISEL_LOCALS_BASE + F->total_insts * 4u;
+
+    /* The prologue and epilogue adjust sp with a single ADDI, so the frame has
+     * to fit the 12-bit signed immediate. */
+    if (frame_sz > 2047u) {
+        fprintf(stderr,
+                "rv_isel: frame of %u bytes exceeds the ADDI immediate range\n",
+                frame_sz);
+        return BC_ERR_TDF;
+    }
 
     /* Prologue: drop sp, save ra. */
     int rc;
@@ -1209,8 +1410,8 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
      * as the slot index since the BIR module is single-function in
      * the bring-up path; once multi-function lands this will need
      * a per-function renumbering. */
-    isel_reset_cf();
-    rc = phi_collect(M, F);
+    isel_rstcf();
+    rc = phicoll(M, F);
     if (rc != BC_OK) return rc;
     int saw_ret = 0;
     for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
@@ -1219,13 +1420,20 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
         /* Record where this block's first instruction lands in the
          * code buffer so subsequent branches to it can resolve. */
         if (bk < ISEL_MAX_BLOCKS) {
-            block_word_idx[bk] = rv_buf_n_words(out);
-            block_known[bk] = 1;
+            blkwidx[bk] = rv_buf_n_words(out);
+            blkknwn[bk] = 1;
         }
         const bir_block_t *B = &M->blocks[bk];
         for (uint32_t ii = 0; ii < B->num_insts; ii++) {
             uint32_t idx = B->first_inst + ii;
             const bir_inst_t *I = &M->insts[idx];
+            if (wide64(M, I)) {
+                fprintf(stderr,
+                        "rv_isel: %u-bit integer result at inst %u has no RV32 "
+                        "representation; 64-bit arithmetic is not supported\n",
+                        instwid(M, I), idx);
+                return BC_ERR_TDF;
+            }
             switch (I->op) {
             case BIR_PARAM:
                 rc = sel_param(idx, I, out);
@@ -1234,7 +1442,7 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
             case BIR_BLOCK_ID:
             case BIR_BLOCK_DIM:
             case BIR_GRID_DIM:
-                rc = sel_intrinsic(idx, I, out);
+                rc = sel_intrin(idx, I, out);
                 break;
             case BIR_LOAD:
                 rc = sel_load(M, idx, I, out);
@@ -1245,6 +1453,7 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
             case BIR_ADD:
             case BIR_SUB:
             case BIR_MUL:
+            case BIR_UMULHI:
             case BIR_SDIV:
             case BIR_UDIV:
             case BIR_SREM:
@@ -1275,12 +1484,12 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
                 rc = sel_trunc(M, idx, I, out);
                 break;
             case BIR_UNREACHABLE:
-                rc = sel_unreachable(out);
+                rc = sel_unrch(out);
                 break;
             case BIR_ALLOCA: {
-                /* Compute sp + alloca_base + alloca_off[idx], store
+                /* Compute sp + alcbase + alcoff[idx], store
                  * the resulting pointer into this inst's slot. */
-                uint32_t total = alloca_base + alloca_off[idx];
+                uint32_t total = alcbase + alcoff[idx - slotbas];
                 if (total > 2047u) {
                     fprintf(stderr,
                             "rv_isel: alloca offset %u out of ADDI range\n",
@@ -1289,19 +1498,53 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
                     break;
                 }
                 rc = emit(out, rv_addi(RV_T0, RV_SP, (int16_t)total));
-                if (rc == BC_OK) rc = store_result(RV_T0, idx, out);
+                if (rc == BC_OK) rc = stres(RV_T0, idx, out);
                 break;
             }
+            case BIR_SHARED_ALLOC:
+                /* Absolute L1 address, materialised inline. No relocation is
+                 * involved: this is a data address, and XIP only rewrites
+                 * text-relative references. */
+                rc = ldimm32(RV_T0,
+                             (int32_t)(td_shbase(td_chip())
+                                       + shoff[idx - slotbas]),
+                             out);
+                if (rc == BC_OK) rc = stres(RV_T0, idx, out);
+                break;
             case BIR_BR:
                 rc = sel_br(M, (uint16_t)bk, I, out);
                 break;
             case BIR_BR_COND:
                 rc = sel_br_cond(M, (uint16_t)bk, I, out);
                 break;
+            case BIR_SWITCH:
+                rc = sel_switch(M, (uint16_t)bk, I, out);
+                break;
+            case BIR_GLOBAL_REF:
+                /* Computing the address is easy; the problem is that nothing
+                 * puts a value there. The ELF has one PT_LOAD and no .data,
+                 * and the kernel is a bare function that never runs a crt1 to
+                 * stage an image, so the pointer would reference uninitialised
+                 * L1. Even a zero-init global would be wrong. */
+                fprintf(stderr,
+                        "rv_isel: __device__ and __constant__ globals need a "
+                        "data segment and an initialisation path, neither of "
+                        "which this backend emits yet\n");
+                rc = BC_ERR_TDF;
+                break;
+            case BIR_BARRIER:
+            case BIR_BARRIER_GROUP:
+                /* A baby core is one hardware thread with no SIMT, so a
+                 * block-level barrier has nothing to wait on. FENCE is a
+                 * documented no-op here and would not order anything, so
+                 * emitting one would only mislead. Cross-core coordination
+                 * goes through CB semaphores, which is a different opcode. */
+                rc = BC_OK;
+                break;
             case BIR_PHI:
                 /* PHI emits no code in its own block; its slot is
                  * populated by predecessor blocks before they
-                 * branch here. See phi_collect / emit_phi_copies. */
+                 * branch here. See phicoll / emit_phi_copies. */
                 rc = BC_OK;
                 break;
             case BIR_CALL:
@@ -1340,17 +1583,17 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
 
     /* Resolve any branches we deferred when we hit a forward
      * reference. By now every block we might branch to has been
-     * recorded in block_word_idx, so each patch turns into a single
+     * recorded in blkwidx, so each patch turns into a single
      * offset computation and a buffer rewrite. */
-    for (uint32_t p = 0; p < num_patches; p++) {
+    for (uint32_t p = 0; p < npatch; p++) {
         uint16_t tb = patches[p].target_block;
-        if (tb >= ISEL_MAX_BLOCKS || !block_known[tb]) {
+        if (tb >= ISEL_MAX_BLOCKS || !blkknwn[tb]) {
             fprintf(stderr,
                     "rv_isel: unresolved branch to block %u\n", tb);
             return BC_ERR_TDF;
         }
         int32_t off = rv_buf_offset(out, patches[p].word_idx,
-                                    block_word_idx[tb]);
+                                    blkwidx[tb]);
         uint32_t word;
         if (patches[p].kind == 2u) {
             if (off < -1048576 || off > 1048574) {
@@ -1401,25 +1644,50 @@ int rv_isel_module(const bir_module_t *M, rv_buf_t *out)
         return BC_ERR_TDF;
     }
 
-    isel_reset_module();
-
+    /* tt-metal enters a kernel by calling the first byte of .text, so the
+     * __global__ function has to be emitted first. Source order puts any
+     * __device__ helpers ahead of it, and emitting those first would run a
+     * helper as the kernel. */
+    uint32_t kfn = M->num_funcs;
+    uint32_t nglob = 0;
     for (uint32_t fi = 0; fi < M->num_funcs; fi++) {
-        int rc = rv_isel_func(M, fi, out);
+        if (!(M->funcs[fi].cuda_flags & CUDA_GLOBAL)) continue;
+        if (nglob == 0u) kfn = fi;
+        nglob++;
+    }
+    if (nglob == 0u) {
+        fprintf(stderr, "rv_isel: module has no __global__ kernel to enter\n");
+        return BC_ERR_TDF;
+    }
+    if (nglob > 1u) {
+        fprintf(stderr,
+                "rv_isel: module has %u __global__ kernels; entering the "
+                "first one. Split them into separate ELFs to pick another\n",
+                nglob);
+    }
+
+    isel_rstmod();
+
+    int rc = rv_isel_func(M, kfn, out);
+    if (rc != BC_OK) return rc;
+    for (uint32_t fi = 0; fi < M->num_funcs; fi++) {
+        if (fi == kfn) continue;
+        rc = rv_isel_func(M, fi, out);
         if (rc != BC_OK) return rc;
     }
 
     /* Resolve every call placeholder. By now every callee's
-     * starting position is in func_word_idx, so each patch is a
+     * starting position is in fnwidx, so each patch is a
      * single offset computation and a buffer rewrite. */
-    for (uint32_t p = 0; p < num_call_patches; p++) {
-        uint16_t cf = call_patches[p].callee_func;
-        if (cf >= ISEL_MAX_FUNCS || !func_known[cf]) {
+    for (uint32_t p = 0; p < ncalpat; p++) {
+        uint16_t cf = calpat[p].callee_func;
+        if (cf >= ISEL_MAX_FUNCS || !fnknwn[cf]) {
             fprintf(stderr,
                     "rv_isel: unresolved call to function %u\n", cf);
             return BC_ERR_TDF;
         }
-        int32_t off = rv_buf_offset(out, call_patches[p].jal_word_idx,
-                                    func_word_idx[cf]);
+        int32_t off = rv_buf_offset(out, calpat[p].jal_word_idx,
+                                    fnwidx[cf]);
         if (off < -1048576 || off > 1048574) {
             fprintf(stderr,
                     "rv_isel: call offset %d busts JAL range\n", off);
@@ -1429,7 +1697,7 @@ int rv_isel_module(const bir_module_t *M, rv_buf_t *out)
          * (x1) as the link register, not zero like the
          * branch-style jumps. */
         uint32_t word = rv_jal(RV_RA, off);
-        if (rv_buf_patch(out, call_patches[p].jal_word_idx, word) != 0)
+        if (rv_buf_patch(out, calpat[p].jal_word_idx, word) != 0)
             return BC_ERR_TDF;
     }
     return BC_OK;

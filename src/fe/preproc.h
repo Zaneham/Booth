@@ -85,6 +85,10 @@ typedef struct {
     char        line_buf[PP_LINE_BUF];
     char        exp_buf[PP_EXPAND_BUF];
 
+    /* Block comment still open at end of line. Expansion runs per line, so
+     * without this a macro named in comment prose gets substituted. */
+    int         in_bcmt;
+
     /* Errors */
     bc_error_t  errors[BC_MAX_ERRORS];
     int         num_errors;

@@ -320,16 +320,29 @@ static void rv_isel_param_via_l1(void)
 }
 TH_REG("rv_enc", rv_isel_param_via_l1);
 
-static void rv_isel_refuses_barrier(void)
+/* A baby core is a single hardware thread with no SIMT, so __syncthreads()
+ * has nothing to wait on and lowers to nothing. FENCE would be wrong to
+ * emit: it is a documented no-op on this core and cannot order anything,
+ * so it would only suggest a guarantee we are not making. */
+static void rv_isel_barrier_is_noop(void)
 {
+    build_bir_add();
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    uint32_t base = rv_buf_n_words(&code);
+
     build_bir_add();
     fake_bir.insts[3].op = BIR_BARRIER;
     fake_bir.insts[3].num_operands = 0;
     rv_buf_init(&code);
-    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_ERR_TDF);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    /* Swapping an instruction for a barrier can only shrink the output,
+     * and the barrier itself must contribute nothing. */
+    CHECK(rv_buf_n_words(&code) <= base);
+    CHECK(!buf_contains(rv_fence(0xFu, 0xFu)));
     PASS();
 }
-TH_REG("rv_enc", rv_isel_refuses_barrier);
+TH_REG("rv_enc", rv_isel_barrier_is_noop);
 
 /* ---- Helper: build a minimal "binop kernel" template ----
  *
@@ -1451,3 +1464,382 @@ static void rv_isel_alloca_offset(void)
     PASS();
 }
 TH_REG("rv_enc", rv_isel_alloca_offset);
+
+/*
+ * Regressions for the four silent miscompiles found in the July 2026
+ * audit. Each one produced a valid-looking ELF that traps or corrupts
+ * memory on the core, so they get tests before anything else lands.
+ */
+
+/* Decode an sp-relative LW/SW offset, or return -1 if the word is neither. */
+static int sp_slot_off(uint32_t w)
+{
+    uint32_t rs1 = (w >> 15) & 0x1Fu;
+    uint32_t f3  = (w >> 12) & 0x7u;
+    if (rs1 != RV_SP || f3 != 2u) return -1;
+    if ((w & 0x7Fu) == 0x03u) return (int)((w >> 20) & 0xFFFu);      /* LW */
+    if ((w & 0x7Fu) == 0x23u) {                                       /* SW */
+        return (int)((((w >> 25) & 0x7Fu) << 5) | ((w >> 7) & 0x1Fu));
+    }
+    return -1;
+}
+
+/* Slot indices used to be module-global while the frame was sized from
+ * the function's own instruction count, so function 1 addressed past its
+ * frame and into the caller's. Every slot must sit inside the largest
+ * frame this module allocates, which is 32 bytes here. */
+static void rv_isel_slots_are_frame_local(void)
+{
+    build_bir_kern_calls_helper();
+    rv_buf_init(&code);
+    CHEQ(rv_isel_module(&fake_bir, &code), BC_OK);
+
+    for (uint32_t i = 0; i < rv_buf_n_words(&code); i++) {
+        int off = sp_slot_off(rv_buf_data(&code)[i]);
+        CHECK(off < 32);
+    }
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_slots_are_frame_local);
+
+/* Past roughly 510 instructions the slot offset overflowed the 12-bit
+ * signed immediate and wrapped negative, reading below the frame. It has
+ * to refuse instead. */
+static void rv_isel_refuses_huge_frame(void)
+{
+    memset(&fake_bir, 0, sizeof(fake_bir));
+    fake_bir.num_types = 2;
+    fake_bir.types[0].kind = BIR_TYPE_INT;
+    fake_bir.types[0].width = 32;
+    fake_bir.types[1].kind = BIR_TYPE_VOID;
+
+    const uint32_t n = 600;
+    fake_bir.num_funcs = 1;
+    fake_bir.num_blocks = 1;
+    fake_bir.num_insts = n;
+    fake_bir.funcs[0].first_block = 0;
+    fake_bir.funcs[0].num_blocks = 1;
+    fake_bir.funcs[0].total_insts = n;
+    fake_bir.funcs[0].cuda_flags = CUDA_GLOBAL;
+    fake_bir.blocks[0].first_inst = 0;
+    fake_bir.blocks[0].num_insts = n;
+    for (uint32_t i = 0; i < n - 1u; i++) {
+        fake_bir.insts[i].op = BIR_PARAM;
+        fake_bir.insts[i].subop = 0;
+        fake_bir.insts[i].type = 0;
+    }
+    fake_bir.insts[n - 1u].op = BIR_RET;
+    fake_bir.insts[n - 1u].type = 1;
+    fake_bir.insts[n - 1u].num_operands = 0;
+
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_refuses_huge_frame);
+
+/* Build a kernel storing through a pointer whose pointee is `w` bits
+ * wide, then loading it back: PARAM ptr, LOAD, STORE, RET. */
+static void build_bir_narrow(uint16_t w)
+{
+    memset(&fake_bir, 0, sizeof(fake_bir));
+    fake_bir.num_types = 3;
+    fake_bir.types[0].kind = BIR_TYPE_INT;
+    fake_bir.types[0].width = w;
+    fake_bir.types[1].kind = BIR_TYPE_PTR;
+    fake_bir.types[1].addrspace = BIR_AS_GLOBAL;
+    fake_bir.types[1].inner = 0;
+    fake_bir.types[2].kind = BIR_TYPE_VOID;
+
+    fake_bir.num_funcs = 1;
+    fake_bir.num_blocks = 1;
+    fake_bir.num_insts = 4;
+    fake_bir.funcs[0].first_block = 0;
+    fake_bir.funcs[0].num_blocks = 1;
+    fake_bir.funcs[0].num_params = 1;
+    fake_bir.funcs[0].total_insts = 4;
+    fake_bir.funcs[0].cuda_flags = CUDA_GLOBAL;
+    fake_bir.blocks[0].first_inst = 0;
+    fake_bir.blocks[0].num_insts = 4;
+
+    fake_bir.insts[0].op = BIR_PARAM;
+    fake_bir.insts[0].subop = 0;
+    fake_bir.insts[0].type = 1;
+    fake_bir.insts[1].op = BIR_LOAD;
+    fake_bir.insts[1].type = 0;
+    fake_bir.insts[1].num_operands = 1;
+    fake_bir.insts[1].operands[0] = BIR_MAKE_VAL(0);
+    fake_bir.insts[2].op = BIR_STORE;
+    fake_bir.insts[2].type = 2;
+    fake_bir.insts[2].num_operands = 2;
+    fake_bir.insts[2].operands[0] = BIR_MAKE_VAL(1);
+    fake_bir.insts[2].operands[1] = BIR_MAKE_VAL(0);
+    fake_bir.insts[3].op = BIR_RET;
+    fake_bir.insts[3].type = 2;
+    fake_bir.insts[3].num_operands = 0;
+}
+
+/* Sub-word accesses used to emit LW/SW regardless of pointee width, so a
+ * char store clobbered the three neighbouring bytes. */
+static void rv_isel_byte_access(void)
+{
+    build_bir_narrow(8);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    CHECK(buf_contains(rv_lbu(RV_T0, RV_T1, 0)));
+    CHECK(buf_contains(rv_sb(RV_T0, RV_T1, 0)));
+    CHECK(!buf_contains(rv_lw(RV_T0, RV_T1, 0)));
+    CHECK(!buf_contains(rv_sw(RV_T0, RV_T1, 0)));
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_byte_access);
+
+static void rv_isel_half_access(void)
+{
+    build_bir_narrow(16);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    CHECK(buf_contains(rv_lhu(RV_T0, RV_T1, 0)));
+    CHECK(buf_contains(rv_sh(RV_T0, RV_T1, 0)));
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_half_access);
+
+static void rv_isel_word_access_unchanged(void)
+{
+    build_bir_narrow(32);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    CHECK(buf_contains(rv_lw(RV_T0, RV_T1, 0)));
+    CHECK(buf_contains(rv_sw(RV_T0, RV_T1, 0)));
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_word_access_unchanged);
+
+/* tt-metal reads a0 as the stack watermark, where zero means "not
+ * computed". A void return used to leave it holding whatever was there. */
+static void rv_isel_void_ret_zeroes_a0(void)
+{
+    build_bir_narrow(32);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    CHECK(buf_contains(rv_addi(RV_A0, RV_ZERO, 0)));
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_void_ret_zeroes_a0);
+
+/* Build two functions where the second one allocas, so the alloca table is
+ * indexed by a nonzero module-global instruction index. */
+static void build_bir_helper_allocas(void)
+{
+    memset(&fake_bir, 0, sizeof(fake_bir));
+    fake_bir.num_types = 3;
+    fake_bir.types[0].kind = BIR_TYPE_INT;
+    fake_bir.types[0].width = 32;
+    fake_bir.types[1].kind = BIR_TYPE_PTR;
+    fake_bir.types[1].addrspace = BIR_AS_PRIVATE;
+    fake_bir.types[1].inner = 0;
+    fake_bir.types[2].kind = BIR_TYPE_VOID;
+
+    fake_bir.num_funcs = 2;
+    fake_bir.num_blocks = 2;
+    fake_bir.num_insts = 5;
+
+    /* Function 0: PARAM, RET void. */
+    fake_bir.funcs[0].first_block = 0;
+    fake_bir.funcs[0].num_blocks = 1;
+    fake_bir.funcs[0].num_params = 1;
+    fake_bir.funcs[0].total_insts = 2;
+    fake_bir.funcs[0].cuda_flags = CUDA_GLOBAL;
+    fake_bir.blocks[0].first_inst = 0;
+    fake_bir.blocks[0].num_insts = 2;
+    fake_bir.insts[0].op = BIR_PARAM;
+    fake_bir.insts[0].subop = 0;
+    fake_bir.insts[0].type = 0;
+    fake_bir.insts[1].op = BIR_RET;
+    fake_bir.insts[1].type = 2;
+    fake_bir.insts[1].num_operands = 0;
+
+    /* Function 1: ALLOCA, ALLOCA, RET void. Instructions 2..4. */
+    fake_bir.funcs[1].first_block = 1;
+    fake_bir.funcs[1].num_blocks = 1;
+    fake_bir.funcs[1].total_insts = 3;
+    fake_bir.funcs[1].cuda_flags = 0;
+    fake_bir.blocks[1].first_inst = 2;
+    fake_bir.blocks[1].num_insts = 3;
+    fake_bir.insts[2].op = BIR_ALLOCA;
+    fake_bir.insts[2].type = 1;
+    fake_bir.insts[3].op = BIR_ALLOCA;
+    fake_bir.insts[3].type = 1;
+    fake_bir.insts[4].op = BIR_RET;
+    fake_bir.insts[4].type = 2;
+    fake_bir.insts[4].num_operands = 0;
+}
+
+/* The alloca table was indexed by the module-global instruction index while
+ * the region was sized per function, so a second function's allocas landed
+ * outside its own frame. Function 1's frame is 8 + 3*4 + 8 = 28, rounded to
+ * 32, with its allocas at 20 and 24. */
+static void rv_isel_alloca_in_second_func(void)
+{
+    build_bir_helper_allocas();
+    rv_buf_init(&code);
+    CHEQ(rv_isel_module(&fake_bir, &code), BC_OK);
+    CHECK(buf_contains(rv_addi(RV_T0, RV_SP, 20)));
+    CHECK(buf_contains(rv_addi(RV_T0, RV_SP, 24)));
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_alloca_in_second_func);
+
+/* An unpatched call placeholder is a zero word, which is an illegal RV32
+ * instruction that traps with no diagnostic. Nothing the module path emits
+ * should ever be zero. */
+static void rv_isel_no_illegal_words(void)
+{
+    build_bir_kern_calls_helper();
+    rv_buf_init(&code);
+    CHEQ(rv_isel_module(&fake_bir, &code), BC_OK);
+    CHECK(rv_buf_n_words(&code) > 0);
+    CHECK(!buf_contains(0u));
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_no_illegal_words);
+
+/* An i64 access has no single RV32 instruction. It used to compile to LW and
+ * silently move four of the eight bytes. */
+static void rv_isel_refuses_i64_access(void)
+{
+    build_bir_narrow(64);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_refuses_i64_access);
+
+/* Same for an aggregate pointee. */
+static void rv_isel_refuses_struct_access(void)
+{
+    build_bir_narrow(32);
+    /* Repoint the pointer at a two-field struct instead of a bare i32. */
+    fake_bir.num_types = 4;
+    fake_bir.types[3].kind = BIR_TYPE_STRUCT;
+    fake_bir.types[3].num_fields = 2;
+    fake_bir.types[3].count = 0;
+    fake_bir.num_type_fields = 2;
+    fake_bir.type_fields[0] = 0;
+    fake_bir.type_fields[1] = 0;
+    fake_bir.types[1].inner = 3;
+
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_refuses_struct_access);
+
+/* Build a single function of n instructions: n-1 PARAMs then a void RET. */
+static void build_bir_n_insts(uint32_t n)
+{
+    memset(&fake_bir, 0, sizeof(fake_bir));
+    fake_bir.num_types = 2;
+    fake_bir.types[0].kind = BIR_TYPE_INT;
+    fake_bir.types[0].width = 32;
+    fake_bir.types[1].kind = BIR_TYPE_VOID;
+    fake_bir.num_funcs = 1;
+    fake_bir.num_blocks = 1;
+    fake_bir.num_insts = n;
+    fake_bir.funcs[0].first_block = 0;
+    fake_bir.funcs[0].num_blocks = 1;
+    fake_bir.funcs[0].total_insts = n;
+    fake_bir.funcs[0].cuda_flags = CUDA_GLOBAL;
+    fake_bir.blocks[0].first_inst = 0;
+    fake_bir.blocks[0].num_insts = n;
+    for (uint32_t i = 0; i < n - 1u; i++) {
+        fake_bir.insts[i].op = BIR_PARAM;
+        fake_bir.insts[i].subop = 0;
+        fake_bir.insts[i].type = 0;
+    }
+    fake_bir.insts[n - 1u].op = BIR_RET;
+    fake_bir.insts[n - 1u].type = 1;
+    fake_bir.insts[n - 1u].num_operands = 0;
+}
+
+/* The frame is 8 + 4n rounded to 16, and the prologue adjusts sp with one
+ * ADDI, so 2032 bytes is the last frame that fits the 12-bit immediate.
+ * That puts the boundary at 506 instructions. */
+static void rv_isel_frame_boundary_ok(void)
+{
+    build_bir_n_insts(506);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    CHECK(buf_contains(rv_addi(RV_SP, RV_SP, -2032)));
+    CHECK(buf_contains(rv_addi(RV_SP, RV_SP, 2032)));
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_frame_boundary_ok);
+
+static void rv_isel_frame_boundary_refused(void)
+{
+    build_bir_n_insts(507);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_frame_boundary_refused);
+
+/* Every slot access in the largest accepted function stays inside the frame
+ * and within the positive half of the 12-bit immediate. */
+static void rv_isel_max_frame_slots_in_range(void)
+{
+    build_bir_n_insts(506);
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_OK);
+    for (uint32_t i = 0; i < rv_buf_n_words(&code); i++) {
+        int off = sp_slot_off(rv_buf_data(&code)[i]);
+        if (off < 0) continue;
+        CHECK(off <= 2047);
+        CHECK(off < 2032);
+    }
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_max_frame_slots_in_range);
+
+/* i64 has no RV32 representation. This used to compile, with the mul becoming
+ * 32-bit and the shift by 32 becoming a shift by zero. No diagnostic. */
+static void rv_isel_refuses_i64_arith(void)
+{
+    memset(&fake_bir, 0, sizeof(fake_bir));
+    fake_bir.num_types = 3;
+    fake_bir.types[0].kind = BIR_TYPE_INT;
+    fake_bir.types[0].width = 32;
+    fake_bir.types[1].kind = BIR_TYPE_INT;
+    fake_bir.types[1].width = 64;
+    fake_bir.types[2].kind = BIR_TYPE_VOID;
+
+    fake_bir.num_funcs = 1;
+    fake_bir.num_blocks = 1;
+    fake_bir.num_insts = 3;
+    fake_bir.funcs[0].first_block = 0;
+    fake_bir.funcs[0].num_blocks = 1;
+    fake_bir.funcs[0].num_params = 1;
+    fake_bir.funcs[0].total_insts = 3;
+    fake_bir.funcs[0].cuda_flags = CUDA_GLOBAL;
+    fake_bir.blocks[0].first_inst = 0;
+    fake_bir.blocks[0].num_insts = 3;
+
+    fake_bir.insts[0].op = BIR_PARAM;
+    fake_bir.insts[0].subop = 0;
+    fake_bir.insts[0].type = 0;
+    /* zext i32 -> i64: the i64 result is what must be refused. */
+    fake_bir.insts[1].op = BIR_ZEXT;
+    fake_bir.insts[1].type = 1;
+    fake_bir.insts[1].num_operands = 1;
+    fake_bir.insts[1].operands[0] = BIR_MAKE_VAL(0);
+    fake_bir.insts[2].op = BIR_RET;
+    fake_bir.insts[2].type = 2;
+    fake_bir.insts[2].num_operands = 0;
+
+    rv_buf_init(&code);
+    CHEQ(rv_isel_func(&fake_bir, 0, &code), BC_ERR_TDF);
+    PASS();
+}
+TH_REG("rv_enc", rv_isel_refuses_i64_arith);

@@ -641,6 +641,19 @@ static uint32_t pp_expand_text(preproc_t *pp,
         return n;
     }
 
+    /* Resume a block comment left open by an earlier line: copy through to its
+     * close before any macro name in the prose can be substituted. */
+    if (pp->in_bcmt) {
+        while (i < in_len && !(in[i] == '*' && i + 1 < in_len && in[i+1] == '/')) {
+            if (olen < out_max) out[olen++] = in[i++]; else i++;
+        }
+        if (i < in_len) {
+            if (olen < out_max) out[olen++] = in[i++]; else i++;
+            if (olen < out_max) out[olen++] = in[i++]; else i++;
+            pp->in_bcmt = 0;
+        }
+    }
+
     while (i < in_len) {
         /* Skip C-style block comments */
         if (in[i] == '/' && i + 1 < in_len && in[i+1] == '*') {
@@ -649,7 +662,12 @@ static uint32_t pp_expand_text(preproc_t *pp,
             while (i < in_len && !(in[i] == '*' && i + 1 < in_len && in[i+1] == '/')) {
                 if (olen < out_max) out[olen++] = in[i++]; else i++;
             }
-            if (i < in_len) { if (olen < out_max) out[olen++] = in[i++]; else i++; }
+            if (i >= in_len) {
+                /* Unterminated on this line; the next one resumes inside it. */
+                pp->in_bcmt = 1;
+                continue;
+            }
+            if (olen < out_max) out[olen++] = in[i++]; else i++;
             if (i < in_len) { if (olen < out_max) out[olen++] = in[i++]; else i++; }
             continue;
         }

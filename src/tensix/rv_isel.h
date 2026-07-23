@@ -16,13 +16,11 @@
  * point is to get a kernel running on the n300 first and improve once we
  * have something to measure.
  *
- * Today it handles parameters, i32 loads and stores through a pointer,
- * integer arithmetic with t0/t1 scratch, integer or void returns, and
- * small constants materialised via ADDI. It does not yet handle the
- * harder cases (calls, control flow, GEP, floats, vectors, structs), more
- * than 8 integer parameters, or constants outside the I-type 12-bit
- * signed range that would need LUI+ADDI. Spec sources are cited in the .c
- * file alongside each opcode emission.
+ * It handles parameters, integer arithmetic, comparisons, casts, control
+ * flow, PHI, GEP, alloca, calls, and loads and stores at 1, 2 or 4 bytes.
+ * It does not handle floats, atomics, warp primitives, aggregates or i64
+ * memory operations, and refuses each rather than emitting something
+ * plausible. Spec sources are cited in the .c file alongside each opcode.
  */
 
 /*
@@ -36,11 +34,13 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
 /*
  * Select every function in the module, emitting them back-to-back
  * into the same code buffer. Used when the kernel calls into other
- * functions (e.g., a soft-float libcall) and those callees need to
- * live in the same ELF. Function 0 is emitted first by convention
- * because that is where the host loader sets the PC; everything
- * else is reachable via JAL with offsets resolved after the whole
- * module is laid out.
+ * functions and those callees need to live in the same ELF.
+ *
+ * The __global__ function is emitted first, not function 0. tt-metal
+ * enters a kernel by calling the first byte of .text, and source order
+ * puts any __device__ helpers ahead of the kernel, so emitting in index
+ * order would run a helper as the kernel. Everything else is reachable
+ * via JAL with offsets resolved after the whole module is laid out.
  *
  * Inter-function calls work by recording a patch when the JAL is
  * emitted, and filling in the offset once every callee's position

@@ -288,13 +288,16 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             fprintf(stderr, "error: BIR module has no functions\n");
             return BC_ERR_TDF;
         }
-        int irc = rv_isel_func(bir, 0u, &rv_code);
+        /* Module, not just function 0: rv_isel_func records call patches but
+         * only rv_isel_module resolves them, so a BIR_CALL through this path
+         * would otherwise keep its placeholder and trap as an illegal insn. */
+        int irc = rv_isel_module(bir, &rv_code);
         if (irc != BC_OK) return irc;
         const char *path = cfg->output_file ? cfg->output_file : "a.elf";
         int erc = rv_elf_write(&rv_code, path);
         if (erc != BC_OK) return erc;
         fprintf(stderr, "wrote %s (%u bytes code, %u instructions)\n",
-                path, rv_buf_pos_bytes(&rv_code),
+                path, rv_buf_nbytes(&rv_code),
                 rv_buf_n_words(&rv_code));
     }
 
@@ -433,6 +436,8 @@ static void usage(const char *prog)
         "  -D <name[=val]> Define a preprocessor macro\n"
         "  --amdgpu      Compile to AMDGCN assembly (default: gfx1100)\n"
         "  --amdgpu-bin  Compile to AMDGPU ELF code object (.hsaco)\n"
+        "  --tt-chip C   Tenstorrent part: wormhole or blackhole "
+        "(default blackhole)\n"
         "  --gfx90a      Target CDNA 2 (gfx90a, MI250)\n"
         "  --gfx942      Target CDNA 3 (gfx942, MI300X)\n"
         "  --gfx1030     Target RDNA 2 (gfx1030)\n"
@@ -493,6 +498,7 @@ int main(int argc, char *argv[])
     int no_sched = 0;
     int no_pp = 0;
     int snap_mode = 0;
+    td_chip_t tt_chip = TD_CHIP_BH;
     amd_target_t amd_target = AMD_TARGET_GFX1100;
     uint32_t     amd_elfm  = 0x41;       /* EF_AMDGPU_MACH for exact chip */
     const char  *amd_chip  = "gfx1100";  /* chip string for ELF metadata */
@@ -601,6 +607,13 @@ int main(int argc, char *argv[])
             mode_triton = 1;
         else if (strcmp(argv[i], "--bkhit") == 0)
             nv_bkhit = 1;
+        else if (strcmp(argv[i], "--tt-chip") == 0 && i + 1 < argc) {
+            if (td_pchip(argv[++i], &tt_chip) != BC_OK) {
+                fprintf(stderr, "unknown Tenstorrent chip: %s "
+                                "(want wormhole or blackhole)\n", argv[i]);
+                return 1;
+            }
+        }
         else if (strcmp(argv[i], "--lang") == 0 && i + 1 < argc)
             lang_file = argv[++i];
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
@@ -652,10 +665,22 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!mode_pp && !mode_lex && !mode_parse && !mode_sema && !mode_ir &&
-        !mode_amdgpu && !mode_amdgpu_bin && !mode_tensix && !mode_nvidia &&
-        !mode_metal && !mode_intel && !mode_rv_elf && !mode_cpu && !mode_rv64)
+    td_setchip(tt_chip);
+
+    /* One cascade for the C99 pipeline, each level meaning "this stage, or
+     * anything downstream of it". Four independent lists is how --cpu and then
+     * --tdf reached some gates and not others. Triton keeps its own list below;
+     * it gates a different frontend and does not accept --rv-elf. */
+    int want_bir  = mode_ir || mode_tdf || mode_tdf_fission ||
+                    mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
+                    mode_nvidia || mode_metal || mode_intel ||
+                    mode_rv_elf || mode_cpu || mode_rv64;
+    int want_sema = mode_sema || want_bir;
+
+    if (!mode_pp && !mode_lex && !mode_parse && !want_sema)
         mode_parse = 1;
+
+    int want_ast = mode_parse || want_sema;
 
     /* ---- HIP NOTES (1 of 2) -------------------------------------------
      * HIP is a frontend-only mode, not a separate parser. The HIP source
@@ -892,8 +917,7 @@ int main(int argc, char *argv[])
         printf("\n%u tokens, %d error(s)\n", L.num_tokens, L.num_errors);
     }
 
-    if (mode_parse || mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-        mode_tensix || mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64) {
+    if (want_ast) {
         parser_t P;
         parser_init(&P, token_buf, L.num_tokens, lex_src,
                     node_buf, BC_MAX_NODES);
@@ -909,10 +933,7 @@ int main(int argc, char *argv[])
 
         /* Semantic analysis */
         sema_ctx_t *sema_ctx = NULL;
-        if ((mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-             mode_tensix || mode_nvidia || mode_metal || mode_intel ||
-             mode_cpu || mode_rv64 || mode_rv_elf) &&
-            P.num_errors == 0)
+        if (want_sema && P.num_errors == 0)
         {
             sema_ctx = (sema_ctx_t *)malloc(sizeof(sema_ctx_t));
             if (!sema_ctx) {
@@ -932,9 +953,7 @@ int main(int argc, char *argv[])
             }
         }
 
-        if ((mode_ir || mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
-             mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64) &&
-            P.num_errors == 0) {
+        if (want_bir && P.num_errors == 0) {
             bc_error_t lower_errs[BC_MAX_ERRORS];
             int num_lower_errs = 0;
             bir_module = (bir_module_t *)malloc(sizeof(bir_module_t));

@@ -30,7 +30,7 @@ int rv_buf_patch(rv_buf_t *b, uint32_t idx, uint32_t word)
 }
 
 uint32_t rv_buf_n_words(const rv_buf_t *b)      { return b->n; }
-uint32_t rv_buf_pos_bytes(const rv_buf_t *b)    { return b->n * 4u; }
+uint32_t rv_buf_nbytes(const rv_buf_t *b)    { return b->n * 4u; }
 const uint32_t *rv_buf_data(const rv_buf_t *b)  { return b->words; }
 
 int32_t rv_buf_offset(const rv_buf_t *b, uint32_t from, uint32_t to)

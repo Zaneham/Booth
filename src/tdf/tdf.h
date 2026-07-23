@@ -36,8 +36,12 @@
  * Source citations sit next to each value because the gap between spec and
  * reverse-engineered-from-tt-metal is wide and load-bearing, and future-us needs
  * to know which number is gospel and which is a sensible guess. Wormhole L1 is
- * 1,464 KiB usable from 0x00000000 to 0x0016FFFF, organised as 16 banks of
- * 91.5 KiB (WormholeB0/TensixTile/L1.md). The 32 KiB code reservation is OUR
+ * 1,464 KiB usable from 0x00000000 to 0x0016DFFF, organised as 16 banks of
+ * 91.5 KiB (WormholeB0/TensixTile/L1.md), which tt-metal states as
+ * MEM_L1_SIZE (1464 * 1024) in wormhole/dev_mem_map.h. Blackhole has 1,536 KiB
+ * and we do not target it: this map is the smaller of the two throughout, so a
+ * Blackhole part simply leaves the top 64 KiB unused rather than being wrong.
+ * The 32 KiB code reservation is OUR
  * call, since the docs fix no maximum kernel size and only say baby cores fetch
  * instructions from L1; it is conservative, matches typical Metalium kernels, and
  * we can adjust once real RV32IM emission lets us measure. NoC reads/writes to L1
@@ -49,8 +53,25 @@
  * channels nine and onward (WormholeB0/.../SyncUnit.md).
  */
 #define TD_L1_BASE        0x00000000u
-#define TD_L1_END         0x00170000u    /* one past last usable byte */
 #define TD_L1_CODE_RSV    0x00008000u    /* 32 KiB for code + stack  */
+
+/* Which part we are compiling for. Everything below that does not depend on
+ * the chip stays a #define; the two that do are accessors. */
+typedef enum {
+    TD_CHIP_WH,     /* Wormhole B0 */
+    TD_CHIP_BH,     /* Blackhole   */
+    TD_CHIP_COUNT
+} td_chip_t;
+
+uint32_t  td_l1end (td_chip_t c);   /* one past last usable L1 byte */
+uint32_t  td_txtmax(td_chip_t c);   /* largest kernel text, bytes   */
+uint32_t  td_shbase(td_chip_t c);   /* base of the __shared__ slab  */
+const char *td_cname(td_chip_t c);
+int       td_pchip (const char *s, td_chip_t *out);
+
+/* Set once from the CLI before any pass runs. A compile targets one part. */
+void      td_setchip(td_chip_t c);
+td_chip_t td_chip(void);
 /*
  * Runtime args slab sits between code and CBs. The kernel reads its CUDA
  * coordinate intrinsics (threadIdx etc.) and its scalar parameters from here,
@@ -62,6 +83,15 @@
 #define TD_L1_RTARG_BASE  TD_L1_CODE_RSV
 #define TD_L1_RTARG_SIZE  0x00000100u
 #define TD_L1_CB_BASE     (TD_L1_RTARG_BASE + TD_L1_RTARG_SIZE)
+/*
+ * __shared__ is carved off the top of L1 growing down, so circular buffers keep
+ * packing upward from TD_L1_CB_BASE without their base moving. The size is a
+ * hard reservation rather than an open-ended region: a baby core runs one block,
+ * so the whole shared footprint is known at compile time and a kernel that wants
+ * more than this is refused rather than allowed to walk into the CB area. The
+ * placer's ceiling is td_shbase(), which is what keeps the two apart.
+ */
+#define TD_L1_SHARED_SIZE 0x00010000u    /* 64 KiB */
 #define TD_L1_ALIGN       16u            /* C16 NoC alignment        */
 #define TD_FIFO_BYTES     8u             /* head + tail, L1 fallback */
 #define TD_HW_SEMS        8u             /* hardware semaphore count */

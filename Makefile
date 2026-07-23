@@ -12,7 +12,7 @@ else
   GCC_ONLY =
 endif
 
-CFLAGS  = -std=c99 -Wall -Wextra -pedantic -O2 \
+CFLAGS  = -std=c99 -MMD -MP -Wall -Wextra -pedantic -O2 \
           -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
           -Wformat=2 -Wundef -Wcast-align -Wnull-dereference \
           -Wconversion -Wold-style-definition \
@@ -59,7 +59,7 @@ $(TARGET): $(OBJECTS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # ---- Test Suite ----
-TCFLAGS = -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
+TCFLAGS = -std=c99 -MMD -MP -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
           -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/runtime \
           -Iruntime
 TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
@@ -116,5 +116,10 @@ runtime/%.o: runtime/%.c
 
 clean:
 	rm -f $(OBJECTS) $(TARGET) $(TARGET).exe trunner trunner.exe $(TOBJS) $(HOSTRT) src/runtime/*.o runtime/*.o
+	rm -f $(OBJECTS:.o=.d) $(TOBJS:.o=.d) $(HOSTRT:.o=.d) src/runtime/*.d runtime/*.d
+
+# Header deps from -MMD. Without these a header edit leaves stale objects
+# linked in and the build silently disagrees with the source.
+-include $(OBJECTS:.o=.d) $(TOBJS:.o=.d) $(HOSTRT:.o=.d)
 
 .PHONY: all clean test

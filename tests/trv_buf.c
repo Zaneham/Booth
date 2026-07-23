@@ -13,7 +13,7 @@ static void rv_buf_init_zero(void)
     memset(&B, 0xAB, sizeof(B));
     rv_buf_init(&B);
     CHEQ(rv_buf_n_words(&B), 0u);
-    CHEQ(rv_buf_pos_bytes(&B), 0u);
+    CHEQ(rv_buf_nbytes(&B), 0u);
     PASS();
 }
 TH_REG("rv_enc", rv_buf_init_zero);
@@ -30,7 +30,7 @@ static void rv_buf_emit_seq(void)
     CHEQ(i1, 1);
     CHEQ(i2, 2);
     CHEQ(rv_buf_n_words(&B), 3u);
-    CHEQ(rv_buf_pos_bytes(&B), 12u);
+    CHEQ(rv_buf_nbytes(&B), 12u);
     PASS();
 }
 TH_REG("rv_enc", rv_buf_emit_seq);
