@@ -655,11 +655,20 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!mode_pp && !mode_lex && !mode_parse && !mode_sema && !mode_ir &&
-        !mode_amdgpu && !mode_amdgpu_bin && !mode_tensix && !mode_nvidia &&
-        !mode_metal && !mode_intel && !mode_rv_elf && !mode_cpu && !mode_rv64 &&
-        !mode_tdf && !mode_tdf_fission)
+    /* One cascade for the C99 pipeline, each level meaning "this stage, or
+     * anything downstream of it". Four independent lists is how --cpu and then
+     * --tdf reached some gates and not others. Triton keeps its own list below;
+     * it gates a different frontend and does not accept --rv-elf. */
+    int want_bir  = mode_ir || mode_tdf || mode_tdf_fission ||
+                    mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
+                    mode_nvidia || mode_metal || mode_intel ||
+                    mode_rv_elf || mode_cpu || mode_rv64;
+    int want_sema = mode_sema || want_bir;
+
+    if (!mode_pp && !mode_lex && !mode_parse && !want_sema)
         mode_parse = 1;
+
+    int want_ast = mode_parse || want_sema;
 
     /* ---- HIP NOTES (1 of 2) -------------------------------------------
      * HIP is a frontend-only mode, not a separate parser. The HIP source
@@ -896,9 +905,7 @@ int main(int argc, char *argv[])
         printf("\n%u tokens, %d error(s)\n", L.num_tokens, L.num_errors);
     }
 
-    if (mode_parse || mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-        mode_tensix || mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64 ||
-        mode_tdf || mode_tdf_fission) {
+    if (want_ast) {
         parser_t P;
         parser_init(&P, token_buf, L.num_tokens, lex_src,
                     node_buf, BC_MAX_NODES);
@@ -914,11 +921,7 @@ int main(int argc, char *argv[])
 
         /* Semantic analysis */
         sema_ctx_t *sema_ctx = NULL;
-        if ((mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-             mode_tensix || mode_nvidia || mode_metal || mode_intel ||
-             mode_cpu || mode_rv64 || mode_rv_elf ||
-             mode_tdf || mode_tdf_fission) &&
-            P.num_errors == 0)
+        if (want_sema && P.num_errors == 0)
         {
             sema_ctx = (sema_ctx_t *)malloc(sizeof(sema_ctx_t));
             if (!sema_ctx) {
@@ -938,10 +941,7 @@ int main(int argc, char *argv[])
             }
         }
 
-        if ((mode_ir || mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
-             mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64 ||
-             mode_tdf || mode_tdf_fission) &&
-            P.num_errors == 0) {
+        if (want_bir && P.num_errors == 0) {
             bc_error_t lower_errs[BC_MAX_ERRORS];
             int num_lower_errs = 0;
             bir_module = (bir_module_t *)malloc(sizeof(bir_module_t));
