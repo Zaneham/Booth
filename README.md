@@ -18,7 +18,7 @@ It also borrows a pile of operational discipline from the mainframe world: real 
 make
 ```
 
-That's the whole thing. You need a C99 compiler (gcc, clang, whatever you've got) and nothing else. LLVM is **not** required; Booth does its own instruction encoding like an adult.
+That's the whole thing. You need a C99 compiler (gcc, clang, whatever you've got) and nothing else. 
 
 ```bash
 # compile a CUDA kernel to an AMD GPU binary
