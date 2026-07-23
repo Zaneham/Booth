@@ -791,3 +791,56 @@ static void tdf_writer_loop_shape(void)
     PASS();
 }
 TH_REG("tdf", tdf_writer_loop_shape);
+
+/*
+ * The --tdf and --tdf-fission flags have to appear in every one of main.c's
+ * four mode lists. They were missing from all of them, so the "no mode
+ * selected" fallback set mode_parse and the flags silently dumped an AST
+ * instead of running the pass. Only driving the binary catches this.
+ */
+
+#ifdef _WIN32
+#define TDF_KATH ".\\kath"
+#else
+#define TDF_KATH "./kath"
+#endif
+#define TDF_OUT "tdf_flag_out.txt"
+
+/* Run kath with the given flag over a fixture, return its stdout. */
+static const char *run_flag(const char *flag)
+{
+    static char buf[TH_BUFSZ];
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "%s %s tests/rv_shared.cu > %s 2>&1",
+             TDF_KATH, flag, TDF_OUT);
+    buf[0] = '\0';
+    if (system(cmd) != 0) return buf;
+    FILE *fp = fopen(TDF_OUT, "rb");
+    if (!fp) return buf;
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    buf[n] = '\0';
+    fclose(fp);
+    return buf;
+}
+
+static void tdf_flag_reaches_pass(void)
+{
+    const char *o = run_flag("--tdf");
+    CHECK(strstr(o, "TDF module") != NULL);
+    CHECK(strstr(o, "translation_unit") == NULL);
+    PASS();
+}
+TH_REG("tdf", tdf_flag_reaches_pass);
+
+static void tdf_fission_flag_reaches_pass(void)
+{
+    const char *o = run_flag("--tdf-fission");
+    CHECK(strstr(o, "TDF module") != NULL);
+    CHECK(strstr(o, "translation_unit") == NULL);
+    /* Fission rewrites the graph into the three-region pipeline. */
+    CHECK(strstr(o, "RDR") != NULL);
+    CHECK(strstr(o, "CMP") != NULL);
+    CHECK(strstr(o, "WRT") != NULL);
+    PASS();
+}
+TH_REG("tdf", tdf_fission_flag_reaches_pass);

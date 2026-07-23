@@ -657,7 +657,8 @@ int main(int argc, char *argv[])
 
     if (!mode_pp && !mode_lex && !mode_parse && !mode_sema && !mode_ir &&
         !mode_amdgpu && !mode_amdgpu_bin && !mode_tensix && !mode_nvidia &&
-        !mode_metal && !mode_intel && !mode_rv_elf && !mode_cpu && !mode_rv64)
+        !mode_metal && !mode_intel && !mode_rv_elf && !mode_cpu && !mode_rv64 &&
+        !mode_tdf && !mode_tdf_fission)
         mode_parse = 1;
 
     /* ---- HIP NOTES (1 of 2) -------------------------------------------
@@ -896,7 +897,8 @@ int main(int argc, char *argv[])
     }
 
     if (mode_parse || mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
-        mode_tensix || mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64) {
+        mode_tensix || mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64 ||
+        mode_tdf || mode_tdf_fission) {
         parser_t P;
         parser_init(&P, token_buf, L.num_tokens, lex_src,
                     node_buf, BC_MAX_NODES);
@@ -914,7 +916,8 @@ int main(int argc, char *argv[])
         sema_ctx_t *sema_ctx = NULL;
         if ((mode_sema || mode_ir || mode_amdgpu || mode_amdgpu_bin ||
              mode_tensix || mode_nvidia || mode_metal || mode_intel ||
-             mode_cpu || mode_rv64 || mode_rv_elf) &&
+             mode_cpu || mode_rv64 || mode_rv_elf ||
+             mode_tdf || mode_tdf_fission) &&
             P.num_errors == 0)
         {
             sema_ctx = (sema_ctx_t *)malloc(sizeof(sema_ctx_t));
@@ -936,7 +939,8 @@ int main(int argc, char *argv[])
         }
 
         if ((mode_ir || mode_amdgpu || mode_amdgpu_bin || mode_tensix ||
-             mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64) &&
+             mode_nvidia || mode_metal || mode_intel || mode_rv_elf || mode_cpu || mode_rv64 ||
+             mode_tdf || mode_tdf_fission) &&
             P.num_errors == 0) {
             bc_error_t lower_errs[BC_MAX_ERRORS];
             int num_lower_errs = 0;
