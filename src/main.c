@@ -9,6 +9,7 @@
 #include "bir_mem2reg.h"
 #include "bir_cfold.h"
 #include "bir_dce.h"
+#include "bir_softfp.h"
 #include "amdgpu.h"
 #include "sched.h"
 #include "verify.h"
@@ -109,6 +110,12 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     if (!cfg->no_mem2reg) bir_mem2reg(bir);
     if (!cfg->no_cfold)   bir_cfold(bir);
     if (!cfg->no_dce)     bir_dce(bir);
+
+    /* After cfold, so constant float folds instead of becoming a call. */
+    if (cfg->mode_rv_elf) {
+        int src = bir_softfp(bir);
+        if (src != BC_OK) return src;
+    }
 
     /* Wrap the BIR in a TDF module and lower it. For AMD and NVIDIA
      * this is a degenerate passthrough, the lowering hands the same
@@ -433,6 +440,33 @@ int main(int argc, char *argv[])
     uint32_t src_len = 0;
     if (read_file(file, source_buf, BC_MAX_SOURCE, &src_len) != BC_OK)
         return 1;
+
+    /* One translation unit: BIR_CALL resolves a callee by index into funcs[].
+       Only when the kernel wants float, or every integer kernel pays the text. */
+    if (mode_rv_elf && strstr(source_buf, "float") != NULL) {
+        /* A quoted include resolves against the user's kernel now, not us. */
+        if (num_include_paths + 2 <= PP_MAX_INCLUDE_PATHS) {
+            include_paths[num_include_paths++] = "runtime";
+            include_paths[num_include_paths++] = "../runtime";
+        }
+        static const char *const rt[] = {
+            "runtime/soft_fp.c",
+            "../runtime/soft_fp.c",
+        };
+        uint32_t rt_len = 0;
+        uint32_t i = 0;
+        for (; i < sizeof(rt) / sizeof(rt[0]); i++) {
+            if (read_file(rt[i], source_buf + src_len,
+                          BC_MAX_SOURCE - src_len, &rt_len) == BC_OK) break;
+        }
+        if (i == sizeof(rt) / sizeof(rt[0])) {
+            fprintf(stderr,
+                    "error: --rv-elf needs runtime/soft_fp.c and could not "
+                    "find it; run from the repo root\n");
+            return 1;
+        }
+        src_len += rt_len;
+    }
 
     /* ---- TRITON NOTES -------------------------------------------------
      * The Triton frontend is a parallel input path that does not share

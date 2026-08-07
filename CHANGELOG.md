@@ -82,6 +82,12 @@ Booth — Changelog
 
 ### Tensix
 
+- lower fp32 arithmetic and conversions to soft-float calls on RV32, which has
+  no F extension. The runtime never compiled as device code before this:
+  `#ifndef __device__` erased the qualifier on every build, because it is a
+  keyword and never a macro. Float kernels still need #148
+  (Zane Hambly, 2026-07-28)
+
 - `--tt-chip` selects wormhole or blackhole, so L1 and text limits follow the
   target part instead of being fixed
   (Zane Hambly, 2026-07-23)

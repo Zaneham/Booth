@@ -4,10 +4,12 @@
 #include <stdint.h>
 #include <string.h>
 
-/* Erase __device__ on the host so tests see plain C; under Booth it marks each
- * function callable from kernel code (the float lowering BIR_CALLs into them). */
-#ifndef __device__
+/* Erase __device__ on the host so tests see plain C. Keyed off the predefined
+ * macros, not __device__ itself, which is a keyword and never a macro. */
+#if !defined(__CUDACC__) && !defined(__BARRACUDA__) && !defined(__HIPCC__)
 #define __device__
+#else
+#define SFP_ON_DEVICE 1
 #endif
 
 /* Internal helpers; public API is in soft_fp.h, not for user code.
@@ -55,29 +57,37 @@ typedef struct {
 /* ---- Bit reinterpret helpers ----
  * memcpy between float and uint32_t: strict-aliasing-safe and folds to a register
  * move, unlike unions or pointer casts. */
-static inline uint32_t sfp_to_bits(float f)
+__device__ static inline uint32_t sfp_to_bits(float f)
 {
+#ifdef SFP_ON_DEVICE
+    return (uint32_t)__float_as_int(f);
+#else
     uint32_t b;
     memcpy(&b, &f, sizeof(b));
     return b;
+#endif
 }
 
-static inline float sfp_from_bits(uint32_t b)
+__device__ static inline float sfp_from_bits(uint32_t b)
 {
+#ifdef SFP_ON_DEVICE
+    return __int_as_float((int)b);
+#else
     float f;
     memcpy(&f, &b, sizeof(f));
     return f;
+#endif
 }
 
 /* ---- Unpack / pack ---- */
-sfp_unpacked_t sfp_unpack(uint32_t bits);
-uint32_t       sfp_pack  (sfp_unpacked_t u);
+__device__ sfp_unpacked_t sfp_unpack(uint32_t bits);
+__device__ uint32_t sfp_pack(sfp_unpacked_t u);
 
 /* ---- Rounding helpers ----
  * sfp_round_normal rounds a wide mantissa (24 target bits + shift_amount guard
  * bits below) to nearest-even and packs. shift_amount locates the round/sticky
  * lane, e.g. 24 for a 48-bit multiply product. */
-uint32_t sfp_round_normal(uint8_t sign, int32_t exp,
+__device__ uint32_t sfp_round_normal(uint8_t sign, int32_t exp,
                           uint64_t wide_mant, int shift_amount);
 
 #endif /* BARRACUDA_SOFT_FP_INTERNAL_H */
