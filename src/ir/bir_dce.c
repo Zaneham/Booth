@@ -205,8 +205,13 @@ static void compact(opt_t *S)
         for (uint32_t j = 0; j < B->num_insts; j++) {
             uint32_t ii = B->first_inst + j;
             if ((S->dead[ii / 32] >> (ii % 32)) & 1) continue;
-            if (wr != ii)
+            if (wr != ii) {
                 M->insts[wr] = M->insts[ii];
+                /* The line table is indexed by instruction position, so it
+                 * has to move with them or every line past the first dead
+                 * instruction points at the wrong source. */
+                M->inst_lines[wr] = M->inst_lines[ii];
+            }
             wr++;
         }
         M->blocks[abs_b].first_inst = block_start;
@@ -299,6 +304,8 @@ int bir_dce(bir_module_t *M)
 
             memmove(&M->insts[dst], &M->insts[src],
                     count * sizeof(bir_inst_t));
+            memmove(&M->inst_lines[dst], &M->inst_lines[src],
+                    count * sizeof(M->inst_lines[0]));
 
             for (uint16_t bi = 0; bi < F->num_blocks; bi++) {
                 uint32_t abs_b = F->first_block + bi;

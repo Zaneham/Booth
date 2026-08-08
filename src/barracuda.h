@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Bounded loops and checked indices. The arena goes unused here, since Booth
+ * allocates once per phase and never in a hot path. */
+#include "kauri.h"
+
 /* ---- Version ----
  * The 0.5 release was tagged v5.01, which was a typo for 0.5.1 and made the
  * compiler look four major versions further along than it is. Corrected here;

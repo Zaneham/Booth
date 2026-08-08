@@ -61,7 +61,7 @@ ifeq ($(UNAME_S),Linux)
   ALT_RT = $(OBJDIR)/src/runtime/lf_gpu_hsa.o
 endif
 
-SOURCES = src/main.c \
+SOURCES = src/main.c src/kauri_impl.c \
           src/fe/bc_err.c src/fe/bc_render.c src/fe/preproc.c src/fe/lexer.c src/fe/parser.c src/fe/sema.c \
           src/ir/bir.c src/ir/bir_print.c src/ir/bir_lower.c src/ir/bir_mem2reg.c src/ir/bir_cfold.c src/ir/bir_dce.c src/ir/bir_struct.c src/ir/bir_insert.c src/ir/bir_sroa.c src/ir/bir_inline.c \
           src/tdf/tdf.c src/tdf/tdf_lower.c src/tdf/tdf_fission.c src/tdf/tdf_place.c src/tdf/tdf_noc.c \
@@ -113,7 +113,7 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tbackend.c
 
 TOBJS   = $(TSRC:%.c=$(OBJDIR)/%.o)
-COBJS   = $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir_print.o $(OBJDIR)/src/ir/bir_lower.o $(OBJDIR)/src/ir/bir_mem2reg.o $(OBJDIR)/src/ir/bir_cfold.o $(OBJDIR)/src/ir/bir_dce.o $(OBJDIR)/src/ir/bir_struct.o $(OBJDIR)/src/ir/bir_insert.o $(OBJDIR)/src/ir/bir_sroa.o $(OBJDIR)/src/ir/bir_inline.o \
+COBJS   = $(OBJDIR)/src/kauri_impl.o $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir_print.o $(OBJDIR)/src/ir/bir_lower.o $(OBJDIR)/src/ir/bir_mem2reg.o $(OBJDIR)/src/ir/bir_cfold.o $(OBJDIR)/src/ir/bir_dce.o $(OBJDIR)/src/ir/bir_struct.o $(OBJDIR)/src/ir/bir_insert.o $(OBJDIR)/src/ir/bir_sroa.o $(OBJDIR)/src/ir/bir_inline.o \
           $(OBJDIR)/src/tdf/tdf.o $(OBJDIR)/src/tdf/tdf_lower.o $(OBJDIR)/src/tdf/tdf_fission.o $(OBJDIR)/src/tdf/tdf_place.o $(OBJDIR)/src/tdf/tdf_noc.o \
           $(OBJDIR)/src/tensix/rv_enc.o $(OBJDIR)/src/tensix/rv_buf.o $(OBJDIR)/src/tensix/rv_elf.o $(OBJDIR)/src/tensix/rv_isel.o $(OBJDIR)/src/tensix/noc.o $(OBJDIR)/src/tensix/emit.o \
           $(OBJDIR)/runtime/soft_fp.o $(OBJDIR)/runtime/sysprint.o \
@@ -132,6 +132,11 @@ COBJS   = $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir_print.o $(OBJDIR)/src/ir/b
 
 test: $(TARGET) trunner
 	./trunner --all
+
+# bir.h claims a deterministic layout. This makes that a property rather
+# than an intention, and it only stays cheap if it runs from now on.
+repro: $(TARGET)
+	tests/reprocheck.sh
 
 trunner: $(TOBJS) $(COBJS)
 	$(CC) $(TCFLAGS) -o $@ $^ $(LIBS) $(DL_LIB)
@@ -239,4 +244,4 @@ clean:
 # linked in and the build silently disagrees with the source.
 -include $(OBJECTS:.o=.d) $(TOBJS:.o=.d) $(HOSTRT:.o=.d)
 
-.PHONY: all clean test install uninstall coverage
+.PHONY: all clean test repro install uninstall coverage

@@ -746,11 +746,15 @@ static void step7_compact(m2r_t *S)
     /* Second pass: copy instructions into new positions.
      * Use a static scratch buffer to avoid overlap issues. */
     static bir_inst_t scratch[BIR_MAX_INSTS];
+    /* Lines travel with their instructions or they end up describing
+     * whatever landed in the slot instead. */
+    static uint32_t scratch_lines[BIR_MAX_INSTS];
     uint32_t si = 0;
 
     for (uint32_t bi = 0; bi < S->num_blocks; bi++) {
         for (int pi = 0; pi < S->num_phis; pi++) {
             if (S->phis[pi].block != bi) continue;
+            scratch_lines[si] = M->inst_lines[S->phis[pi].inst];
             scratch[si++] = M->insts[S->phis[pi].inst];
         }
         uint32_t abs_b = S->base_block + bi;
@@ -758,12 +762,15 @@ static void step7_compact(m2r_t *S)
         for (uint32_t j = 0; j < B->num_insts; j++) {
             uint32_t ii = B->first_inst + j;
             if (S->dead[ii]) continue;
+            scratch_lines[si] = M->inst_lines[ii];
             scratch[si++] = M->insts[ii];
         }
     }
 
     /* Copy scratch back */
     memcpy(&M->insts[S->base_inst], scratch, si * sizeof(bir_inst_t));
+    memcpy(&M->inst_lines[S->base_inst], scratch_lines,
+           si * sizeof(scratch_lines[0]));
 
     /* Update block boundaries */
     uint32_t cursor = S->base_inst;
@@ -921,6 +928,8 @@ int bir_mem2reg(bir_module_t *M)
             /* Move instructions */
             memmove(&M->insts[dst], &M->insts[src],
                     count * sizeof(bir_inst_t));
+            memmove(&M->inst_lines[dst], &M->inst_lines[src],
+                    count * sizeof(M->inst_lines[0]));
 
             /* Update block boundaries */
             for (uint16_t bi = 0; bi < F->num_blocks; bi++) {
