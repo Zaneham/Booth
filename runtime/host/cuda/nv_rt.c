@@ -101,6 +101,12 @@ int nv_rt_init(nv_dev_t *D)
 
     /* Optional: mapped host memory for ABEND breadcrumbs.
      * Non-fatal if missing — old drivers can limp along without. */
+    D->cuLaunchCo      = NULL;
+    {
+        void *pc = nv_dlsym(D->lib, "cuLaunchCooperativeKernel");
+        memcpy(&D->cuLaunchCo, &pc, sizeof(pc));
+    }
+
     D->cuMemHostAlloc  = NULL;
     D->cuMemFreeHost   = NULL;
     D->cuMemHostGetDev = NULL;
@@ -318,6 +324,35 @@ int nv_rt_launch(nv_dev_t *D, nv_kern_t *kern,
 
     if (rc != CUDA_SUCCESS) {
         fprintf(stderr, "nv_rt: cuLaunchKernel '%s' failed: %s\n",
+                kern->name, nv_errstr(D, rc));
+        return NV_RT_ERR_CUDA;
+    }
+    return NV_RT_OK;
+}
+
+int nv_rt_colaunch(nv_dev_t *D, nv_kern_t *kern,
+                   uint32_t gx, uint32_t gy, uint32_t gz,
+                   uint32_t bx, uint32_t by, uint32_t bz,
+                   uint32_t shmem, void **args)
+{
+    if (!D->cuLaunchCo) {
+        fprintf(stderr, "nv_rt: driver has no "
+                "cuLaunchCooperativeKernel\n");
+        return NV_RT_ERR_SYM;
+    }
+
+    CUresult rc = D->cuLaunchCo(
+        kern->func,
+        gx, gy, gz,
+        bx, by, bz,
+        shmem,
+        NULL,
+        args
+    );
+
+    if (rc != CUDA_SUCCESS) {
+        fprintf(stderr,
+                "nv_rt: cuLaunchCooperativeKernel '%s' failed: %s\n",
                 kern->name, nv_errstr(D, rc));
         return NV_RT_ERR_CUDA;
     }

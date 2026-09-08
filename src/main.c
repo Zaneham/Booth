@@ -78,25 +78,33 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     rc = bir_pchk(bir, "lowering");
     if (rc != BC_OK) return rc;
 
-    /* String literal globals (BIR_CONST_BYTES initializer) require
-     * backend support that is still being wired in. Phase 1 of the
-     * string-literal work landed the BIR shape and the frontend
-     * lowering; Phase 2 per backend (AMD .rodata, NVIDIA .const,
-     * Tensix C++ static const, Metal/Intel) is open as a set of
-     * GitHub issues. Until those land, refuse cleanly rather than
-     * emit silent wrong code that reads from address zero. */
-    for (uint32_t gi = 0; gi < bir->num_globals; gi++) {
-        if (!bir_global_is_bytes(bir, gi)) continue;
-        const char *gname = (bir->globals[gi].name < bir->string_len)
-                            ? &bir->strings[bir->globals[gi].name]
-                            : "<anon>";
-        fprintf(stderr,
-            "E110: string literal global '%s' requires backend "
-            "codegen support that is not yet wired (see issues "
-            "#93 AMD, #94 NVIDIA, #95 Tensix). String literals "
-            "in device code will not compile until those land.\n",
-            gname);
-        return BC_ERR_VERIFY;
+    rc = bir_vchk(bir);
+    if (rc != BC_OK) return rc;
+
+    /* String literal globals (BIR_CONST_BYTES initializer) need the
+     * backend to put the bytes somewhere a pointer can reach. A backend
+     * that does says so with BE_F_BYTES; the rest refuse rather than hand
+     * out an address of nothing. NVIDIA lays them in .global and takes
+     * the address with mov.u64; AMD .rodata is #93 and Tensix static
+     * const is #95, both open. The IR carries the bytes either way, so
+     * only a run that reaches a backend has anything to refuse. */
+    {
+        const be_desc_t *sbe = be_active();
+        if (sbe != NULL && (sbe->feats & BE_F_BYTES) == 0) {
+        for (uint32_t gi = 0; gi < bir->num_globals; gi++) {
+            if (!bir_global_is_bytes(bir, gi)) continue;
+            const char *gname = (bir->globals[gi].name < bir->string_len)
+                                ? &bir->strings[bir->globals[gi].name]
+                                : "<anon>";
+            fprintf(stderr,
+                "E110: string literal global '%s' requires backend "
+                "codegen support that is not yet wired for %s (see "
+                "issues #93 AMD, #95 Tensix). String literals in "
+                "device code will not compile until those land.\n",
+                gname, sbe->name);
+            return BC_ERR_VERIFY;
+        }
+        }
     }
 
     /* Device-call inlining. The GPU and vector backends have no calling
@@ -108,7 +116,7 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
         const be_desc_t *b = be_active();
         if (b != NULL && (b->feats & BE_F_NOCALL)) {
             int irc = bir_inline_device(bir);
-            if (irc != BC_OK) return irc;
+            if (irc != BC_OK) { (void)bir_pchk(bir, "device inlining"); return irc; }
         }
     }
 
@@ -285,9 +293,10 @@ static int comp_tu(const char *file, const tuc_t *c)
 
         /* A truncated expansion is not shorter source, it is different
          * source, and every phase after this would be reading a lie. */
-        if (pp->ovflw) {
+        if (pp->ovflw || prc != BC_OK) {
+            int frc = pp->ovflw ? 1 : prc;
             free(pp);
-            return 1;
+            return frc;
         }
 
         lex_src = pp_out_buf;
@@ -410,7 +419,9 @@ static void usage(const char *prog)
         "  --ssa-ra         Divergence-aware SSA register allocation\n"
         "  --max-vgprs N    Cap VGPR count for regalloc (forces spills)\n"
         "  --tensix      Compile to TT-Metalium C++ (Tensix SFPU)\n"
-        "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89)\n"
+        "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89), for the driver to JIT\n"
+        "  --nvidia-sass Compile to a SASS listing (sm_89), no NVIDIA tool involved\n"
+        "  --nvidia-cubin Compile to a loadable cubin (sm_89), no NVIDIA tool involved\n"
         "  --hip         HIP frontend mode (predefines __HIPCC__ and platform macros;\n"
         "                auto-on for .hip files; combine with --amdgpu-bin or --nvidia-ptx)\n"
         "  --mlir        Read MLIR text. Core dialects only, anything else is refused\n"

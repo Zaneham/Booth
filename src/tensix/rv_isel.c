@@ -1,5 +1,6 @@
 #include "rv_isel.h"
 #include "rv_enc.h"
+#include "tensix.h"
 #include "rt_args.h"
 #include "tdf.h"
 #include <stdio.h>
@@ -1031,7 +1032,7 @@ static uint32_t tybytes(const bir_module_t *M, uint32_t ti)
 
 static uint32_t gepbytes(const bir_module_t *M, uint32_t ti)
 {
-    return bir_gsz(M, ti, 4);
+    return bir_gstr(M, ti, 4);
 }
 
 /*
@@ -1370,9 +1371,7 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
                 pointee_sz = tybytes(M, M->types[I->type].inner);
             }
             if (pointee_sz == 0u) {
-                fprintf(stderr,
-                        "rv_isel: alloca at idx %u has unsizable "
-                        "pointee type\n", idx);
+                tterr(BC_E535, "alloca", idx);
                 return BC_ERR_TDF;
             }
             alctot = rndup(alctot, ISEL_ALLOCA_ALIGN);
@@ -1406,18 +1405,14 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
                 sz = tybytes(M, M->types[I->type].inner);
             }
             if (sz == 0u) {
-                fprintf(stderr,
-                        "rv_isel: shared_alloc at idx %u has unsizable "
-                        "pointee type\n", idx);
+                tterr(BC_E535, "shared_alloc", idx);
                 return BC_ERR_TDF;
             }
             shtot = rndup(shtot, TD_L1_ALIGN);
             shoff[lidx] = shtot;
             shtot += sz;
             if (shtot > TD_L1_SHARED_SIZE) {
-                fprintf(stderr,
-                        "rv_isel: __shared__ needs %u bytes, slab is %u\n",
-                        shtot, TD_L1_SHARED_SIZE);
+                tterr(BC_E536, shtot, (unsigned)TD_L1_SHARED_SIZE);
                 return BC_ERR_TDF;
             }
         }
@@ -1536,6 +1531,27 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
             case BIR_UNREACHABLE:
                 rc = sel_unrch(out);
                 break;
+            case BIR_TRAP:
+                rc = emit(out, rv_unimp());
+                break;
+            case BIR_INLINE_ASM:
+                fprintf(stderr,
+                        "rv_isel: inline asm is bound for PTX only and is "
+                        "not translated for the baby cores\n");
+                rc = BC_ERR_TDF;
+                break;
+            case BIR_FNREF:
+                fprintf(stderr,
+                        "rv_isel: the address of a device function is not "
+                        "supported on the baby cores\n");
+                rc = BC_ERR_TDF;
+                break;
+            case BIR_PRINTF:
+                fprintf(stderr,
+                        "rv_isel: device printf is not supported on the baby "
+                        "cores; use the SYSPRINT buffer\n");
+                rc = BC_ERR_TDF;
+                break;
             case BIR_ALLOCA: {
                 /* Compute sp + alcbase + alcoff[idx], store
                  * the resulting pointer into this inst's slot. */
@@ -1611,9 +1627,7 @@ int rv_isel_func(const bir_module_t *M, uint32_t func_idx,
                 saw_ret = 1;
                 break;
             default:
-                fprintf(stderr,
-                        "rv_isel: BIR op %u not yet supported "
-                        "(bring-up isel)\n", I->op);
+                tterr(BC_E534, I->op);
                 return BC_ERR_TDF;
             }
             if (rc != BC_OK) return rc;

@@ -176,6 +176,8 @@ static void encode_sopp(amd_module_t *A, const minst_t *mi, uint16_t hw_op)
     } else if (mi->num_uses > 0 && mi->operands[0].kind == MOP_LABEL) {
         /* Branch target: offset will be patched in fixup pass */
         simm16 = (uint16_t)mi->operands[0].imm;
+    } else if (mi->num_uses > 0 && mi->operands[0].kind == MOP_IMM) {
+        simm16 = (uint16_t)mi->operands[0].imm;
     }
 
     uint32_t dw = 0xBF800000u | ((uint32_t)(hw_op & 0x7F) << 16) | simm16;

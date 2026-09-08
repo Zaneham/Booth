@@ -13,13 +13,22 @@
  * nthreads a hidden arg on the end. */
 
 #include "rv64.h"
+#include "backend.h"
+#include "barracuda.h"
 #include <string.h>
 
+static void rv_cap(rv64_mod_t *V,const char *what,unsigned lim){
+    V->n_errs++;
+    if(V->capr) return;
+    V->capr=1;
+    (void)be_fail(BC_E545,"cpu-rv64",what,lim);
+}
 static void ew(rv64_mod_t *V, uint32_t w){
     if (V->codelen+4<=RV_CODE_MAX){
         V->code[V->codelen++]=(uint8_t)w; V->code[V->codelen++]=(uint8_t)(w>>8);
         V->code[V->codelen++]=(uint8_t)(w>>16); V->code[V->codelen++]=(uint8_t)(w>>24);
     }
+    else rv_cap(V,"the code buffer",(unsigned)RV_CODE_MAX);
 }
 
 /* ---- format builders. Six shapes, and RISC-V scatters the immediate bits
@@ -60,7 +69,6 @@ static void e_sb  (rv64_mod_t*V,int a,int s,int o){ ew(V,mk_S(0x23,0,a,s,o&0xFFF
 static void e_lui (rv64_mod_t*V,int d,int i){ ew(V,mk_U(0x37,d,i)); }
 static void e_jal (rv64_mod_t*V,int d,int i){ ew(V,mk_J(0x6F,d,i)); }
 static void e_jalr(rv64_mod_t*V,int d,int a,int i){ ew(V,mk_I(0x67,d,0,a,i&0xFFF)); }
-static void e_beq (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,0,a,b,o)); }
 static void e_bne (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,1,a,b,o)); }
 static void e_blt (rv64_mod_t*V,int a,int b,int o){ ew(V,mk_B(0x63,4,a,b,o)); }
 /* atomic memory op (A extension): rd = *rs1; *rs1 = rd OP rs2. funct7 is
@@ -259,7 +267,10 @@ static void st_fbits(rv64_mod_t*V,int r,int32_t o){
 /* Intern an external symbol name, de-duplicated. */
 static uint32_t rv_extsym(rv64_mod_t*V,const char *name){
     for (int i=0;i<V->n_extsym;i++) if(!strcmp(V->extsym[i],name)) return (uint32_t)i;
-    if (V->n_extsym>=RV_EXTSYM_MAX) return 0;
+    if (V->n_extsym>=RV_EXTSYM_MAX){
+        rv_cap(V,"external symbols",(unsigned)RV_EXTSYM_MAX);
+        return 0;
+    }
     int idx=V->n_extsym++;
     size_t n=strlen(name); if(n>=RV_EXTSYM_LEN)n=RV_EXTSYM_LEN-1;
     memcpy(V->extsym[idx],name,n); V->extsym[idx][n]='\0';
@@ -273,6 +284,7 @@ static uint32_t rv_extsym(rv64_mod_t*V,const char *name){
 static void emit_call_ext(rv64_mod_t*V,const char *name){
     uint32_t sym=rv_extsym(V,name);
     if (V->n_reloc<RV_RELOC_MAX){ V->reloc[V->n_reloc].off=V->codelen; V->reloc[V->n_reloc].sym=sym; V->n_reloc++; }
+    else rv_cap(V,"relocations",(unsigned)RV_RELOC_MAX);
     ew(V,mk_U(0x17,V_T1,0));        /* auipc t1, 0  (the reloc target) */
     e_jalr(V,V_RA,V_T1,0);          /* jalr ra, t1, 0 */
 }
@@ -284,12 +296,18 @@ static void call_libm1(rv64_mod_t*V,const char *name,uint32_t op0,int32_t s){
     fst_slot(V,V_FA0,s);
 }
 
+static const char *tystr(const rv64_mod_t *V,uint32_t ty){
+    static char buf[128];
+    if (bir_type_str(V->M,ty,buf,(int)sizeof buf)<=0) buf[0]=0;
+    return buf;
+}
+
 static int type_size(const rv64_mod_t*V,uint32_t ty){
     return (int)bir_bsz(V->M,ty,8);
 }
 
 static int pointee_sz(const rv64_mod_t*V,uint32_t ty){
-    return (int)bir_gsz(V->M,ty,8);
+    return (int)bir_gstr(V->M,ty,8);
 }
 /* 64 for an i64, 32 for anything narrower; the shifts and the divider use
  * it to pick the *W word ops so a 32-bit value shifts like a 32-bit value. */
@@ -318,6 +336,45 @@ static int param_is_float(const rv64_mod_t*V,const bir_func_t*F,uint16_t p){
     int k=V->M->types[pt].kind; return k==BIR_TYPE_FLOAT||k==BIR_TYPE_BFLOAT;
 }
 
+static uint32_t ptype(const rv64_mod_t*V,const bir_func_t*F,uint16_t p){
+    if (F->type>=V->M->num_types) return 0;
+    const bir_type_t*t=&V->M->types[F->type];
+    if (t->kind!=BIR_TYPE_FUNC || p>=t->num_fields) return 0;
+    return V->M->type_fields[t->count+p];
+}
+static int isflt(const rv64_mod_t*V,uint32_t ty){
+    if (ty>=V->M->num_types) return 0;
+    int k=V->M->types[ty].kind; return k==BIR_TYPE_FLOAT||k==BIR_TYPE_BFLOAT;
+}
+
+static int argok(const rv64_mod_t*V,uint32_t ty){
+    if (ty>=V->M->num_types) return 0;
+    switch (V->M->types[ty].kind){
+    case BIR_TYPE_PTR: return 1;
+    case BIR_TYPE_INT: case BIR_TYPE_FLOAT: case BIR_TYPE_BFLOAT:
+        return V->M->types[ty].width<=64;
+    default: return 0;
+    }
+}
+
+#define RV_ONSTK (-1)
+static int arloc(int isf,int *gi,int *fi){
+    if (isf && *fi<8) return 32+V_FA0+(*fi)++;
+    if (*gi<8) return V_A0+(*gi)++;
+    return RV_ONSTK;
+}
+
+static int32_t pslot(const rv64_mod_t*V,const bir_func_t*F,uint16_t p){
+    if (F->num_blocks==0) return 0;
+    const bir_block_t*B=&V->M->blocks[F->first_block];
+    for (uint32_t i=0;i<B->num_insts;i++){
+        uint32_t ix=B->first_inst+i;
+        if (ix>=V->M->num_insts || ix>=BIR_MAX_INSTS) break;
+        if (V->M->insts[ix].op==BIR_PARAM && V->M->insts[ix].subop==p) return V->slots[ix];
+    }
+    return 0;
+}
+
 /* ---- phi: the incoming value for a given predecessor block ---- */
 static uint32_t phi_incoming(const rv64_mod_t*V,const bir_inst_t*P,uint32_t pred){
     if (P->num_operands==BIR_OPERANDS_OVERFLOW){
@@ -341,10 +398,23 @@ static void emit_phi_copies(rv64_mod_t*V,uint32_t succ,uint32_t pred){
     }
 }
 
+static void pat32(rv64_mod_t*V,uint32_t off,uint32_t w){
+    if (off+4>RV_CODE_MAX) return;
+    V->code[off]=(uint8_t)w; V->code[off+1]=(uint8_t)(w>>8);
+    V->code[off+2]=(uint8_t)(w>>16); V->code[off+3]=(uint8_t)(w>>24);
+}
+
+static int jfits(int32_t o){ return o>=-1048576 && o<=1048574 && !(o&1); }
+static void pjal(rv64_mod_t*V,uint32_t off,int rd,int32_t rel,const char*what){
+    if (!jfits(rel)){ (void)be_fail(BC_E580,"cpu-rv64",what,(int)rel); V->n_errs++; return; }
+    pat32(V,off,mk_J(0x6F,rd,rel));
+}
+
 /* record a jal at the current spot that wants to land at block `blk`;
  * patched once every block has an address. */
 static void jal_block(rv64_mod_t*V,uint32_t blk){
     if (V->n_fix<RV_FIX_MAX){ V->fix[V->n_fix].off=V->codelen; V->fix[V->n_fix].blk=blk; V->fix[V->n_fix].kind=0; V->n_fix++; }
+    else rv_cap(V,"branch fixups",(unsigned)RV_FIX_MAX);
     e_jal(V,V_ZERO,0);
 }
 
@@ -352,23 +422,27 @@ static void jal_block(rv64_mod_t*V,uint32_t blk){
 
 static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
     int is_kernel=(F->cuda_flags&CUDA_GLOBAL)!=0;
+    { uint32_t fx=(uint32_t)(F-V->M->funcs); if (fx<BIR_MAX_FUNCS) V->func_off[fx]=V->codelen; }
 
     /* Frame, decrement-then-assign so nothing overlaps. ra and saved s0 go
      * at the very bottom (sp+0, sp+8) where the offsets are always tiny;
      * the slots fill the space above. Allocas grab a backing region sized
      * from their pointee, same as the x86 side. */
     int32_t off=0;
-    for (uint16_t p=0;p<F->num_params;p++){ off-=8; V->slots[p]=off; }
     int na=0;
     for (uint16_t b=0;b<F->num_blocks;b++){
         const bir_block_t*B=&V->M->blocks[F->first_block+b];
         for(uint32_t i=0;i<B->num_insts;i++){ uint32_t ix=B->first_inst+i; off-=8; V->slots[ix]=off;
             const bir_inst_t*I=&V->M->insts[ix];
+            if ((I->op==BIR_ALLOCA||I->op==BIR_SHARED_ALLOC) && na>=RV_ALLOCA_MAX)
+                rv_cap(V,"stack allocations",(unsigned)RV_ALLOCA_MAX);
             if ((I->op==BIR_ALLOCA||I->op==BIR_SHARED_ALLOC) && na<RV_ALLOCA_MAX){
                 uint32_t pte=(I->type<V->M->num_types)?V->M->types[I->type].inner:0;
                 int sz=type_size(V,pte);
-                if(!sz){ fprintf(stderr,"kath: alloca of a type with no storage size\n"); V->n_errs++; }
-                sz=(sz+7)&~7; if(sz<8)sz=8; off-=sz; V->alloca_off[na++]=off;
+                if(!sz){ (void)be_fail(BC_E540,"cpu-rv64","alloca",tystr(V,pte)); V->n_errs++; }
+                int aln=1<<(I->subop&31); if(aln<8)aln=8;
+                sz=(sz+7)&~7; if(sz<8)sz=8; off-=sz; off&=-aln;
+                V->alloca_off[na++]=off;
             }
         }
     }
@@ -392,9 +466,14 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         uint16_t total=(uint16_t)(F->num_params + (is_kernel?1:0));
         for (uint16_t p=0;p<total;p++){
             int isf=(p<F->num_params) && param_is_float(V,F,p);
-            int32_t dest=(p<F->num_params)?V->slots[p]:ntid_off;
-            if (isf){ if(fi<8) fst_slot(V,V_FA0+fi++,dest); else { ld_slot(V,V_T0,0); st_slot(V,V_T0,dest); stk+=8; } }
-            else { if(gi<8) st_slot(V,V_A0+gi++,dest); else { e_li(V,V_T2,stk); e_add(V,V_T2,V_S0,V_T2); e_ld(V,V_T0,V_T2,0); st_slot(V,V_T0,dest); stk+=8; } }
+            int32_t dest=(p<F->num_params)?pslot(V,F,p):ntid_off;
+            int r=arloc(isf,&gi,&fi);
+            if (r==RV_ONSTK){
+                if (dest){ e_li(V,V_T2,stk); e_add(V,V_T2,V_S0,V_T2);
+                           e_ld(V,V_T0,V_T2,0); st_slot(V,V_T0,dest); }
+                stk+=8;
+            }
+            else if (dest){ if (r>=32) fst_slot(V,r-32,dest); else st_slot(V,r,dest); }
         }
     }
 
@@ -428,8 +507,8 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         /* ---- bit counting ---- */
         case BIR_POPCOUNT: case BIR_CTZ: case BIR_CLZ: case BIR_BREV: {
             if (int_w(V,val_type(V,I->operands[0]))!=32){
-                fprintf(stderr,"kath: bit counting at a width other than 32 "
-                               "not supported on the RV64 backend\n");
+                (void)be_fail(BC_E541,"cpu-rv64",
+                              "bit counting at a width other than 32");
                 V->n_errs++; break;
             }
             load_val(V,V_T0,I->operands[0]); rv_zext_to(V,V_T0,32);
@@ -609,20 +688,24 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         case BIR_SHFL: case BIR_SHFL_UP: case BIR_SHFL_DOWN: case BIR_SHFL_XOR:
         case BIR_BALLOT: case BIR_VOTE_ANY: case BIR_VOTE_ALL:
             load_val(V,V_T0,I->operands[1]); st_slot(V,V_T0,s); break;
-        case BIR_GEP: { int sz=pointee_sz(V,I->type);
-            if(!sz){ fprintf(stderr,"kath: gep through a pointer with no storage size\n"); V->n_errs++; break; }
-            load_val(V,V_T0,I->operands[1]); e_li(V,V_T1,sz); e_mul(V,V_T0,V_T0,V_T1); load_val(V,V_T1,I->operands[0]); e_add(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break; }
+        case BIR_GEP: { int sz=pointee_sz(V,I->type); uint32_t fo=0;
+            if (bir_fgep(V->M,I,8,&fo)) { e_li(V,V_T0,(int32_t)fo); }
+            else {
+                if(!sz){ (void)be_fail(BC_E540,"cpu-rv64","gep",tystr(V,I->type)); V->n_errs++; break; }
+                load_val(V,V_T0,I->operands[1]); e_li(V,V_T1,sz); e_mul(V,V_T0,V_T0,V_T1);
+            }
+            load_val(V,V_T1,I->operands[0]); e_add(V,V_T0,V_T0,V_T1); st_slot(V,V_T0,s); break; }
         case BIR_LOAD: { load_val(V,V_T0,I->operands[0]);
             int aw=pointee_sz(V,val_type(V,I->operands[0]));
             if (aw==8) e_ld(V,V_T0,V_T0,0); else if (aw==4) e_lw(V,V_T0,V_T0,0);
             else if (aw==2) e_lh(V,V_T0,V_T0,0); else if (aw==1) e_lb(V,V_T0,V_T0,0);
-            else { fprintf(stderr,"kath: %d-byte load has no single RV64 access\n",aw); V->n_errs++; break; }
+            else { (void)be_fail(BC_E547,"cpu-rv64",(unsigned)aw,"load"); V->n_errs++; break; }
             st_slot(V,V_T0,s); break; }
         case BIR_STORE: { load_val(V,V_T0,I->operands[0]); load_val(V,V_T1,I->operands[1]);
             int aw=pointee_sz(V,val_type(V,I->operands[1]));
             if (aw==8) e_sd(V,V_T1,V_T0,0); else if (aw==4) e_sw(V,V_T1,V_T0,0);
             else if (aw==2) e_sh(V,V_T1,V_T0,0); else if (aw==1) e_sb(V,V_T1,V_T0,0);
-            else { fprintf(stderr,"kath: %d-byte store has no single RV64 access\n",aw); V->n_errs++; }
+            else { (void)be_fail(BC_E547,"cpu-rv64",(unsigned)aw,"store"); V->n_errs++; }
             break; }
         case BIR_ICMP: { load_val(V,V_T0,I->operands[0]); load_val(V,V_T1,I->operands[1]);
             switch(I->subop){
@@ -640,20 +723,93 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
         case BIR_BR: { uint32_t cur=F->first_block+b; emit_phi_copies(V,I->operands[0],cur); jal_block(V,I->operands[0]); break; }
         case BIR_BR_COND: { uint32_t cur=F->first_block+b;
             load_val(V,V_T0,I->operands[0]);
-            uint32_t beq_off=V->codelen; e_beq(V,V_T0,V_ZERO,0);    /* cond==0 -> false_pad (local, patched) */
+            e_bne(V,V_T0,V_ZERO,8);                                 /* cond!=0 -> step past the jal */
+            uint32_t fj=V->codelen; e_jal(V,V_ZERO,0);              /* cond==0 -> false_pad (patched) */
             emit_phi_copies(V,I->operands[1],cur); jal_block(V,I->operands[1]);
-            { uint32_t w=mk_B(0x63,0,V_T0,V_ZERO,(int32_t)V->codelen-(int32_t)beq_off);
-              V->code[beq_off]=(uint8_t)w;V->code[beq_off+1]=(uint8_t)(w>>8);V->code[beq_off+2]=(uint8_t)(w>>16);V->code[beq_off+3]=(uint8_t)(w>>24); }
+            pjal(V,fj,V_ZERO,(int32_t)V->codelen-(int32_t)fj,"a conditional branch");
             emit_phi_copies(V,I->operands[2],cur); jal_block(V,I->operands[2]); break; }
         case BIR_PHI: break; /* the work happens on the edges, not here */
         case BIR_RET:
-            if (is_kernel){ if(n_ret<RV_RET_MAX) retfix[n_ret++]=V->codelen; e_jal(V,V_ZERO,0); } /* -> loop_cont */
-            else { e_ld(V,V_RA,V_SP,0); e_ld(V,V_S0,V_SP,8); e_addi(V,V_SP,V_SP,frame); e_jalr(V,V_ZERO,V_RA,0); }
+            if (is_kernel){ if(n_ret<RV_RET_MAX) retfix[n_ret++]=V->codelen;
+                            else rv_cap(V,"kernel return sites",(unsigned)RV_RET_MAX);
+                            e_jal(V,V_ZERO,0); } /* -> loop_cont */
+            else { if (I->num_operands){
+                       uint32_t rt=val_type(V,I->operands[0]);
+                       if (isflt(V,rt)) load_fval(V,V_FA0,I->operands[0]);
+                       else load_val(V,V_A0,I->operands[0]); }
+                   e_ld(V,V_RA,V_SP,0); e_ld(V,V_S0,V_SP,8); e_addi(V,V_SP,V_SP,frame); e_jalr(V,V_ZERO,V_RA,0); }
             break;
-        case BIR_MMA: case BIR_MFRG:
-            fprintf(stderr,"kath: warp-collective mma not supported on the RV64 backend\n");
+        case BIR_CALL: {
+            uint32_t nop=I->num_operands; const uint32_t *ops=I->operands;
+            if (nop==BIR_OPERANDS_OVERFLOW){
+                uint32_t st=I->operands[0]; nop=I->operands[1];
+                if (st>=V->M->num_extra_ops || nop>V->M->num_extra_ops-st){
+                    (void)be_fail(BC_E584,"cpu-rv64"); V->n_errs++; break; }
+                ops=&V->M->extra_operands[st];
+            }
+            if (nop<1){ (void)be_fail(BC_E584,"cpu-rv64"); V->n_errs++; break; }
+            uint32_t callee=ops[0];
+            if (callee>=V->M->num_funcs){
+                (void)be_fail(BC_E581,"cpu-rv64",(unsigned)callee); V->n_errs++; break; }
+            const bir_func_t *cF=&V->M->funcs[callee];
+
+            int gi=0,fi=0,ns=0,bad=0;
+            for (uint32_t a=1;a<nop;a++){
+                uint32_t pt=ptype(V,cF,(uint16_t)(a-1));
+                uint32_t at=pt?pt:val_type(V,ops[a]);
+                if (!argok(V,at)){ (void)be_fail(BC_E582,"cpu-rv64",tystr(V,at)); V->n_errs++; bad=1; }
+                if (arloc(pt?isflt(V,pt):0,&gi,&fi)==RV_ONSTK) ns++;
+            }
+            if (bad) break;
+            if (ns>RV_ARG_MAX){ rv_cap(V,"arguments passed on the stack",(unsigned)RV_ARG_MAX); break; }
+
+            int32_t sarea=(int32_t)(((ns*8)+15)&~15);
+            if (sarea) e_addi(V,V_SP,V_SP,-sarea);
+            gi=0;fi=0; { int32_t so=0;
+            for (uint32_t a=1;a<nop;a++){
+                uint32_t pt=ptype(V,cF,(uint16_t)(a-1));
+                int isf=pt?isflt(V,pt):0, r=arloc(isf,&gi,&fi);
+                if (r==RV_ONSTK){
+                    if (isf) ld_fbits(V,V_T0,ops[a]); else load_val(V,V_T0,ops[a]);
+                    e_sd(V,V_SP,V_T0,so); so+=8;
+                }
+                else if (r>=32) load_fval(V,r-32,ops[a]);
+                else if (isf) ld_fbits(V,r,ops[a]);
+                else load_val(V,r,ops[a]);
+            } }
+
+            if (V->n_cfix<RV_CALL_MAX){
+                V->cfix[V->n_cfix].off=V->codelen; V->cfix[V->n_cfix].fn=callee; V->n_cfix++; }
+            else rv_cap(V,"call fixups",(unsigned)RV_CALL_MAX);
+            e_jal(V,V_RA,0);
+            if (sarea) e_addi(V,V_SP,V_SP,sarea);
+
+            if (!(I->type<V->M->num_types && V->M->types[I->type].kind==BIR_TYPE_VOID)){
+                if (!argok(V,I->type)){ (void)be_fail(BC_E583,"cpu-rv64",tystr(V,I->type)); V->n_errs++; }
+                else if (isflt(V,I->type)) fst_slot(V,V_FA0,s);
+                else st_slot(V,V_A0,s);
+            }
+            break; }
+        case BIR_INLINE_ASM:
+            (void)be_fail(BC_E541,"cpu-rv64",
+                          "inline asm, which Booth binds for PTX only");
             V->n_errs++; break;
-        default: e_li(V,V_T0,0); st_slot(V,V_T0,s); break;
+        case BIR_TRAP: ew(V,0xC0001073u); break;
+        case BIR_FNREF:
+            (void)be_fail(BC_E541,"cpu-rv64",
+                          "taking the address of a device function");
+            V->n_errs++; break;
+        case BIR_PRINTF:
+            (void)be_fail(BC_E541,"cpu-rv64",
+                          "device printf, which needs a data section to hold "
+                          "the format string");
+            V->n_errs++; break;
+        case BIR_MMA: case BIR_MFRG:
+            (void)be_fail(BC_E541,"cpu-rv64","warp-collective mma");
+            V->n_errs++; break;
+        default:
+            (void)be_fail(BC_E542,"cpu-rv64",bir_op_name(I->op));
+            V->n_errs++; break;
         }}
     }
 
@@ -662,22 +818,32 @@ static void rv64_func(rv64_mod_t *V,const bir_func_t *F){
          * so does the bail branch once tid runs out. */
         uint32_t loop_cont=V->codelen;
         ld_slot(V,V_T0,tid_off); e_addi(V,V_T0,V_T0,1); st_slot(V,V_T0,tid_off);
-        e_jal(V,V_ZERO,(int32_t)loop_head-(int32_t)V->codelen);
+        { uint32_t o=V->codelen; e_jal(V,V_ZERO,0);
+          pjal(V,o,V_ZERO,(int32_t)loop_head-(int32_t)o,"the thread loop back edge"); }
         uint32_t loop_end=V->codelen;
-        { uint32_t w=mk_J(0x6F,V_ZERO,(int32_t)loop_end-(int32_t)bail_off);      /* patch the bail jal */
-          V->code[bail_off]=(uint8_t)w;V->code[bail_off+1]=(uint8_t)(w>>8);V->code[bail_off+2]=(uint8_t)(w>>16);V->code[bail_off+3]=(uint8_t)(w>>24); }
-        for (int k=0;k<n_ret;k++){ uint32_t o=retfix[k]; uint32_t w=mk_J(0x6F,V_ZERO,(int32_t)loop_cont-(int32_t)o);
-          V->code[o]=(uint8_t)w;V->code[o+1]=(uint8_t)(w>>8);V->code[o+2]=(uint8_t)(w>>16);V->code[o+3]=(uint8_t)(w>>24); }
+        pjal(V,bail_off,V_ZERO,(int32_t)loop_end-(int32_t)bail_off,"the thread loop exit");
+        for (int k=0;k<n_ret;k++)
+            pjal(V,retfix[k],V_ZERO,(int32_t)loop_cont-(int32_t)retfix[k],"a kernel return");
     }
     /* epilogue */
     e_ld(V,V_RA,V_SP,0); e_ld(V,V_S0,V_SP,8); e_addi(V,V_SP,V_SP,frame); e_jalr(V,V_ZERO,V_RA,0);
 
     /* resolve every jal-to-block now that the blocks have addresses */
-    for (int k=0;k<V->n_fix;k++){ uint32_t bo=V->blk_off[V->fix[k].blk]; uint32_t o=V->fix[k].off;
-        uint32_t w=mk_J(0x6F,V_ZERO,(int32_t)bo-(int32_t)o);
-        V->code[o]=(uint8_t)w;V->code[o+1]=(uint8_t)(w>>8);V->code[o+2]=(uint8_t)(w>>16);V->code[o+3]=(uint8_t)(w>>24); }
+    for (int k=0;k<V->n_fix;k++){
+        if (V->fix[k].blk>=V->M->num_blocks) continue;
+        pjal(V,V->fix[k].off,V_ZERO,
+             (int32_t)V->blk_off[V->fix[k].blk]-(int32_t)V->fix[k].off,"a branch to a basic block"); }
     V->n_fix=0;
 }
 
 void rv64_init(rv64_mod_t *V,const bir_module_t *M){ memset(V,0,sizeof(*V)); V->M=M; }
-int rv64_emit(rv64_mod_t *V){ for(uint32_t f=0;f<V->M->num_funcs;f++) rv64_func(V,&V->M->funcs[f]); return 0; }
+int rv64_emit(rv64_mod_t *V){
+    for(uint32_t f=0;f<V->M->num_funcs;f++) rv64_func(V,&V->M->funcs[f]);
+    for(int k=0;k<V->n_cfix;k++){
+        uint32_t fn=V->cfix[k].fn; if (fn>=BIR_MAX_FUNCS) continue;
+        pjal(V,V->cfix[k].off,V_RA,
+             (int32_t)V->func_off[fn]-(int32_t)V->cfix[k].off,"a call to a device function");
+    }
+    V->n_cfix=0;
+    return 0;
+}

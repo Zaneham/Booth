@@ -187,7 +187,10 @@ TH_REG("ocm", 9, "shared memory survives the passes", ocm09)
 static void ocm10(void)
 {
     static const char *const backends[] = {
-        "--nvidia-ptx", "--cpu", "--rv64", "--amdgpu", "--metal", "--tensix", NULL
+        "--nvidia-ptx", "--cpu", "--amdgpu", "--metal", "--rv64", NULL
+    };
+    static const char *const refuse[][2] = {
+        { "--tensix", "E522" }, { NULL, NULL }
     };
     char cmd[512];
 
@@ -199,6 +202,13 @@ static void ocm10(void)
         snprintf(cmd, sizeof cmd, "%s --bir-in %s build/ocm_rng_k.bir -o build/ocm_rng.out",
                  BC_BIN, backends[i]);
         CHEQ(th_run(cmd, want, (int)sizeof want), 0);
+    }
+
+    for (int i = 0; refuse[i][0] != NULL; i++) {
+        snprintf(cmd, sizeof cmd, "%s --bir-in %s build/ocm_rng_k.bir -o build/ocm_rng.out",
+                 BC_BIN, refuse[i][0]);
+        th_run(cmd, want, (int)sizeof want);
+        CHNE(strstr(want, refuse[i][1]), NULL);
     }
 }
 TH_REG("ocm", 10, "device functions reach every backend", ocm10)

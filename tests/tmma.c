@@ -147,7 +147,7 @@ static void mma07(void)
 static void mma08(void)
 {
     CHNE(mm_run("--amdgpu --gfx942 tests/mfi8.cu -o mfi8.s"), 0);
-    CHECK(strstr(obuf, "not supported") != NULL);
+    CHECK(strstr(obuf, "E541") != NULL);
     CHEQ(mm_mfop("--amdgpu-bin --gfx90a tests/mfi8.cu -o mfi8.hsaco",
                  "mfi8.hsaco"), 0x55);
     PASS();
@@ -158,18 +158,18 @@ static void mma08(void)
 static void mma09(void)
 {
     CHNE(mm_run("--amdgpu --gfx942 tests/mma16.cu -o x.s"), 0);
-    CHECK(strstr(obuf, "not supported") != NULL);
+    CHECK(strstr(obuf, "E541") != NULL);
     CHNE(mm_run("--cpu tests/mma16.cu -o x.o"), 0);
-    CHECK(strstr(obuf, "not supported") != NULL);
+    CHECK(strstr(obuf, "E541") != NULL);
     PASS();
 }
 
 static void mma10(void)
 {
     CHNE(mm_run("--nvidia-ptx tests/mfrg.cu -o x.ptx"), 0);
-    CHECK(strstr(obuf, "not supported") != NULL);
+    CHECK(strstr(obuf, "E541") != NULL);
     CHNE(mm_run("--amdgpu --gfx942 tests/test_mfma.cu -o x.s"), 0);
-    CHECK(strstr(obuf, "not supported") != NULL);
+    CHECK(strstr(obuf, "E541") != NULL);
     PASS();
 }
 

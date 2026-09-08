@@ -14,12 +14,13 @@
 #define BIR_MAX_TYPES       (1 << 14)
 #define BIR_MAX_TYPE_FIELDS (1 << 16)
 #define BIR_MAX_CONSTS      (1 << 16)
-#define BIR_MAX_INSTS       (1 << 18)
-#define BIR_MAX_EXTRA_OPS   (1 << 16)
-#define BIR_MAX_BLOCKS      (1 << 16)
-#define BIR_MAX_FUNCS       (1 << 12)
+#define BIR_MAX_INSTS       (1 << 22)
+#define BIR_MAX_EXTRA_OPS   (1 << 19)
+#define BIR_MAX_BLOCKS      (1 << 19)
+#define BIR_MAX_FUNCS       (1 << 14)
 #define BIR_MAX_GLOBALS     (1 << 12)
-#define BIR_MAX_STRINGS     (1 << 20)
+#define BIR_MAX_STRINGS     (1 << 22)
+#define BIR_FUNC_MAX_BLOCKS 0xFFFFu
 #define BIR_BSZ_DEEP        16      /* aggregate nesting bir_bsz will walk */
 
 /* ---- Value References ---- */
@@ -71,7 +72,7 @@ typedef struct {
     uint32_t    inner;      /* PTR: pointee. ARRAY/VECTOR: element. FUNC: return type */
     uint32_t    count;      /* ARRAY: element count. STRUCT/FUNC: fields_start index */
     uint16_t    num_fields; /* STRUCT/FUNC: field/param count */
-    uint16_t    pad;
+    uint16_t    uni;        /* STRUCT: 1 = union, every field at offset 0 */
 } bir_type_t;   /* 16 bytes */
 
 /* ---- Comparison Predicates ---- */
@@ -130,7 +131,7 @@ typedef enum {
     /* Memory */
     BIR_ALLOCA,                 /* per-thread stack. subop = log2(align) */
     BIR_SHARED_ALLOC,           /* per-block SRAM. Not stack, not heap. Its own thing. */
-    BIR_GLOBAL_REF,             /* subop = global index. Yields ptr to __device__/__constant__ global. */
+    BIR_GLOBAL_REF,             /* ops[0] = global index. Yields ptr to __device__/__constant__ global. */
     BIR_LOAD,                   /* subop: 0 = normal, 1 = volatile */
     BIR_STORE,                  /* subop: 0 = normal, 1 = volatile */
     BIR_GEP,                    /* base ptr + typed indices. Simpler than LLVM's. */
@@ -173,6 +174,9 @@ typedef enum {
                                  * ops: [0]=A [1]=lda [2]=B [3]=ldb [4]=D [5]=ldd */
     BIR_MFRG,                   /* MFMA over per-lane fragments in memory.
                                  * subop = variant, ops: [0]=A [1]=B [2]=C/D */
+    BIR_WLD,
+    BIR_WST,
+    BIR_WMMA,
 
     /* Misc */
     BIR_CALL,                   /* ops[0] = callee func index, rest = args */
@@ -189,6 +193,15 @@ typedef enum {
     BIR_CTZ,
     BIR_CLZ,
     BIR_BREV,
+
+    BIR_TRAP,
+    BIR_FNREF,
+    BIR_PRINTF,
+
+    BIR_FENCE,
+    BIR_NANOSLP,
+    BIR_BARRED,
+    BIR_GRIDBAR,
 
     BIR_OP_IMPLEMENTED,
 
@@ -220,6 +233,24 @@ typedef struct {
     uint32_t    type;           /* result type index */
     uint32_t    operands[BIR_OPERANDS_INLINE];
 } bir_inst_t;   /* 32 bytes */
+
+#define BIR_WM_A 0u
+#define BIR_WM_B 1u
+#define BIR_WM_C 2u
+#define BIR_WM_D 3u
+
+typedef struct {
+    const char *shp;
+    const char *abt;
+    const char *act;
+    uint8_t     na, nb, nc;
+} bir_wmma_t;
+
+#define BIR_WM_NROW 20
+extern const bir_wmma_t bir_wmma[BIR_WM_NROW];
+
+int     bir_wmrow(const char *shp, const char *abt, const char *act);
+uint8_t bir_wmn(uint32_t row, unsigned role);
 
 /* ---- Constants ---- */
 
@@ -266,7 +297,11 @@ typedef struct {
     uint16_t    tu;             /* owning TU for internal linkage, BIR_TU_EXT for external */
     uint32_t    launch_bounds_max;
     uint32_t    launch_bounds_min;
-} bir_func_t;   /* 32 bytes */
+    uint32_t    refm;
+    uint32_t    refq;
+    uint16_t    sret;
+    uint16_t    spad;
+} bir_func_t;   /* 44 bytes */
 
 /* ---- Global Variables ---- */
 
@@ -300,6 +335,20 @@ typedef struct {
 #define BIR_P_GLOBALS   0x080u
 #define BIR_P_EXTRAOPS  0x100u
 #define BIR_P_PHIS      0x200u
+#define BIR_P_ASMS      0x400u
+
+#define BIR_MAX_ASMS    256
+#define BIR_ASM_MAXOP   24
+#define BIR_ASM_TMPLZ   1024
+
+typedef struct {
+    uint32_t    tmpl;       /* strings offset: the target-assembler template */
+    uint32_t    cons;       /* strings offset: mode+class pair per operand */
+    uint16_t    nout;       /* leading operands, each a pointer written through */
+    uint16_t    nops;       /* total operands */
+    uint8_t     vol;
+    uint8_t     pad[3];
+} bir_asm_t;   /* 16 bytes */
 
 /* ---- Module ---- */
 
@@ -328,6 +377,9 @@ typedef struct {
     bir_global_t    globals[BIR_MAX_GLOBALS];
     uint32_t        num_globals;
 
+    bir_asm_t       asms[BIR_MAX_ASMS];
+    uint32_t        num_asms;
+
     char            strings[BIR_MAX_STRINGS];
     uint32_t        string_len;
 
@@ -349,18 +401,33 @@ uint32_t    bir_type_int(bir_module_t *M, int width_bits);
 uint32_t    bir_type_float(bir_module_t *M, int width_bits);
 uint32_t    bir_type_bfloat(bir_module_t *M);
 uint32_t    bir_type_ptr(bir_module_t *M, uint32_t pointee, int addrspace);
+int         bir_umrk(bir_module_t *M, uint32_t ty);
 uint32_t    bir_type_array(bir_module_t *M, uint32_t elem, uint32_t count);
 uint32_t    bir_type_vector(bir_module_t *M, uint32_t elem, uint32_t count);
 uint32_t    bir_type_struct(bir_module_t *M, const uint32_t *fields, int nfields);
+uint32_t    bir_sfwd(bir_module_t *M);
+int         bir_sfin(bir_module_t *M, uint32_t ty,
+                     const uint32_t *fields, int nfields);
 uint32_t    bir_type_func(bir_module_t *M, uint32_t ret,
                           const uint32_t *params, int nparams);
 
 uint32_t    bir_bsz(const bir_module_t *M, uint32_t ty, uint32_t psz);
+uint32_t    bir_balg(const bir_module_t *M, uint32_t ty, uint32_t psz);
 
 uint32_t    bir_gsz(const bir_module_t *M, uint32_t ty, uint32_t psz);
+uint32_t    bir_gstr(const bir_module_t *M, uint32_t ty, uint32_t psz);
+
+int         bir_fgep(const bir_module_t *M, const bir_inst_t *I,
+                     uint32_t psz, uint32_t *off);
 
 /* String table */
 uint32_t    bir_add_string(bir_module_t *M, const char *s, uint32_t len);
+
+uint32_t    bir_asmd(bir_module_t *M, uint32_t tmpl, uint32_t cons,
+                     uint16_t nout, uint16_t nops, uint8_t vol);
+
+uint32_t    bir_oper(const bir_module_t *M, const bir_inst_t *I, uint32_t j);
+int         bir_vchk(const bir_module_t *M);
 
 /* Constants — returns index into consts[], use BIR_MAKE_CONST() for operand slots */
 uint32_t    bir_const_int(bir_module_t *M, uint32_t type, int64_t val);

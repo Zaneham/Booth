@@ -17,6 +17,7 @@
  */
 
 #include "bir_inline.h"
+#include "backend.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,6 +116,8 @@ static void remap_ops(bir_module_t *M, uint32_t ni,
         }
         break;
 
+    case BIR_GLOBAL_REF:
+    case BIR_FNREF:
     case BIR_CALL:                     /* ops[0]=func index (leave), rest=args */
         if (ovf) {
             for (i = 1; i < count; i++)
@@ -152,8 +155,10 @@ static uint32_t copy_inst(bir_module_t *M, const bir_inst_t *I, uint32_t line)
 {
     uint32_t ni;
 
-    if (M->num_insts >= BIR_MAX_INSTS)
+    if (M->num_insts >= BIR_MAX_INSTS) {
+        bir_pfull(M, BIR_P_INSTS);
         return BIR_VAL_NONE;
+    }
 
     ni = M->num_insts;
     M->insts[ni]      = *I;
@@ -161,8 +166,10 @@ static uint32_t copy_inst(bir_module_t *M, const bir_inst_t *I, uint32_t line)
 
     if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
         uint32_t src = I->operands[0], count = I->operands[1], nstart, k;
-        if (M->num_extra_ops + count > BIR_MAX_EXTRA_OPS)
+        if (M->num_extra_ops + count > BIR_MAX_EXTRA_OPS) {
+            bir_pfull(M, BIR_P_EXTRAOPS);
             return BIR_VAL_NONE;
+        }
         nstart = M->num_extra_ops;
         for (k = 0; k < count; k++)
             M->extra_operands[nstart + k] = M->extra_operands[src + k];
@@ -190,11 +197,13 @@ static int read_call_args(const bir_module_t *M, const bir_inst_t *I,
     int n = 0;
     if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
         uint32_t start = I->operands[0], count = I->operands[1], k;
-        for (k = 1; k < count && n < max; k++)
+        if (count > (uint32_t)max + 1u) return -1;
+        for (k = 1; k < count; k++)
             out[n++] = M->extra_operands[start + k];
     } else {
         uint8_t k;
-        for (k = 1; k < I->num_operands && n < max; k++)
+        if ((int)I->num_operands > max + 1) return -1;
+        for (k = 1; k < I->num_operands; k++)
             out[n++] = I->operands[k];
     }
     return n;
@@ -228,7 +237,10 @@ static uint32_t open_block(inl_t *X, uint32_t name)
 {
     bir_module_t *M = X->M;
     uint32_t bn;
-    if (M->num_blocks >= BIR_MAX_BLOCKS) return BIR_VAL_NONE;
+    if (M->num_blocks >= BIR_MAX_BLOCKS) {
+        bir_pfull(M, BIR_P_BLOCKS);
+        return BIR_VAL_NONE;
+    }
     bn = M->num_blocks++;
     M->blocks[bn].name       = name;
     M->blocks[bn].first_inst = M->num_insts;
@@ -247,7 +259,10 @@ static uint32_t append_br(inl_t *X, uint32_t target)
     bir_module_t *M = X->M;
     bir_inst_t *I;
     uint32_t ni;
-    if (M->num_insts >= BIR_MAX_INSTS) return BIR_VAL_NONE;
+    if (M->num_insts >= BIR_MAX_INSTS) {
+        bir_pfull(M, BIR_P_INSTS);
+        return BIR_VAL_NONE;
+    }
     ni = M->num_insts++;
     I = &M->insts[ni];
     I->op           = BIR_BR;
@@ -269,7 +284,10 @@ static uint32_t emit_phi(inl_t *X, uint32_t type, const uint32_t *preds,
     bir_inst_t *I;
     uint32_t ni, nops = n * 2, i;
 
-    if (M->num_insts >= BIR_MAX_INSTS) return BIR_VAL_NONE;
+    if (M->num_insts >= BIR_MAX_INSTS) {
+        bir_pfull(M, BIR_P_INSTS);
+        return BIR_VAL_NONE;
+    }
     ni = M->num_insts++;
     I = &M->insts[ni];
     I->op    = BIR_PHI;
@@ -284,7 +302,10 @@ static uint32_t emit_phi(inl_t *X, uint32_t type, const uint32_t *preds,
         }
     } else {
         uint32_t start = M->num_extra_ops;
-        if (start + nops > BIR_MAX_EXTRA_OPS) return BIR_VAL_NONE;
+        if (start + nops > BIR_MAX_EXTRA_OPS) {
+            bir_pfull(M, BIR_P_EXTRAOPS);
+            return BIR_VAL_NONE;
+        }
         for (i = 0; i < n; i++) {
             M->extra_operands[start + 2 * i]     = preds[i];
             M->extra_operands[start + 2 * i + 1] = vals[i];
@@ -318,6 +339,10 @@ static int splice_sb(inl_t *X, uint32_t call_oi, uint32_t cfi)
     int nargs, a;
 
     nargs = read_call_args(M, &M->insts[call_oi], arg_raw, INL_MAX_ARGS);
+    if (nargs < 0) {
+        (void)be_fail(BC_E781, func_name(M, cfi), INL_MAX_ARGS);
+        return BC_ERR_OVERFLOW;
+    }
     for (a = 0; a < nargs; a++)
         arg_new[a] = map_val(X->val_map, 0, arg_raw[a]);
 
@@ -368,12 +393,19 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
     int nargs, a;
 
     nargs = read_call_args(M, &M->insts[call_oi], arg_raw, INL_MAX_ARGS);
+    if (nargs < 0) {
+        (void)be_fail(BC_E781, func_name(M, cfi), INL_MAX_ARGS);
+        return BC_ERR_OVERFLOW;
+    }
     for (a = 0; a < nargs; a++)
         arg_new[a] = map_val(X->val_map, 0, arg_raw[a]);
 
     /* Reserve the callee blocks and one continuation, contiguously after the
        current block, so the whole function stays one contiguous slice. */
-    if (M->num_blocks + cnb + 1 > BIR_MAX_BLOCKS) return BC_ERR_OVERFLOW;
+    if (M->num_blocks + cnb + 1 > BIR_MAX_BLOCKS) {
+        bir_pfull(M, BIR_P_BLOCKS);
+        return BC_ERR_OVERFLOW;
+    }
     for (c = 0; c < cnb; c++)
         X->blk_map[cb0 + c] = M->num_blocks + c;
     cont = M->num_blocks + cnb;
@@ -395,10 +427,18 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
         for (j = 0; j < OCB->num_insts; j++) {
             uint32_t ci = OCB->first_inst + j;
             bir_inst_t *CI = &M->insts[ci];
+            uint32_t li;
+
+            if (ci < cbase || ci - cbase >= INL_MAX_CALLEE_INSTS) {
+                (void)be_fail(BC_E782, func_name(M, cfi),
+                              INL_MAX_CALLEE_INSTS);
+                return BC_ERR_OVERFLOW;
+            }
+            li = ci - cbase;
 
             if (CI->op == BIR_PARAM) {
-                local[ci - cbase] = (CI->subop < nargs)
-                                  ? arg_new[CI->subop] : BIR_VAL_NONE;
+                local[li] = (CI->subop < nargs)
+                          ? arg_new[CI->subop] : BIR_VAL_NONE;
                 continue;
             }
             if (CI->op == BIR_RET) {
@@ -414,7 +454,7 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
 
             ni = copy_inst(M, CI, M->inst_lines[ci]);
             if (ni == BIR_VAL_NONE) return BC_ERR_OVERFLOW;
-            local[ci - cbase] = ni;
+            local[li] = ni;
             X->spliced[ni] = INL_CLONE;
         }
         close_block(M, ncb);
@@ -431,7 +471,7 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
     M->blocks[cont].name       = M->blocks[cb0].name;
     M->blocks[cont].first_inst = M->num_insts;
 
-    if (nret == 0) {
+    if (nret == 0 || M->types[M->types[C->type].inner].kind == BIR_TYPE_VOID) {
         result = BIR_VAL_NONE;
     } else if (nret == 1) {
         result = map_val(local, cbase, X->ret_val[0]);
@@ -507,6 +547,11 @@ static int rebuild_func(inl_t *X, uint32_t fidx)
         remap_ops(M, ni, X->val_map, 0, X->blk_map, 0);
     }
 
+    if (M->num_blocks - nb_start > BIR_FUNC_MAX_BLOCKS) {
+        (void)be_fail(BC_E780, func_name(M, fidx),
+                      M->num_blocks - nb_start, BIR_FUNC_MAX_BLOCKS);
+        return BC_ERR_OVERFLOW;
+    }
     F->first_block = nb_start;
     F->num_blocks  = (uint16_t)(M->num_blocks - nb_start);
     tot = 0;
@@ -538,7 +583,7 @@ static int func_has_inlinable_call(const bir_module_t *M, uint32_t fidx)
 /* Warn once for each device callee still called after inlining. With the
    splice handling both straight-line and control-flow bodies, the only thing
    left here is a callee too large for the bounded working set. It falls
-   through as a plain call the GPU backends can't emit, so say so plainly. */
+   through as a plain call, which PTX emits and the others refuse. */
 static void warn_uninlined(inl_t *X)
 {
     bir_module_t *M = X->M;
@@ -555,9 +600,9 @@ static void warn_uninlined(inl_t *X)
                 if (is_device(M, cfi) && !X->warned[cfi]) {
                     X->warned[cfi] = 1;
                     fprintf(stderr, "kath: warning: __device__ function "
-                        "'%s' has control flow and is not inlined yet; calls "
-                        "to it will not run correctly on this backend. Inline "
-                        "it by hand for now. (issue #101)\n", func_name(M, cfi));
+                        "'%s' outgrew the inliner's working set and stays a "
+                        "call; PTX emits one, the other GPU backends refuse. "
+                        "(issue #101)\n", func_name(M, cfi));
                 }
             }
         }
@@ -624,5 +669,6 @@ int bir_inline_device(bir_module_t *M)
     rc = inline_run(X);
 
     free(X);
+    if (rc == BC_OK) rc = bir_vchk(M);
     return rc;
 }

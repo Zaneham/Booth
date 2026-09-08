@@ -1,4 +1,5 @@
 #include "bir.h"
+#include "backend.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -109,10 +110,22 @@ static const char *op_names[BIR_OP_COUNT] = {
     [BIR_MFMA]          = "mfma",
     [BIR_MMA]           = "mma",
     [BIR_MFRG]          = "mfrg",
+    [BIR_WLD]           = "wmma_load",
+    [BIR_WST]           = "wmma_store",
+    [BIR_WMMA]          = "wmma_mma",
 
     [BIR_CALL]          = "call",
     [BIR_SELECT]        = "select",
     [BIR_INLINE_ASM]    = "inline_asm",
+
+    [BIR_TRAP]          = "trap",
+    [BIR_FNREF]         = "fnref",
+    [BIR_PRINTF]        = "printf",
+
+    [BIR_FENCE]         = "fence",
+    [BIR_GRIDBAR]       = "gridbar",
+    [BIR_NANOSLP]       = "nanosleep",
+    [BIR_BARRED]        = "barrier_red",
 };
 
 static const char *cmp_names[BIR_CMP_COUNT] = {
@@ -158,6 +171,49 @@ static const char *order_names[BIR_ORDER_COUNT] = {
     [BIR_ORDER_ACQ_REL] = "acq_rel",
     [BIR_ORDER_SEQ_CST] = "seq_cst",
 };
+
+const bir_wmma_t bir_wmma[BIR_WM_NROW] = {
+    { "m16n16k16", "f16", "f16", 8, 8, 4 },         /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m16n16k16", "f16", "f32", 8, 8, 8 },         /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n32k16", "f16", "f16", 8, 8, 4 },          /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n32k16", "f16", "f32", 8, 8, 8 },          /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m32n8k16", "f16", "f16", 8, 8, 4 },          /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m32n8k16", "f16", "f32", 8, 8, 8 },          /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m16n16k16", "bf16", "f32", 4, 4, 8 },        /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n32k16", "bf16", "f32", 2, 8, 8 },         /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m32n8k16", "bf16", "f32", 8, 2, 8 },         /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m16n16k8", "tf32", "f32", 4, 4, 8 },         /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m16n16k16", "s8", "s32", 2, 2, 8 },          /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n32k16", "s8", "s32", 1, 4, 8 },           /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m32n8k16", "s8", "s32", 4, 1, 8 },           /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m16n16k16", "u8", "s32", 2, 2, 8 },          /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n32k16", "u8", "s32", 1, 4, 8 },           /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m32n8k16", "u8", "s32", 4, 1, 8 },           /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n8k32", "s4", "s32", 1, 1, 2 },            /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n8k32", "u4", "s32", 1, 1, 2 },            /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n8k128", "b1", "s32", 1, 1, 2 },           /* per PTX ISA 9.2 9.7.14.4.1 */
+    { "m8n8k4", "f64", "f64", 1, 1, 2 },            /* per PTX ISA 9.2 9.7.14.4.1 */
+};
+
+int bir_wmrow(const char *shp, const char *abt, const char *act)
+{
+    for (int i = 0; i < BIR_WM_NROW; i++) {
+        const bir_wmma_t *W = &bir_wmma[i];
+        if (shp && strcmp(W->shp, shp) != 0) continue;
+        if (abt && strcmp(W->abt, abt) != 0) continue;
+        if (act && strcmp(W->act, act) != 0) continue;
+        return i;
+    }
+    return -1;
+}
+
+uint8_t bir_wmn(uint32_t row, unsigned role)
+{
+    const bir_wmma_t *W = &bir_wmma[row % BIR_WM_NROW];
+    if (role == BIR_WM_A) return W->na;
+    if (role == BIR_WM_B) return W->nb;
+    return W->nc;
+}
 
 const char *bir_op_name(int op)
 {
@@ -282,7 +338,7 @@ static uint32_t intern_compound(bir_module_t *M, uint8_t kind,
     uint32_t guard = M->num_types;
     for (uint32_t i = 0; i < M->num_types && guard > 0; i++, guard--) {
         bir_type_t *t = &M->types[i];
-        if (t->kind != kind || t->inner != inner
+        if (t->kind != kind || t->inner != inner || t->uni != 0
             || t->num_fields != (uint16_t)nfields)
             continue;
         int match = 1;
@@ -385,10 +441,49 @@ uint32_t bir_type_struct(bir_module_t *M, const uint32_t *fields, int nfields)
     return intern_compound(M, BIR_TYPE_STRUCT, 0, fields, nfields);
 }
 
+uint32_t bir_sfwd(bir_module_t *M)
+{
+    uint32_t idx;
+
+    if (M->num_types >= BIR_MAX_TYPES) {
+        bir_pfull(M, BIR_P_TYPES);
+        return 0;
+    }
+    idx = M->num_types++;
+    memset(&M->types[idx], 0, sizeof(M->types[idx]));
+    M->types[idx].kind = BIR_TYPE_STRUCT;
+    return idx;
+}
+
+int bir_sfin(bir_module_t *M, uint32_t ty, const uint32_t *fields, int nfields)
+{
+    int i;
+
+    if (ty >= M->num_types || M->types[ty].kind != BIR_TYPE_STRUCT) return 0;
+    if (nfields < 0 || nfields > 0xFFFF) return 0;
+    if (M->num_type_fields + (uint32_t)nfields > BIR_MAX_TYPE_FIELDS) {
+        bir_pfull(M, BIR_P_TFIELDS);
+        return 0;
+    }
+
+    M->types[ty].count = M->num_type_fields;
+    for (i = 0; i < nfields; i++)
+        M->type_fields[M->num_type_fields++] = fields[i];
+    M->types[ty].num_fields = (uint16_t)nfields;
+    return 1;
+}
+
 uint32_t bir_type_func(bir_module_t *M, uint32_t ret,
                        const uint32_t *params, int nparams)
 {
     return intern_compound(M, BIR_TYPE_FUNC, ret, params, nparams);
+}
+
+int bir_umrk(bir_module_t *M, uint32_t ty)
+{
+    if (ty >= M->num_types || M->types[ty].kind != BIR_TYPE_STRUCT) return 0;
+    M->types[ty].uni = 1;
+    return 1;
 }
 
 /* ---- Type Sizes ---- */
@@ -455,10 +550,53 @@ uint32_t bir_bsz(const bir_module_t *M, uint32_t ty, uint32_t psz)
         if (--sp == 0) return val;
 
         if (va > fr[sp - 1].alg) fr[sp - 1].alg = va;
+        if (M->types[fr[sp - 1].ty].uni) {
+            if (val > fr[sp - 1].sum) fr[sp - 1].sum = val;
+            continue;
+        }
         if (bsz_up(fr[sp - 1].sum, va) > 0xFFFFFFFFu - val) return 0;
         fr[sp - 1].sum = bsz_up(fr[sp - 1].sum, va) + val;
     }
     return 0;
+}
+
+uint32_t bir_balg(const bir_module_t *M, uint32_t ty, uint32_t psz)
+{
+    uint32_t st[BIR_BSZ_DEEP], sp = 0, guard = 4u * BIR_MAX_TYPE_FIELDS;
+    uint32_t best = 1;
+
+    st[sp++] = ty;
+    while (sp && guard--) {
+        uint32_t t = st[--sp], w;
+        const bir_type_t *T;
+
+        if (t >= M->num_types) return 0;
+        T = &M->types[t];
+
+        if (T->kind == BIR_TYPE_ARRAY || T->kind == BIR_TYPE_VECTOR) {
+            if (sp >= BIR_BSZ_DEEP) return 0;
+            st[sp++] = T->inner;
+            continue;
+        }
+        if (T->kind == BIR_TYPE_STRUCT) {
+            for (uint16_t f = 0; f < T->num_fields; f++) {
+                if (T->count + f >= M->num_type_fields) return 0;
+                if (sp >= BIR_BSZ_DEEP) return 0;
+                st[sp++] = M->type_fields[T->count + f];
+            }
+            continue;
+        }
+        switch (T->kind) {
+        case BIR_TYPE_INT:
+        case BIR_TYPE_FLOAT:
+        case BIR_TYPE_BFLOAT: w = ((uint32_t)T->width + 7u) / 8u; break;
+        case BIR_TYPE_PTR:    w = psz; break;
+        default:              return 0;
+        }
+        w = bsz_al(w, psz);
+        if (w > best) best = w;
+    }
+    return sp ? 0 : best;
 }
 
 uint32_t bir_gsz(const bir_module_t *M, uint32_t ty, uint32_t psz)
@@ -466,6 +604,74 @@ uint32_t bir_gsz(const bir_module_t *M, uint32_t ty, uint32_t psz)
     if (ty < M->num_types && M->types[ty].kind == BIR_TYPE_PTR)
         return bir_bsz(M, M->types[ty].inner, psz);
     return bir_bsz(M, ty, psz);
+}
+
+uint32_t bir_gstr(const bir_module_t *M, uint32_t ty, uint32_t psz)
+{
+    if (ty < M->num_types && M->types[ty].kind == BIR_TYPE_PTR) {
+        uint32_t in = M->types[ty].inner;
+        if (in < M->num_types && M->types[in].kind == BIR_TYPE_ARRAY &&
+            M->types[in].count == 0)
+            return bir_bsz(M, M->types[in].inner, psz);
+    }
+    return bir_gsz(M, ty, psz);
+}
+
+static uint32_t bvty(const bir_module_t *M, uint32_t v)
+{
+    uint32_t i = BIR_VAL_INDEX(v);
+
+    if (v == BIR_VAL_NONE) return M->num_types;
+    if (BIR_VAL_IS_CONST(v))
+        return i < M->num_consts ? M->consts[i].type : M->num_types;
+    return i < M->num_insts ? M->insts[i].type : M->num_types;
+}
+
+int bir_fgep(const bir_module_t *M, const bir_inst_t *I,
+             uint32_t psz, uint32_t *off)
+{
+    uint32_t bt, st, iv, fs, k, o = 0;
+    int64_t fi;
+
+    if (!M || !I || !off) return 0;
+    if (I->op != BIR_GEP || I->num_operands < 2) return 0;
+
+    bt = bvty(M, I->operands[0]);
+    if (bt >= M->num_types || M->types[bt].kind != BIR_TYPE_PTR) return 0;
+    st = M->types[bt].inner;
+    if (st >= M->num_types || M->types[st].kind != BIR_TYPE_STRUCT) return 0;
+
+    iv = I->operands[1];
+    if (iv == BIR_VAL_NONE || !BIR_VAL_IS_CONST(iv)) return 0;
+    if (BIR_VAL_INDEX(iv) >= M->num_consts) return 0;
+    if (M->consts[BIR_VAL_INDEX(iv)].kind != BIR_CONST_INT) return 0;
+    fi = M->consts[BIR_VAL_INDEX(iv)].d.ival;
+    if (fi < 0 || (uint32_t)fi >= M->types[st].num_fields) return 0;
+
+    fs = M->types[st].count;
+    if (fs > M->num_type_fields - M->types[st].num_fields) return 0;
+
+    if (I->type >= M->num_types || M->types[I->type].kind != BIR_TYPE_PTR
+        || M->types[I->type].inner != M->type_fields[fs + (uint32_t)fi])
+        return 0;
+
+    if (M->types[st].uni) { *off = 0; return 1; }
+
+    for (k = 0; k <= (uint32_t)fi; k++) {
+        uint32_t ft = M->type_fields[fs + k];
+        uint32_t a = bir_balg(M, ft, psz), s;
+
+        if (!a) return 0;
+        o = (o + a - 1u) & ~(a - 1u);
+        if (k == (uint32_t)fi) break;
+        s = bir_bsz(M, ft, psz);
+        if (!s) return 0;
+        if (o > 0xFFFFFFFFu - s) return 0;
+        o += s;
+    }
+
+    *off = o;
+    return 1;
 }
 
 /* ---- String Table ---- */
@@ -482,6 +688,44 @@ uint32_t bir_add_string(bir_module_t *M, const char *s, uint32_t len)
     M->strings[offset + len] = '\0';
     M->string_len += len + 1;
     return offset;
+}
+
+uint32_t bir_oper(const bir_module_t *M, const bir_inst_t *I, uint32_t j)
+{
+    if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
+        uint32_t s = I->operands[0], c = I->operands[1];
+        if (j >= c || s + j >= M->num_extra_ops) return BIR_VAL_NONE;
+        return M->extra_operands[s + j];
+    }
+    if (j >= I->num_operands || j >= BIR_OPERANDS_INLINE) return BIR_VAL_NONE;
+    return I->operands[j];
+}
+
+uint32_t bir_asmd(bir_module_t *M, uint32_t tmpl, uint32_t cons,
+                  uint16_t nout, uint16_t nops, uint8_t vol)
+{
+    uint32_t i;
+
+    if (tmpl >= M->string_len || cons >= M->string_len) return BIR_SYM_NONE;
+    for (i = 0; i < M->num_asms; i++) {
+        const bir_asm_t *A = &M->asms[i];
+        if (A->nout == nout && A->nops == nops && A->vol == vol
+            && strcmp(&M->strings[A->tmpl], &M->strings[tmpl]) == 0
+            && strcmp(&M->strings[A->cons], &M->strings[cons]) == 0)
+            return i;
+    }
+    if (M->num_asms >= BIR_MAX_ASMS) {
+        bir_pfull(M, BIR_P_ASMS);
+        return BIR_SYM_NONE;
+    }
+    i = M->num_asms++;
+    M->asms[i].tmpl = tmpl;
+    M->asms[i].cons = cons;
+    M->asms[i].nout = nout;
+    M->asms[i].nops = nops;
+    M->asms[i].vol  = vol;
+    M->asms[i].pad[0] = M->asms[i].pad[1] = M->asms[i].pad[2] = 0;
+    return i;
 }
 
 /* ---- Constants ---- */
@@ -571,7 +815,8 @@ uint32_t bir_fsym(const bir_module_t *M, const char *name, uint16_t tu,
             const bir_func_t *F = &M->funcs[i];
             if (F->tu != wtu || F->name >= M->string_len) continue;
             if (strcmp(&M->strings[F->name], want) != 0) continue;
-            if (nargs < 0 || F->num_params == (uint16_t)nargs) return i;
+            if (nargs < 0
+                || F->num_params - F->sret == (uint16_t)nargs) return i;
         }
     }
     return BIR_SYM_NONE;
@@ -634,4 +879,380 @@ uint32_t bir_const_null(bir_module_t *M, uint32_t type)
     M->consts[idx].type = type;
     M->consts[idx].d.ival = 0;
     return idx;
+}
+
+static const char *vfnm(const bir_module_t *M, uint32_t fi)
+{
+    if (fi >= M->num_funcs) return "<unknown>";
+    if (M->funcs[fi].name >= M->string_len) return "<anon>";
+    return &M->strings[M->funcs[fi].name];
+}
+
+static uint32_t vfret(const bir_module_t *M, uint32_t fi)
+{
+    uint32_t ft;
+
+    if (fi >= M->num_funcs) return M->num_types;
+    ft = M->funcs[fi].type;
+    if (ft >= M->num_types || M->types[ft].kind != BIR_TYPE_FUNC)
+        return M->num_types;
+    return M->types[ft].inner;
+}
+
+static int vnarg(const bir_inst_t *I)
+{
+    if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
+        uint32_t c = I->operands[1];
+        return (c == 0u) ? -1 : (int)(c - 1u);
+    }
+    if (I->num_operands == 0) return -1;
+    return (int)I->num_operands - 1;
+}
+
+static int vsame(const bir_module_t *M, uint32_t a, uint32_t b)
+{
+    if (a == b) return 1;
+    if (a >= M->num_types || b >= M->num_types) return 0;
+    return M->types[a].kind == BIR_TYPE_PTR
+        && M->types[b].kind == BIR_TYPE_PTR;
+}
+
+static int vret1(const bir_module_t *M, uint32_t fi, const bir_inst_t *I)
+{
+    char want[64], got[64];
+    uint32_t rt = vfret(M, fi), vt;
+
+    if (rt >= M->num_types) return 0;
+    if (M->types[rt].kind == BIR_TYPE_VOID) {
+        if (I->num_operands == 0) return 0;
+        (void)bir_type_str(M, rt, want, (int)sizeof want);
+        (void)bir_type_str(M, bvty(M, I->operands[0]), got, (int)sizeof got);
+        return be_fail(BC_E702, vfnm(M, fi), want, got);
+    }
+    if (I->num_operands == 0) {
+        (void)bir_type_str(M, rt, want, (int)sizeof want);
+        return be_fail(BC_E702, vfnm(M, fi), want, "nothing");
+    }
+    vt = bvty(M, I->operands[0]);
+    if (vsame(M, vt, rt)) return 0;
+    (void)bir_type_str(M, rt, want, (int)sizeof want);
+    (void)bir_type_str(M, vt, got, (int)sizeof got);
+    return be_fail(BC_E702, vfnm(M, fi), want, got);
+}
+
+static int vcal1(const bir_module_t *M, uint32_t fi, const bir_inst_t *I)
+{
+    char want[64], got[64];
+    uint32_t ce = bir_oper(M, I, 0), rt;
+    int na = vnarg(I), bad = 0;
+
+    if (ce >= M->num_funcs) return 0;
+    rt = vfret(M, ce);
+    if (rt < M->num_types && !vsame(M, I->type, rt)) {
+        (void)bir_type_str(M, I->type, got, (int)sizeof got);
+        (void)bir_type_str(M, rt, want, (int)sizeof want);
+        bad = be_fail(BC_E703, vfnm(M, ce), got, vfnm(M, fi), want);
+    }
+    if (na >= 0 && (uint32_t)na != M->funcs[ce].num_params)
+        bad = be_fail(BC_E704, vfnm(M, ce), na,
+                      (int)M->funcs[ce].num_params);
+    return bad;
+}
+
+#define VCH_VAL  0
+#define VCH_BLK  1
+#define VCH_FUN  2
+#define VCH_GLB  3
+
+static uint32_t vflo[BIR_MAX_FUNCS];
+static uint32_t vfhi[BIR_MAX_FUNCS];
+static uint16_t vpc[BIR_FUNC_MAX_BLOCKS];
+static uint32_t vps[BIR_FUNC_MAX_BLOCKS];
+
+static int vslot(uint32_t op, uint32_t j)
+{
+    if (op == BIR_BR)      return (j == 0u) ? VCH_BLK : VCH_VAL;
+    if (op == BIR_BR_COND) return (j == 0u) ? VCH_VAL : VCH_BLK;
+    if (op == BIR_SWITCH) {
+        if (j == 0u) return VCH_VAL;
+        if (j == 1u) return VCH_BLK;
+        return (j & 1u) ? VCH_BLK : VCH_VAL;
+    }
+    if (op == BIR_PHI)  return (j & 1u) ? VCH_VAL : VCH_BLK;
+    if (op == BIR_CALL || op == BIR_FNREF)
+        return (j == 0u) ? VCH_FUN : VCH_VAL;
+    if (op == BIR_GLOBAL_REF) return (j == 0u) ? VCH_GLB : VCH_VAL;
+    return VCH_VAL;
+}
+
+static const char *vkind(uint32_t op, uint32_t j)
+{
+    if (op == BIR_PHI)    return "phi predecessor";
+    if (op == BIR_SWITCH) return (j == 1u) ? "switch default" : "switch case";
+    return "branch";
+}
+
+static uint32_t vnop(const bir_inst_t *I)
+{
+    if (I->num_operands == BIR_OPERANDS_OVERFLOW) return I->operands[1];
+    return I->num_operands;
+}
+
+static uint32_t vnsuc(const bir_module_t *M, const bir_block_t *B)
+{
+    const bir_inst_t *I;
+    uint32_t c;
+
+    if (B->num_insts == 0u || B->first_inst >= M->num_insts) return 0u;
+    if (B->num_insts - 1u > M->num_insts - 1u - B->first_inst) return 0u;
+    I = &M->insts[B->first_inst + B->num_insts - 1u];
+    if (I->op == BIR_BR)      return 1u;
+    if (I->op == BIR_BR_COND) return 2u;
+    if (I->op != BIR_SWITCH)  return 0u;
+    if (I->num_operands != BIR_OPERANDS_OVERFLOW) return 1u;
+    c = I->operands[1];
+    if (c < 2u) return 0u;
+    return 1u + (c - 2u) / 2u;
+}
+
+static uint32_t vsuc(const bir_module_t *M, const bir_block_t *B, uint32_t k)
+{
+    const bir_inst_t *I = &M->insts[B->first_inst + B->num_insts - 1u];
+
+    if (I->op == BIR_BR)      return bir_oper(M, I, 0u);
+    if (I->op == BIR_BR_COND) return bir_oper(M, I, 1u + k);
+    if (I->num_operands != BIR_OPERANDS_OVERFLOW) return bir_oper(M, I, 1u);
+    return (k == 0u) ? bir_oper(M, I, 1u) : bir_oper(M, I, 2u * k + 1u);
+}
+
+static int vsucis(const bir_module_t *M, uint32_t b, uint32_t tgt)
+{
+    const bir_block_t *B = &M->blocks[b];
+    uint32_t ns = vnsuc(M, B), k;
+
+    for (k = 0; k < ns; k++)
+        if (vsuc(M, B, k) == tgt) return 1;
+    return 0;
+}
+
+static const char *vbnm(const bir_module_t *M, uint32_t b)
+{
+    if (b >= M->num_blocks) return "<unknown>";
+    if (M->blocks[b].name >= M->string_len) return "<anon>";
+    return &M->strings[M->blocks[b].name];
+}
+
+static const char *vbown(const bir_module_t *M, uint32_t b)
+{
+    uint32_t fi;
+
+    for (fi = 0; fi < M->num_funcs; fi++) {
+        const bir_func_t *F = &M->funcs[fi];
+        if (F->num_blocks != 0u && b >= F->first_block
+         && b - F->first_block < F->num_blocks)
+            return vfnm(M, fi);
+    }
+    return "no function";
+}
+
+static const char *vvown(const bir_module_t *M, uint32_t v)
+{
+    uint32_t fi;
+
+    for (fi = 0; fi < M->num_funcs; fi++)
+        if (M->funcs[fi].num_blocks != 0u && v >= vflo[fi] && v < vfhi[fi])
+            return vfnm(M, fi);
+    return "no function";
+}
+
+static void vfrng(const bir_module_t *M)
+{
+    uint32_t fi, b;
+
+    for (fi = 0; fi < M->num_funcs; fi++) {
+        const bir_func_t *F = &M->funcs[fi];
+        uint32_t lo = M->num_insts, hi = 0u;
+        for (b = 0; b < F->num_blocks; b++) {
+            const bir_block_t *B;
+            if (F->first_block + b >= M->num_blocks) break;
+            B = &M->blocks[F->first_block + b];
+            if (B->num_insts == 0u || B->first_inst >= M->num_insts) continue;
+            if (B->first_inst < lo) lo = B->first_inst;
+            if (B->first_inst + B->num_insts > hi)
+                hi = B->first_inst + B->num_insts;
+        }
+        if (hi <= lo) { lo = 0u; hi = 0u; }
+        vflo[fi] = lo;
+        vfhi[fi] = hi;
+    }
+}
+
+static int vovlp(const bir_module_t *M)
+{
+    uint32_t fi, fj;
+    int bad = 0;
+
+    for (fi = 0; fi < M->num_funcs; fi++) {
+        const bir_func_t *A = &M->funcs[fi];
+        int hb = 0, hi = 0;
+        if (A->num_blocks == 0u) continue;
+        for (fj = fi + 1u; fj < M->num_funcs && !(hb && hi); fj++) {
+            const bir_func_t *C = &M->funcs[fj];
+            if (C->num_blocks == 0u) continue;
+            if (!hb
+             && A->first_block < C->first_block + C->num_blocks
+             && C->first_block < A->first_block + A->num_blocks) {
+                hb = 1;
+                bad = be_fail(BC_E862, vfnm(M, fi), vfnm(M, fj));
+            }
+            if (!hi && vfhi[fi] > vflo[fj] && vfhi[fj] > vflo[fi]) {
+                hi = 1;
+                bad = be_fail(BC_E863, vfnm(M, fi), vfnm(M, fj));
+            }
+        }
+    }
+    return bad;
+}
+
+typedef struct {
+    uint32_t fi, blo, nb, vlo, vhi;
+    int hb, hv, hp, hc, hg;
+} vfs_t;
+
+static uint32_t vstm;
+
+static void vpred(const bir_module_t *M, uint32_t blo, uint32_t nb)
+{
+    uint32_t b, k;
+
+    memset(vpc, 0, (size_t)nb * sizeof vpc[0]);
+    for (b = 0; b < nb; b++) {
+        const bir_block_t *B = &M->blocks[blo + b];
+        uint32_t ns = vnsuc(M, B);
+        vstm++;
+        for (k = 0; k < ns; k++) {
+            uint32_t s = vsuc(M, B, k), lp;
+            if (s < blo) continue;
+            lp = s - blo;
+            if (lp >= nb || vps[lp] == vstm) continue;
+            vps[lp] = vstm;
+            if (vpc[lp] < 0xFFFFu) vpc[lp] = (uint16_t)(vpc[lp] + 1u);
+        }
+    }
+}
+
+static int vops1(const bir_module_t *M, vfs_t *X, const bir_inst_t *I,
+                 uint32_t n)
+{
+    uint32_t k;
+    int bad = 0;
+
+    for (k = 0; k < n; k++) {
+        uint32_t o = bir_oper(M, I, k);
+        int cls = vslot(I->op, k);
+        if (cls == VCH_FUN) continue;
+        if (cls == VCH_GLB) {
+            if (o < M->num_globals) continue;
+            if (X->hg) continue;
+            X->hg = 1;
+            bad = be_fail(BC_E980, vfnm(M, X->fi), (unsigned)o,
+                          (unsigned)M->num_globals);
+            continue;
+        }
+        if (cls == VCH_BLK) {
+            if (o >= X->blo && o - X->blo < X->nb) continue;
+            if (X->hb) continue;
+            X->hb = 1;
+            bad = be_fail(BC_E860, vkind(I->op, k), vfnm(M, X->fi),
+                          vbown(M, o));
+            continue;
+        }
+        if (o == BIR_VAL_NONE || BIR_VAL_IS_CONST(o)) continue;
+        if (o >= X->vlo && o < X->vhi) continue;
+        if (X->hv) continue;
+        X->hv = 1;
+        bad = be_fail(BC_E861, vfnm(M, X->fi), vvown(M, o));
+    }
+    return bad;
+}
+
+static int vphi1(const bir_module_t *M, vfs_t *X, uint32_t b,
+                 const bir_inst_t *I, uint32_t n)
+{
+    uint32_t k, ps = ++vstm, dist = 0u;
+    int bp = 0, oor = 0, bad = 0;
+
+    for (k = 0; k + 1u < n; k += 2u) {
+        uint32_t p = bir_oper(M, I, k), lp;
+        if (p < X->blo || p - X->blo >= X->nb) { oor = 1; continue; }
+        lp = p - X->blo;
+        if (!vsucis(M, p, X->blo + b)) bp = 1;
+        if (vps[lp] == ps) bp = 1;
+        else { vps[lp] = ps; dist++; }
+    }
+    if (bp && !X->hp) {
+        X->hp = 1;
+        bad = be_fail(BC_E864, vbnm(M, X->blo + b), vfnm(M, X->fi));
+    }
+    if (!bp && !oor && dist != vpc[b] && !X->hc) {
+        X->hc = 1;
+        bad = be_fail(BC_E865, vbnm(M, X->blo + b), vfnm(M, X->fi),
+                      (int)dist, (int)vpc[b]);
+    }
+    return bad;
+}
+
+static int vfun1(const bir_module_t *M, vfs_t *X)
+{
+    uint32_t b, j;
+    int bad = 0;
+
+    for (b = 0; b < X->nb; b++) {
+        const bir_block_t *B = &M->blocks[X->blo + b];
+        uint32_t ni = B->num_insts;
+        if (B->first_inst >= M->num_insts) continue;
+        if (ni > M->num_insts - B->first_inst)
+            ni = M->num_insts - B->first_inst;
+        for (j = 0; j < ni; j++) {
+            const bir_inst_t *I = &M->insts[B->first_inst + j];
+            uint32_t n = vnop(I);
+            if (I->op == BIR_RET && vret1(M, X->fi, I) != 0) bad = 1;
+            if (I->op == BIR_CALL && vcal1(M, X->fi, I) != 0) bad = 1;
+            if (vops1(M, X, I, n) != 0) bad = 1;
+            if (I->op == BIR_PHI && vphi1(M, X, b, I, n) != 0) bad = 1;
+        }
+    }
+    return bad;
+}
+
+int bir_vchk(const bir_module_t *M)
+{
+    uint32_t fi;
+    int bad = 0;
+
+    if (M == NULL) return BC_OK;
+
+    vfrng(M);
+    if (vovlp(M) != 0) bad = 1;
+    memset(vps, 0, sizeof vps);
+    vstm = 0u;
+
+    for (fi = 0; fi < M->num_funcs; fi++) {
+        const bir_func_t *F = &M->funcs[fi];
+        vfs_t X;
+
+        if (F->num_blocks == 0u || F->first_block >= M->num_blocks) continue;
+        X.fi  = fi;
+        X.blo = F->first_block;
+        X.nb  = F->num_blocks;
+        if (X.nb > M->num_blocks - X.blo) X.nb = M->num_blocks - X.blo;
+        if (X.nb > BIR_FUNC_MAX_BLOCKS) X.nb = BIR_FUNC_MAX_BLOCKS;
+        X.vlo = vflo[fi];
+        X.vhi = vfhi[fi];
+        X.hb = X.hv = X.hp = X.hc = 0;
+
+        vpred(M, X.blo, X.nb);
+        if (vfun1(M, &X) != 0) bad = 1;
+    }
+    return bad ? BC_ERR_VERIFY : BC_OK;
 }

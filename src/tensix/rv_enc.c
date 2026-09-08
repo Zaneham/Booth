@@ -198,5 +198,6 @@ uint32_t rv_fence(uint8_t pred, uint8_t succ)
 
 uint32_t rv_ecall (void) { return 0x00000073u; }
 uint32_t rv_ebreak(void) { return 0x00100073u; }
+uint32_t rv_unimp (void) { return 0xC0001073u; }
 
 uint32_t rv_nop(void) { return rv_addi(RV_X0, RV_X0, 0); }

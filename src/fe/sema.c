@@ -137,15 +137,17 @@ static uint32_t st_enum(sema_ctx_t *S)
 }
 
 static uint32_t st_func(sema_ctx_t *S, uint32_t ret_type,
-                         const uint32_t *param_types, int nparams)
+                         const uint32_t *param_types, int nparams, int varg,
+                         int pack)
 {
     uint32_t params_start = S->num_params;
     for (int i = 0; i < nparams; i++) {
         if (S->num_params < SEMA_MAX_PARAMS)
             S->param_pool[S->num_params++] = param_types[i];
     }
-    return intern_type(S, STYPE_FUNC, 0, (uint16_t)nparams,
-                       ret_type, params_start);
+    uint8_t q = (uint8_t)((varg ? SQUAL_VARG : 0) | (pack ? SQUAL_PACK : 0));
+    return intern_type(S, STYPE_FUNC, q,
+                       (uint16_t)nparams, ret_type, params_start);
 }
 
 /* ---- Type Queries ---- */
@@ -323,6 +325,7 @@ static void add_sym(sema_ctx_t *S, const char *name, uint32_t type,
     sym->kind       = (uint8_t)kind;
     sym->scope      = (uint8_t)(S->scope_depth > 0 ? S->scope_depth - 1 : 0);
     sym->cuda_flags = cuda;
+    sym->nreq       = 0;
 }
 
 static const sema_sym_t *find_sym(const sema_ctx_t *S, const char *name)
@@ -331,6 +334,27 @@ static const sema_sym_t *find_sym(const sema_ctx_t *S, const char *name)
         if (strcmp(S->syms[i].name, name) == 0)
             return &S->syms[i];
     return NULL;
+}
+
+static const sema_sym_t *fpick(const sema_ctx_t *S, const char *name,
+                               int nargs, int any)
+{
+    const sema_sym_t *last = NULL;
+
+    for (int i = (int)S->num_syms - 1; i >= 0; i--) {
+        const sema_sym_t *y = &S->syms[i];
+        uint32_t ft = y->type;
+        int np, vg;
+
+        if (y->kind != SYM_FUNC || strcmp(y->name, name) != 0) continue;
+        if (ft >= S->num_types || S->types[ft].kind != STYPE_FUNC) continue;
+        if (!last) last = y;
+        np = (int)S->types[ft].width;
+        vg = S->types[ft].qualifiers & (SQUAL_VARG | SQUAL_PACK);
+        if (np <= 0) return y;
+        if (nargs >= (int)y->nreq && (vg || nargs <= np)) return y;
+    }
+    return any ? last : NULL;
 }
 
 /* ---- Struct Lookup ---- */
@@ -348,6 +372,27 @@ static sema_struct_t *find_struct_by_idx(const sema_ctx_t *S, uint32_t idx)
     if (idx < S->num_structs)
         return (sema_struct_t *)&S->structs[idx];
     return NULL;
+}
+
+static uint32_t sslot(sema_ctx_t *S, uint32_t node, const char *name, int def)
+{
+    sema_struct_t *sd = name[0] ? find_struct(S, name) : NULL;
+    uint32_t si;
+    size_t n;
+
+    if (sd && !(def && sd->done)) return (uint32_t)(sd - S->structs);
+    if (S->num_structs >= SEMA_MAX_STRUCTS) {
+        sema_error(S, node, BC_E803, SEMA_MAX_STRUCTS);
+        return SEMA_MAX_STRUCTS;
+    }
+    si = S->num_structs++;
+    sd = &S->structs[si];
+    memset(sd, 0, sizeof(*sd));
+    n = strlen(name);
+    if (n >= sizeof sd->name) n = sizeof sd->name - 1;
+    memcpy(sd->name, name, n);
+    add_sym(S, sd->name, st_struct(S, si), node, SYM_STRUCT, 0);
+    return si;
 }
 
 /* ---- Resolve AST Type Specifier → stype ---- */
@@ -397,6 +442,8 @@ static uint32_t resolve_typespec(sema_ctx_t *S, uint32_t node, int ptr_depth)
 
         if (strcmp(tname, "size_t") == 0)       { base = st_ulong(S); break; }
         if (strcmp(tname, "ptrdiff_t") == 0)    { base = st_long(S); break; }
+        if (strcmp(tname, "uintptr_t") == 0)    { base = st_ulong(S); break; }
+        if (strcmp(tname, "intptr_t") == 0)     { base = st_long(S); break; }
         if (strcmp(tname, "uint32_t") == 0)     { base = st_uint(S); break; }
         if (strcmp(tname, "int32_t") == 0)      { base = st_int(S); break; }
         if (strcmp(tname, "uint64_t") == 0)     { base = st_ullong(S); break; }
@@ -424,9 +471,21 @@ static uint32_t resolve_typespec(sema_ctx_t *S, uint32_t node, int ptr_depth)
                 {"uchar2",STYPE_UCHAR,2},{"uchar3",STYPE_UCHAR,3},{"uchar4",STYPE_UCHAR,4},
                 {"short2",STYPE_SHORT,2},{"short3",STYPE_SHORT,3},{"short4",STYPE_SHORT,4},
                 {"ushort2",STYPE_USHORT,2},{"ushort3",STYPE_USHORT,3},{"ushort4",STYPE_USHORT,4},
-                {"long2",STYPE_LONG,2},{"long3",STYPE_LONG,3},{"long4",STYPE_LONG,4},
-                {"ulong2",STYPE_ULONG,2},{"ulong3",STYPE_ULONG,3},{"ulong4",STYPE_ULONG,4},
-                {"longlong2",STYPE_LLONG,2},{"ulonglong2",STYPE_ULLONG,2},
+                {"long1",STYPE_LONG,1},{"long2",STYPE_LONG,2},
+                {"long3",STYPE_LONG,3},{"long4",STYPE_LONG,4},
+                {"ulong1",STYPE_ULONG,1},{"ulong2",STYPE_ULONG,2},
+                {"ulong3",STYPE_ULONG,3},{"ulong4",STYPE_ULONG,4},
+                {"longlong1",STYPE_LLONG,1},{"longlong2",STYPE_LLONG,2},
+                {"longlong3",STYPE_LLONG,3},{"longlong4",STYPE_LLONG,4},
+                {"ulonglong1",STYPE_ULLONG,1},{"ulonglong2",STYPE_ULLONG,2},
+                {"ulonglong3",STYPE_ULLONG,3},{"ulonglong4",STYPE_ULLONG,4},
+                {"char1",STYPE_CHAR,1},{"uchar1",STYPE_UCHAR,1},
+                {"short1",STYPE_SHORT,1},{"ushort1",STYPE_USHORT,1},
+                {"int1",STYPE_INT,1},{"uint1",STYPE_UINT,1},
+                {"float1",STYPE_FLOAT,1},{"double1",STYPE_DOUBLE,1},
+                {"half2",STYPE_HALF,2},{"__half2",STYPE_HALF,2},
+                {"nv_bfloat162",STYPE_BF16,2},{"__nv_bfloat162",STYPE_BF16,2},
+                {"__hip_bfloat162",STYPE_BF16,2},
                 {"dim3",STYPE_UINT,3},
                 {NULL,0,0}
             };
@@ -469,7 +528,16 @@ static uint32_t resolve_typespec(sema_ctx_t *S, uint32_t node, int ptr_depth)
             uint32_t si = (uint32_t)(sd - S->structs);
             base = st_struct(S, si);
         } else {
-            base = st_int(S);
+            const sema_sym_t *ss = sname[0] ? find_sym(S, sname) : NULL;
+            if (ss && ss->kind == SYM_STRUCT) {
+                base = ss->type;
+            } else if (sname[0]) {
+                uint32_t si = sslot(S, node, sname, 0);
+                base = (si < SEMA_MAX_STRUCTS) ? st_struct(S, si)
+                                               : st_error(S);
+            } else {
+                base = st_int(S);
+            }
         }
         break;
     }
@@ -499,6 +567,7 @@ static uint32_t check_expr(sema_ctx_t *S, uint32_t node);
 static void     check_stmt(sema_ctx_t *S, uint32_t node);
 static void     check_block_stmts(sema_ctx_t *S, uint32_t node);
 static void     collect_struct_def(sema_ctx_t *S, uint32_t node);
+static void     sanon(sema_ctx_t *S, uint32_t node);
 
 /* ---- Annotate Helper ---- */
 
@@ -623,6 +692,51 @@ static const cuda_builtin_t cuda_builtins[] = {
     {"__ffsll",          1, 0, -1},
     {"__brev",           1, 0,  0},  /* returns its argument's type, not int */
     {"__brevll",         1, 0,  0},
+    {"__byte_perm",      3, 0, -1},
+    {"__float2int_rn",1,0,-1},
+    {"__float2int_rz",1,0,-1},
+    {"__float2int_ru",1,0,-1},
+    {"__float2int_rd",1,0,-1},
+    {"__float2uint_rn",1,0,-1},
+    {"__float2uint_rz",1,0,-1},
+    {"__float2uint_ru",1,0,-1},
+    {"__float2uint_rd",1,0,-1},
+    {"__float2ll_rn",1,0,-1},
+    {"__float2ll_rz",1,0,-1},
+    {"__float2ll_ru",1,0,-1},
+    {"__float2ll_rd",1,0,-1},
+    {"__float2ull_rn",1,0,-1},
+    {"__float2ull_rz",1,0,-1},
+    {"__float2ull_ru",1,0,-1},
+    {"__float2ull_rd",1,0,-1},
+    {"__double2int_rn",1,0,-1},
+    {"__double2int_rz",1,0,-1},
+    {"__double2int_ru",1,0,-1},
+    {"__double2int_rd",1,0,-1},
+    {"__double2ll_rn",1,0,-1},
+    {"__double2ll_rz",1,0,-1},
+    {"__double2ll_ru",1,0,-1},
+    {"__double2ll_rd",1,0,-1},
+    {"__int2float_rn",1,0,-1},
+    {"__uint2float_rn",1,0,-1},
+    {"__ll2float_rn",1,0,-1},
+    {"__ull2float_rn",1,0,-1},
+    {"__int2double_rn",1,0,-1},
+    {"__uint2double_rn",1,0,-1},
+    {"__ll2double_rn",1,0,-1},
+    {"__ull2double_rn",1,0,-1},
+    {"__vadd4",          2, 0, -1},
+    {"__vsub4",          2, 0, -1},
+    {"__vaddss4",        2, 0, -1},
+    {"__vsubss4",        2, 0, -1},
+    {"__vaddus4",        2, 0, -1},
+    {"__vsubus4",        2, 0, -1},
+    {"__vcmpeq4",        2, 0, -1},
+    {"__vcmpne4",        2, 0, -1},
+    {"__cvta_generic_to_shared", 1, 0, -1},
+    {"__builtin_assume", 1, 1, -1},
+    {"erff",1,0,0},{"erf",1,0,0},
+    {"isinf",1,0,-1},{"isnan",1,0,-1},{"isfinite",1,0,-1},
     {"sqrtf",1,0,0},{"sqrt",1,0,0},{"__fsqrt_rn",1,0,0},{"rsqrtf",1,0,0},{"__frsqrt_rn",1,0,0},
     {"__frcp_rn",1,0,0},{"expf",1,0,0},{"__expf",1,0,0},{"exp2f",1,0,0},
     {"logf",1,0,0},{"__logf",1,0,0},{"log2f",1,0,0},{"__log2f",1,0,0},
@@ -760,6 +874,10 @@ static uint32_t check_expr(sema_ctx_t *S, uint32_t node)
         if (is_struct(S, struct_t)) {
             uint32_t si = S->types[struct_t].extra;
             sema_struct_t *sd = find_struct_by_idx(S, si);
+            if (sd && !sd->done) {
+                sema_error(S, node, BC_E802, sd->name);
+                return annotate(S, node, st_error(S));
+            }
             if (sd) {
                 char fname[128];
                 get_text(S, fld_n, fname, sizeof(fname));
@@ -1120,8 +1238,23 @@ static uint32_t check_expr(sema_ctx_t *S, uint32_t node)
                     rt = arg_types[1];
                 }
             } else if (strcmp(cname, "__ballot_sync") == 0
-                    || strcmp(cname, "__ballot") == 0) {
+                    || strcmp(cname, "__ballot") == 0
+                    || strcmp(cname, "__byte_perm") == 0
+                    || (strncmp(cname, "__v", 3) == 0
+                        && cname[strlen(cname) - 1] == '4')) {
                 rt = st_uint(S);
+            } else if (strcmp(cname, "__cvta_generic_to_shared") == 0) {
+                rt = st_ulong(S);
+            } else if (strstr(cname, "2int_r") || strstr(cname, "2uint_r")
+                    || strstr(cname, "2ll_r")  || strstr(cname, "2ull_r")) {
+                int lng = strstr(cname, "2ll_r") || strstr(cname, "2ull_r");
+                int uns = strstr(cname, "2uint_r") || strstr(cname, "2ull_r");
+                rt = lng ? (uns ? st_ullong(S) : st_llong(S))
+                         : (uns ? st_uint(S) : st_int(S));
+            } else if (strstr(cname, "2float_rn") != NULL) {
+                rt = st_float(S);
+            } else if (strstr(cname, "2double_rn") != NULL) {
+                rt = st_double(S);
             } else if (strcmp(cname, "__any_sync") == 0
                     || strcmp(cname, "__all_sync") == 0
                     || strcmp(cname, "__any") == 0
@@ -1134,15 +1267,22 @@ static uint32_t check_expr(sema_ctx_t *S, uint32_t node)
             return annotate(S, node, rt);
         }
 
-        const sema_sym_t *sym = find_sym(S, cname);
+        const sema_sym_t *sym = fpick(S, cname, nargs, 0);
+        if (!sym) sym = find_sym(S, cname);
         if (sym && sym->kind == SYM_FUNC) {
-            uint32_t ft = sym->type;
+            const sema_sym_t *ov = argvar ? NULL : fpick(S, cname, nargs, 0);
+            uint32_t ft;
+            if (ov) sym = ov;
+            else if (!argvar) {
+                const sema_sym_t *ny = fpick(S, cname, nargs, 1);
+                if (ny) sym = ny;
+            }
+            ft = sym->type;
             if (ft < S->num_types && S->types[ft].kind == STYPE_FUNC) {
                 int expected = (int)S->types[ft].width;
-                if (expected > 0 && nargs != expected && !argvar) {
+                if (expected > 0 && !argvar && !ov)
                     sema_error(S, node, BC_E073,
                                cname, expected, nargs);
-                }
                 return annotate(S, node, S->types[ft].inner);
             }
             return annotate(S, node, sym->type);
@@ -1340,19 +1480,22 @@ static void check_stmt(sema_ctx_t *S, uint32_t node)
     }
 
     case AST_FOR: {
-        uint32_t init_n = child_at(S, node, 0);
-        uint32_t cond_n = child_at(S, node, 1);
-        uint32_t incr_n = child_at(S, node, 2);
-        uint32_t body_n = child_at(S, node, 3);
+        uint32_t init_n = ND(S, node)->first_child;
+        uint32_t cond_n = init_n, incr_n, body_n;
 
         push_scope(S);
 
-        if (init_n && ND(S, init_n)->type != AST_NONE) {
-            if (ND(S, init_n)->type == AST_VAR_DECL)
-                check_var_decl(S, init_n);
-            else
-                check_expr(S, init_n);
+        while (cond_n && ND(S, cond_n)->type == AST_VAR_DECL) {
+            check_var_decl(S, cond_n);
+            cond_n = ND(S, cond_n)->next_sibling;
         }
+        if (cond_n == init_n) {
+            if (init_n && ND(S, init_n)->type != AST_NONE)
+                check_expr(S, init_n);
+            cond_n = init_n ? ND(S, init_n)->next_sibling : 0;
+        }
+        incr_n = cond_n ? ND(S, cond_n)->next_sibling : 0;
+        body_n = incr_n ? ND(S, incr_n)->next_sibling : 0;
         if (cond_n && ND(S, cond_n)->type != AST_NONE) {
             uint32_t ct = check_expr(S, cond_n);
             if (!is_scalar(S, ct) && !is_error(S, ct))
@@ -1442,52 +1585,136 @@ static void check_block_stmts(sema_ctx_t *S, uint32_t block_node)
 
 /* ---- Pass 1: Collect Declarations ---- */
 
+static uint32_t marr(sema_ctx_t *S, uint32_t base, uint32_t decl,
+                     uint32_t name_n, uint32_t *aft)
+{
+    uint32_t dims[SEMA_MAX_DIM], nd = 0, t = base, i, c;
+    int pd = ND(S, decl)->d.oper.op;
+
+    *aft = name_n ? ND(S, name_n)->next_sibling : 0;
+    if (pd <= 0 || !name_n) return base;
+
+    c = *aft;
+    while (c && nd < (uint32_t)pd && nd < SEMA_MAX_DIM) {
+        const ast_node_t *dn = ND(S, c);
+        if (dn->type == AST_INT_LIT) {
+            int64_t v = parse_int_value(S->src + dn->d.text.offset,
+                                        (int)dn->d.text.len);
+            dims[nd++] = (v > 0 && v <= 0xFFFF) ? (uint32_t)v : 0;
+        } else if (dn->type == AST_IDENT) {
+            dims[nd++] = 0;
+        } else {
+            break;
+        }
+        c = dn->next_sibling;
+    }
+
+    *aft = c;
+    if (nd == 0) return st_array(S, base, 0);
+    for (i = nd; i > 0; i--)
+        t = st_array(S, t, (uint16_t)dims[i - 1]);
+    return t;
+}
+
+static uint32_t canon(const sema_ctx_t *S, uint32_t member)
+{
+    uint32_t ats, anm, inner;
+
+    if (ND(S, member)->type != AST_STRUCT_DEF) return 0;
+    ats = ND(S, member)->first_child;
+    if (!ats) return 0;
+    anm = ND(S, ats)->first_child;
+    inner = ND(S, ats)->next_sibling;
+    if (anm && ND(S, anm)->type == AST_IDENT) return 0;
+    return inner;
+}
+
+static int cfadd(sema_ctx_t *S, sema_struct_t *sd, uint32_t member)
+{
+    uint32_t ft_n = ND(S, member)->first_child;
+    uint32_t fn_n = ft_n ? ND(S, ft_n)->next_sibling : 0;
+    uint32_t ft = resolve_typespec(S, ft_n, ND(S, member)->d.oper.flags);
+    uint32_t extra = 0;
+
+    if (!fn_n || ND(S, fn_n)->type != AST_IDENT) return 1;
+    sd->field_types[sd->num_fields] = marr(S, ft, member, fn_n, &extra);
+    get_text(S, fn_n, sd->field_names[sd->num_fields],
+             sizeof(sd->field_names[0]));
+    sd->num_fields++;
+
+    while (extra && ND(S, extra)->type == AST_IDENT) {
+        if (sd->num_fields >= SEMA_MAX_FIELDS) return 0;
+        sd->field_types[sd->num_fields] = ft;
+        get_text(S, extra, sd->field_names[sd->num_fields],
+                 sizeof(sd->field_names[0]));
+        sd->num_fields++;
+        extra = ND(S, extra)->next_sibling;
+    }
+    return 1;
+}
+
 static void collect_struct_def(sema_ctx_t *S, uint32_t node)
 {
-    if (S->num_structs >= SEMA_MAX_STRUCTS) return;
-
     uint32_t type_n = ND(S, node)->first_child;
     if (!type_n) return;
 
-    sema_struct_t *sd = &S->structs[S->num_structs];
-    memset(sd, 0, sizeof(*sd));
+    for (uint32_t i = 0; i < S->num_structs; i++)
+        if (S->structs[i].done && S->structs[i].node == node) return;
 
+    char sname[128] = {0};
     uint32_t name_n = ND(S, type_n)->first_child;
     if (name_n && ND(S, name_n)->type == AST_IDENT)
-        get_text(S, name_n, sd->name, sizeof(sd->name));
+        get_text(S, name_n, sname, sizeof(sname));
+
+    uint32_t si = sslot(S, node, sname, 1);
+    if (si >= SEMA_MAX_STRUCTS) return;
+
+    sema_struct_t *sd = &S->structs[si];
+    sd->num_fields = 0;
+    sd->done = 1;
+    sd->node = node;
 
     uint32_t member = ND(S, type_n)->next_sibling;
-    while (member && sd->num_fields < SEMA_MAX_FIELDS) {
-        if (ND(S, member)->type == AST_VAR_DECL) {
-            uint32_t ft_n = ND(S, member)->first_child;
-            uint32_t fn_n = ft_n ? ND(S, ft_n)->next_sibling : 0;
-
-            uint32_t ft = resolve_typespec(S, ft_n, ND(S, member)->d.oper.flags);
-
-            if (fn_n && ND(S, fn_n)->type == AST_IDENT) {
-                sd->field_types[sd->num_fields] = ft;
-                get_text(S, fn_n, sd->field_names[sd->num_fields],
-                         sizeof(sd->field_names[0]));
-                sd->num_fields++;
-
-                uint32_t extra = ND(S, fn_n)->next_sibling;
-                while (extra && ND(S, extra)->type == AST_IDENT
-                       && sd->num_fields < SEMA_MAX_FIELDS) {
-                    sd->field_types[sd->num_fields] = ft;
-                    get_text(S, extra, sd->field_names[sd->num_fields],
-                             sizeof(sd->field_names[0]));
-                    sd->num_fields++;
-                    extra = ND(S, extra)->next_sibling;
-                }
+    uint32_t rest[SEMA_ANON];
+    int nrest = 0;
+    KA_GUARD(mg, SEMA_MAX_FIELDS * 4);
+    while (mg--) {
+        if (!member) {
+            if (nrest == 0) break;
+            member = rest[--nrest];
+            continue;
+        }
+        if (sd->num_fields >= SEMA_MAX_FIELDS) {
+            sema_error(S, node, BC_E144, sd->name);
+            break;
+        }
+        if (canon(S, member)) {
+            if (nrest >= SEMA_ANON) {
+                sema_error(S, node, BC_E144, sd->name);
+                break;
             }
+            rest[nrest++] = ND(S, member)->next_sibling;
+            member = canon(S, member);
+            continue;
+        }
+        if (ND(S, member)->type == AST_VAR_DECL) sanon(S, member);
+        if (ND(S, member)->type == AST_VAR_DECL
+            && !cfadd(S, sd, member)) {
+            sema_error(S, node, BC_E144, sd->name);
+            break;
         }
         member = ND(S, member)->next_sibling;
     }
+}
 
-    if (sd->num_fields > 0 || sd->name[0]) {
-        uint32_t si = S->num_structs++;
-        uint32_t st = st_struct(S, si);
-        add_sym(S, sd->name, st, node, SYM_STRUCT, 0);
+static void sanon(sema_ctx_t *S, uint32_t node)
+{
+    uint32_t c = ND(S, node)->first_child;
+    KA_GUARD(g, SEMA_MAX_FIELDS * 4);
+    while (g-- && c) {
+        if (ND(S, c)->type == AST_STRUCT_DEF)
+            collect_struct_def(S, c);
+        c = ND(S, c)->next_sibling;
     }
 }
 
@@ -1520,6 +1747,23 @@ static void collect_typedef_def(sema_ctx_t *S, uint32_t node)
     add_sym(S, name, resolved, node, SYM_TYPEDEF, 0);
 }
 
+static void qfnm(sema_ctx_t *S, uint32_t nn, char *out, size_t cap)
+{
+    uint32_t l = ND(S, nn)->first_child;
+    uint32_t r = l ? ND(S, l)->next_sibling : 0;
+    char a[64], b[64];
+
+    out[0] = 0;
+    if (!l || !r) return;
+    a[0] = 0;
+    b[0] = 0;
+    get_text(S, l, a, sizeof(a));
+    if (ND(S, r)->type == AST_SCOPE_RES) qfnm(S, r, b, sizeof(b));
+    else get_text(S, r, b, sizeof(b));
+    if (!a[0] || !b[0]) return;
+    if (snprintf(out, cap, "%s::%s", a, b) < 0) out[0] = 0;
+}
+
 static void collect_func_decl(sema_ctx_t *S, uint32_t node)
 {
     uint32_t type_n = child_at(S, node, 0);
@@ -1527,7 +1771,11 @@ static void collect_func_decl(sema_ctx_t *S, uint32_t node)
     if (!name_n) return;
 
     char fname_raw[128], fname[128];
-    get_text(S, name_n, fname_raw, sizeof(fname_raw));
+    if (ND(S, name_n)->type == AST_SCOPE_RES)
+        qfnm(S, name_n, fname_raw, sizeof(fname_raw));
+    else
+        get_text(S, name_n, fname_raw, sizeof(fname_raw));
+    if (!fname_raw[0]) return;
     /* Normalize operator names: "operator +" → "operator+" */
     if (strncmp(fname_raw, "operator", 8) == 0 && fname_raw[8] != '\0')
         normalize_op_name(fname_raw, fname, sizeof(fname));
@@ -1537,21 +1785,33 @@ static void collect_func_decl(sema_ctx_t *S, uint32_t node)
     int ret_ptr = ND(S, node)->d.oper.flags;
     uint32_t ret_t = resolve_typespec(S, type_n, ret_ptr);
 
-    uint32_t param_types[32];
-    int nparams = 0;
+    uint32_t param_types[BC_MAX_ARGS];
+    int nparams = 0, varg = 0, pack = 0, nreq = 0;
     uint32_t c = ND(S, node)->first_child;
     while (c) {
-        if (ND(S, c)->type == AST_PARAM && nparams < 32
-            && ND(S, c)->d.oper.op != PRM_VARG) {
+        if (ND(S, c)->type == AST_PARAM
+            && ND(S, c)->d.oper.op == PRM_VARG) {
+            varg = 1;
+        } else if (ND(S, c)->type == AST_PARAM
+                   && ND(S, c)->d.oper.op == PRM_PACK) {
+            pack = 1;
+        } else if (ND(S, c)->type == AST_PARAM) {
             uint32_t pt_n = ND(S, c)->first_child;
             int pdepth = ND(S, c)->d.oper.flags;
+            if (nparams >= BC_MAX_ARGS) {
+                sema_error(S, node, BC_E082, fname, BC_MAX_ARGS);
+                return;
+            }
+            if (!(ND(S, c)->qualifiers & QUAL_PDEF)) nreq = nparams + 1;
             param_types[nparams++] = resolve_typespec(S, pt_n, pdepth);
         }
         c = ND(S, c)->next_sibling;
     }
 
-    uint32_t ft = st_func(S, ret_t, param_types, nparams);
+    uint32_t ft = st_func(S, ret_t, param_types, nparams, varg, pack);
     add_sym(S, fname, ft, node, SYM_FUNC, ND(S, node)->cuda_flags);
+    if (S->num_syms > 0)
+        S->syms[S->num_syms - 1].nreq = (uint16_t)nreq;
 }
 
 static void collect_global_var(sema_ctx_t *S, uint32_t node)
@@ -1642,6 +1902,32 @@ static void check_func_def(sema_ctx_t *S, uint32_t node)
     S->cur_ret_type = 0;
 }
 
+static void chkrec(sema_ctx_t *S, uint32_t node)
+{
+    uint32_t type_n = ND(S, node)->first_child;
+    uint32_t nm, m;
+    sema_struct_t *sd;
+    char sn[128];
+
+    if (!type_n) return;
+    sn[0] = 0;
+    nm = ND(S, type_n)->first_child;
+    if (nm && ND(S, nm)->type == AST_IDENT) get_text(S, nm, sn, sizeof(sn));
+    if (!sn[0]) return;
+    sd = find_struct(S, sn);
+    if (!sd) return;
+
+    for (m = ND(S, type_n)->next_sibling; m; m = ND(S, m)->next_sibling) {
+        int i;
+        if (ND(S, m)->type != AST_FUNC_DEF) continue;
+        push_scope(S);
+        for (i = 0; i < sd->num_fields; i++)
+            add_sym(S, sd->field_names[i], sd->field_types[i], m, SYM_VAR, 0);
+        check_func_def(S, m);
+        pop_scope(S);
+    }
+}
+
 /* ---- Initialization ---- */
 
 void sema_init(sema_ctx_t *S, const parser_t *P, uint32_t root, int warp_size)
@@ -1687,6 +1973,7 @@ int sema_check(sema_ctx_t *S, uint32_t root)
             collect_enum_def(S, c);
             break;
         case AST_VAR_DECL:
+            sanon(S, c);
             if (n->qualifiers & QUAL_TYPEDEF)
                 collect_typedef_def(S, c);
             else
@@ -1711,6 +1998,8 @@ int sema_check(sema_ctx_t *S, uint32_t root)
         const ast_node_t *n = ND(S, c);
         if (n->type == AST_FUNC_DEF)
             check_func_def(S, c);
+        if (n->type == AST_STRUCT_DEF)
+            chkrec(S, c);
         if (n->type == AST_TEMPLATE_DECL) {
             uint32_t fc = n->first_child;
             while (fc) {

@@ -166,13 +166,12 @@ static int amd_emit(const void *mmod, const be_cfg_t *cfg, const void *o,
             fprintf(stderr, "error: cannot open %s for writing\n", out);
             return BE_EIO;
         }
-        amdgpu_emit_asm(mmod, af);
+        int rc = amdgpu_emit_asm(mmod, af);
         fclose(af);
-        return BE_OK;
+        return rc == BC_OK ? BE_OK : BE_EEMIT;
     }
 
-    amdgpu_emit_asm(mmod, stdout);
-    return BE_OK;
+    return amdgpu_emit_asm(mmod, stdout) == BC_OK ? BE_OK : BE_EEMIT;
 }
 
 const be_desc_t be_amd = {

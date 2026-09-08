@@ -92,6 +92,8 @@ static int refs_value(const bir_module_t *M, const bir_inst_t *I, uint32_t v)
                 if (I->operands[k + 1] == v) return 1;
         }
         return 0;
+    case BIR_GLOBAL_REF:
+    case BIR_FNREF:
     case BIR_CALL:
         if (ovf) {
             for (i = 1; i < count; i++)

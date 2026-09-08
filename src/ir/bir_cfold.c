@@ -12,7 +12,6 @@
 
 /* ---- Helpers ---- */
 
-/* Is inline operand j a block reference (not a value reference)? */
 static int is_inline_block_ref(uint16_t op, uint8_t j)
 {
     switch (op) {
@@ -20,6 +19,9 @@ static int is_inline_block_ref(uint16_t op, uint8_t j)
     case BIR_BR_COND: return j >= 1 && j <= 3;
     case BIR_SWITCH:  return j == 1;
     case BIR_PHI:     return j % 2 == 0;
+    case BIR_CALL:    return j == 0;
+    case BIR_FNREF:   return j == 0;
+    case BIR_GLOBAL_REF: return j == 0;
     default:          return 0;
     }
 }
@@ -29,6 +31,7 @@ static int is_extra_block_ref(uint16_t op, uint32_t j)
 {
     if (op == BIR_PHI)    return j % 2 == 0;
     if (op == BIR_SWITCH) return j == 1 || (j >= 3 && j % 2 == 1);
+    if (op == BIR_CALL)   return j == 0;
     return 0;
 }
 

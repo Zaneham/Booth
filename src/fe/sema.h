@@ -17,8 +17,10 @@
 #define SEMA_MAX_SYMS     4096
 #define SEMA_MAX_SCOPES   128
 #define SEMA_MAX_ERRORS   64
-#define SEMA_MAX_STRUCTS  128
-#define SEMA_MAX_FIELDS   16
+#define SEMA_MAX_STRUCTS  512
+#define SEMA_MAX_FIELDS   64
+#define SEMA_ANON         8
+#define SEMA_MAX_DIM      4
 
 
 /* ---- Type System ---- */
@@ -47,6 +49,8 @@ typedef enum {
 /* Qualifier bits */
 #define SQUAL_CONST     0x01
 #define SQUAL_VOLATILE  0x02
+#define SQUAL_VARG      0x04
+#define SQUAL_PACK      0x08
 
 /* 12 bytes, interned in pool. Deduplicated on insertion. */
 typedef struct {
@@ -64,6 +68,8 @@ typedef struct {
     uint32_t    field_types[SEMA_MAX_FIELDS];
     char        field_names[SEMA_MAX_FIELDS][64];
     int         num_fields;
+    int         done;
+    uint32_t    node;
 } sema_struct_t;
 
 /* ---- Symbol Table ---- */
@@ -80,6 +86,7 @@ typedef struct {
     uint8_t     kind;        /* sym_kind_t */
     uint8_t     scope;       /* scope depth at definition */
     uint16_t    cuda_flags;  /* __device__, __global__, __shared__ etc. */
+    uint16_t    nreq;        /* func: params before the first default */
 } sema_sym_t;
 
 /* ---- Error (unified bc_error_t from barracuda.h) ---- */

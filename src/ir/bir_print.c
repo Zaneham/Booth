@@ -257,9 +257,8 @@ static void print_inst(const bir_module_t *M, const bir_inst_t *I,
             fprintf(out, ", align %u", 1u << I->subop);
         break;
 
-    /* global_ref: @name (subop = global index) */
     case BIR_GLOBAL_REF: {
-        uint32_t gi = I->subop;
+        uint32_t gi = I->num_operands ? I->operands[0] : 0u;
         bir_type_str(M, I->type, tbuf, sizeof(tbuf));
         if (gi < M->num_globals)
             fprintf(out, " %s, @%s", tbuf, &M->strings[M->globals[gi].name]);
@@ -502,9 +501,50 @@ static void print_inst(const bir_module_t *M, const bir_inst_t *I,
         print_val(M, I->operands[2], base_inst, out);
         break;
 
-    case BIR_INLINE_ASM:
-        fprintf(out, " \"...\"");
+    case BIR_INLINE_ASM: {
+        uint32_t ai = I->subop;
+        const bir_asm_t *A = (ai < M->num_asms) ? &M->asms[ai] : NULL;
+        if (!A) { fprintf(out, " <bad>"); break; }
+        fprintf(out, "%s \"%s\" (%s)", A->vol ? " volatile" : "",
+                &M->strings[A->tmpl], &M->strings[A->cons]);
+        for (uint16_t j = 0; j < A->nops; j++) {
+            fprintf(out, j ? ", " : " ");
+            print_val(M, bir_oper(M, I, j), base_inst, out);
+        }
         break;
+    }
+
+    case BIR_TRAP:
+        break;
+
+    case BIR_FNREF: {
+        uint32_t fi = I->operands[0];
+        if (fi < M->num_funcs && M->funcs[fi].name < M->string_len)
+            fprintf(out, " @%s", &M->strings[M->funcs[fi].name]);
+        else
+            fprintf(out, " @func_%u", fi);
+        break;
+    }
+
+    case BIR_PRINTF: {
+        int ovf = (I->num_operands == BIR_OPERANDS_OVERFLOW);
+        uint32_t start = ovf ? I->operands[0] : 0;
+        uint32_t count = ovf ? I->operands[1] : I->num_operands;
+        bir_type_str(M, I->type, tbuf, sizeof(tbuf));
+        fprintf(out, " %s ", tbuf);
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t v;
+            if (ovf) {
+                if (start + i >= M->num_extra_ops) break;
+                v = M->extra_operands[start + i];
+            } else {
+                v = I->operands[i];
+            }
+            if (i > 0) fprintf(out, ", ");
+            print_val(M, v, base_inst, out);
+        }
+        break;
+    }
 
     default:
         for (uint8_t i = 0; i < I->num_operands && i < BIR_OPERANDS_INLINE; i++) {
@@ -602,11 +642,21 @@ void bir_print_module(const bir_module_t *M, FILE *out)
         /* Parameters from PARAM instructions */
         fprintf(out, "(");
         for (uint16_t p = 0; p < F->num_params; p++) {
+            uint32_t nb = F->num_blocks ? M->blocks[F->first_block].num_insts
+                                        : 0;
+            uint32_t pi = M->num_insts;
+            uint32_t j;
+
             if (p > 0) fprintf(out, ", ");
-            uint32_t pi = base_inst + p;
+            for (j = 0; j < nb && base_inst + j < M->num_insts; j++)
+                if (M->insts[base_inst + j].op == BIR_PARAM
+                    && M->insts[base_inst + j].subop == (uint8_t)p) {
+                    pi = base_inst + j;
+                    break;
+                }
             if (pi < M->num_insts) {
                 bir_type_str(M, M->insts[pi].type, tbuf, sizeof(tbuf));
-                fprintf(out, "%s %%%u", tbuf, p);
+                fprintf(out, "%s %%%u", tbuf, pi - base_inst);
             }
         }
         fprintf(out, ")");

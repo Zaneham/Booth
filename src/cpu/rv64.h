@@ -38,6 +38,8 @@
 #define RV_RELOC_MAX  4096
 #define RV_EXTSYM_MAX 64
 #define RV_EXTSYM_LEN 24
+#define RV_CALL_MAX   4096
+#define RV_ARG_MAX    64
 
 typedef struct {
     const bir_module_t *M;
@@ -63,7 +65,12 @@ typedef struct {
     char      extsym[RV_EXTSYM_MAX][RV_EXTSYM_LEN];
     int       n_extsym;
 
+    uint32_t  func_off[BIR_MAX_FUNCS];
+    struct { uint32_t off; uint32_t fn; } cfix[RV_CALL_MAX];
+    int       n_cfix;
+
     int       n_errs;
+    int       capr;
 } rv64_mod_t;
 
 void rv64_init(rv64_mod_t *V, const bir_module_t *M);

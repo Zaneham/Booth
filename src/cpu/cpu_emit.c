@@ -24,9 +24,20 @@
  * tail to worry about. */
 
 #include "cpu.h"
+#include "backend.h"
+#include "barracuda.h"
 #include <string.h>
 
-static void eb(cpu_mod_t *X, uint8_t b){ if(X->codelen<CPU_CODE_MAX) X->code[X->codelen++]=b; }
+static void cpu_cap(cpu_mod_t *X,const char *what,unsigned lim){
+    X->n_errs++;
+    if(X->capr) return;
+    X->capr=1;
+    (void)be_fail(BC_E545,"cpu-x86-64",what,lim);
+}
+static void eb(cpu_mod_t *X, uint8_t b){
+    if(X->codelen<CPU_CODE_MAX) X->code[X->codelen++]=b;
+    else cpu_cap(X,"the code buffer",(unsigned)CPU_CODE_MAX);
+}
 static void ei32(cpu_mod_t *X, int32_t v){ eb(X,(uint8_t)v);eb(X,(uint8_t)(v>>8));eb(X,(uint8_t)(v>>16));eb(X,(uint8_t)(v>>24)); }
 static void rexw(cpu_mod_t *X,int r,int rm){ uint8_t x=0x48; if(r>=8)x|=4; if(rm>=8)x|=1; eb(X,x); }
 static void modrm(cpu_mod_t *X,int mod,int reg,int rm){ eb(X,(uint8_t)((mod<<6)|((reg&7)<<3)|(rm&7))); }
@@ -109,8 +120,14 @@ static int type_size(const cpu_mod_t *X,uint32_t ty){
     return (int)bir_bsz(X->M,ty,8);
 }
 
+static const char *tystr(const cpu_mod_t *X,uint32_t ty){
+    static char buf[128];
+    if (bir_type_str(X->M,ty,buf,(int)sizeof buf)<=0) buf[0]=0;
+    return buf;
+}
+
 static int pointee_sz(cpu_mod_t *X,uint32_t ty){
-    return (int)bir_gsz(X->M,ty,8);
+    return (int)bir_gstr(X->M,ty,8);
 }
 
 /* type index of a value (const or inst result); 0 if unknown. */
@@ -258,7 +275,10 @@ static void zext_to(cpu_mod_t *X,int w){
  * for the linker to chase down in libm. */
 static uint32_t cpu_extsym(cpu_mod_t *X,const char *name){
     for (int i=0;i<X->n_extsym;i++) if(!strcmp(X->extsym[i],name)) return (uint32_t)i;
-    if (X->n_extsym>=CPU_EXTSYM_MAX) return 0;
+    if (X->n_extsym>=CPU_EXTSYM_MAX){
+        cpu_cap(X,"external symbols",(unsigned)CPU_EXTSYM_MAX);
+        return 0;
+    }
     int idx=X->n_extsym++;
     size_t n=strlen(name); if(n>=CPU_EXTSYM_LEN) n=CPU_EXTSYM_LEN-1;
     memcpy(X->extsym[idx],name,n); X->extsym[idx][n]='\0';
@@ -275,6 +295,7 @@ static void emit_call_ext(cpu_mod_t *X,const char *name){
     uint32_t sym=cpu_extsym(X,name);
     eb(X,0xE8);
     if (X->n_reloc<CPU_RELOC_MAX){ X->reloc[X->n_reloc].off=X->codelen; X->reloc[X->n_reloc].sym=sym; X->n_reloc++; }
+    else cpu_cap(X,"relocations",(unsigned)CPU_RELOC_MAX);
     ei32(X,0);
 }
 
@@ -317,6 +338,12 @@ static void emit_phi_copies(cpu_mod_t *X,uint32_t succ,uint32_t pred){
  * than leave the function. A return inside a kernel ends one thread. */
 #define CPU_RET_MAX 256
 
+static void bfix(cpu_mod_t *X,uint32_t blk){
+    if(X->n_fix<CPU_FIX_MAX){ X->fix[X->n_fix].off=X->codelen; X->fix[X->n_fix].blk=blk; X->n_fix++; }
+    else cpu_cap(X,"branch fixups",(unsigned)CPU_FIX_MAX);
+    ei32(X,0);
+}
+
 static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
     /* Where this function lands in .text. The frame pre-pass below emits no
      * code, so codelen here is already the address a caller will jump to. */
@@ -337,12 +364,15 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         for(uint32_t i=0;i<B->num_insts;i++){
             uint32_t ix=B->first_inst+i; off-=8; X->slots[ix]=off;
             const bir_inst_t*I=&X->M->insts[ix];
+            if ((I->op==BIR_ALLOCA||I->op==BIR_SHARED_ALLOC) && na>=CPU_ALLOCA_MAX)
+                cpu_cap(X,"stack allocations",(unsigned)CPU_ALLOCA_MAX);
             if ((I->op==BIR_ALLOCA||I->op==BIR_SHARED_ALLOC) && na<CPU_ALLOCA_MAX){
                 uint32_t pte=(I->type<X->M->num_types)?X->M->types[I->type].inner:0;
                 int sz=type_size(X,pte);
-                if(!sz){ fprintf(stderr,"kath: alloca of a type with no storage size\n"); X->n_errs++; }
+                if(!sz){ (void)be_fail(BC_E540,"cpu-x86-64","alloca",tystr(X,pte)); X->n_errs++; }
+                int aln=1<<(I->subop&31); if(aln<8)aln=8;
                 sz=(sz+7)&~7; if(sz<8)sz=8;
-                off-=sz; X->alloca_off[na++]=off;
+                off-=sz; off&=-aln; X->alloca_off[na++]=off;
             }
         }
     }
@@ -408,6 +438,7 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         case BIR_PARAM: break; /* materialized once in the prologue (ld_arg), outside the thread loop */
         case BIR_ALLOCA: case BIR_SHARED_ALLOC: /* value = pointer to the reserved frame region */
             if (na_emit<CPU_ALLOCA_MAX){ rexw(X,X_RAX,X_RBP);eb(X,0x8D);modrm(X,2,X_RAX,X_RBP);ei32(X,X->alloca_off[na_emit++]); st_slot(X,X_RAX,s); }
+            else cpu_cap(X,"stack allocations",(unsigned)CPU_ALLOCA_MAX);
             break;
         case BIR_THREAD_ID: if(is_kernel){ ld_slot(X,X_RAX,tid_off); } else mov_imm(X,X_RAX,0); st_slot(X,X_RAX,s); break;
         case BIR_BLOCK_ID: mov_imm(X,X_RAX,0); st_slot(X,X_RAX,s); break;
@@ -422,8 +453,8 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         /* ---- Bit counting ---- */
         case BIR_POPCOUNT: case BIR_CTZ: case BIR_CLZ: case BIR_BREV: {
             if (int_w(X,val_type_x(X,I->operands[0])) != 32) {
-                fprintf(stderr,"kath: bit counting at a width other than 32 "
-                               "not supported on the x86-64 backend\n");
+                (void)be_fail(BC_E541,"cpu-x86-64",
+                              "bit counting at a width other than 32");
                 X->n_errs++; break;
             }
             load_val(X,X_RAX,I->operands[0]);
@@ -481,9 +512,13 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
             else { eb(X,0x31);modrm(X,3,X_RDX,X_RDX); eb(X,0xF7);modrm(X,3,6,X_RCX); }
             if (I->op==BIR_UREM){ rexw(X,X_RDX,X_RAX);eb(X,0x89);modrm(X,3,X_RDX,X_RAX); }
             st_slot(X,X_RAX,s); break; }
-        case BIR_GEP: { int sz=pointee_sz(X,I->type);
-            if(!sz){ fprintf(stderr,"kath: gep through a pointer with no storage size\n"); X->n_errs++; break; }
-            load_val(X,X_RCX,I->operands[1]); mov_imm(X,X_RAX,sz); eb(X,0x48);eb(X,0x0F);eb(X,0xAF);modrm(X,3,X_RCX,X_RAX); load_val(X,X_RAX,I->operands[0]); rexw(X,X_RCX,X_RAX);eb(X,0x01);modrm(X,3,X_RCX,X_RAX); st_slot(X,X_RAX,s); break; }
+        case BIR_GEP: { int sz=pointee_sz(X,I->type); uint32_t fo=0;
+            if (bir_fgep(X->M,I,8,&fo)) { mov_imm(X,X_RCX,(int64_t)fo); }
+            else {
+                if(!sz){ (void)be_fail(BC_E540,"cpu-x86-64","gep",tystr(X,I->type)); X->n_errs++; break; }
+                load_val(X,X_RCX,I->operands[1]); mov_imm(X,X_RAX,sz); eb(X,0x48);eb(X,0x0F);eb(X,0xAF);modrm(X,3,X_RCX,X_RAX);
+            }
+            load_val(X,X_RAX,I->operands[0]); rexw(X,X_RCX,X_RAX);eb(X,0x01);modrm(X,3,X_RCX,X_RAX); st_slot(X,X_RAX,s); break; }
         case BIR_LOAD: { load_val(X,X_RAX,I->operands[0]); /* addr in rax */
             const bir_type_t *t=(I->type<X->M->num_types)?&X->M->types[I->type]:0;
             int isflt=t&&(t->kind==BIR_TYPE_FLOAT||t->kind==BIR_TYPE_BFLOAT);
@@ -709,19 +744,21 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
         case BIR_BALLOT: case BIR_VOTE_ANY: case BIR_VOTE_ALL:
             load_val(X,X_RAX,I->operands[1]); st_slot(X,X_RAX,s); break;
         case BIR_ICMP: { load_val(X,X_RAX,I->operands[0]);load_val(X,X_RCX,I->operands[1]); rexw(X,X_RCX,X_RAX);eb(X,0x39);modrm(X,3,X_RCX,X_RAX); int cc; switch(I->subop){ case BIR_ICMP_EQ:cc=XCC_E;break; case BIR_ICMP_NE:cc=XCC_NE;break; case BIR_ICMP_SLT:cc=XCC_L;break; case BIR_ICMP_SLE:cc=XCC_LE;break; case BIR_ICMP_SGT:cc=XCC_G;break; case BIR_ICMP_SGE:cc=XCC_GE;break; case BIR_ICMP_ULT:cc=XCC_B;break; case BIR_ICMP_ULE:cc=XCC_BE;break; case BIR_ICMP_UGT:cc=XCC_A;break; case BIR_ICMP_UGE:cc=XCC_AE;break; default:cc=XCC_NE;break; } eb(X,0x0F);eb(X,(uint8_t)(0x90+cc));modrm(X,3,0,X_RAX); rexw(X,0,X_RAX);eb(X,0x0F);eb(X,0xB6);modrm(X,3,X_RAX,X_RAX); st_slot(X,X_RAX,s); break; }
-        case BIR_BR: { uint32_t cur=F->first_block+b; emit_phi_copies(X,I->operands[0],cur); eb(X,0xE9); X->fix[X->n_fix].off=X->codelen; X->fix[X->n_fix++].blk=I->operands[0]; ei32(X,0); break; }
+        case BIR_BR: { uint32_t cur=F->first_block+b; emit_phi_copies(X,I->operands[0],cur); eb(X,0xE9); bfix(X,I->operands[0]); break; }
         case BIR_BR_COND: { uint32_t cur=F->first_block+b;
             load_val(X,X_RAX,I->operands[0]); rexw(X,0,X_RAX);eb(X,0x85);modrm(X,3,X_RAX,X_RAX); /* test cond */
             eb(X,0x0F);eb(X,0x84); uint32_t jefix=X->codelen; ei32(X,0); /* je -> false_pad (patched below) */
             emit_phi_copies(X,I->operands[1],cur); /* true edge */
-            eb(X,0xE9); X->fix[X->n_fix].off=X->codelen; X->fix[X->n_fix++].blk=I->operands[1]; ei32(X,0);
+            eb(X,0xE9); bfix(X,I->operands[1]);
             { int32_t r=(int32_t)X->codelen-(int32_t)(jefix+4); X->code[jefix]=(uint8_t)r;X->code[jefix+1]=(uint8_t)(r>>8);X->code[jefix+2]=(uint8_t)(r>>16);X->code[jefix+3]=(uint8_t)(r>>24); }
             emit_phi_copies(X,I->operands[2],cur); /* false edge */
-            eb(X,0xE9); X->fix[X->n_fix].off=X->codelen; X->fix[X->n_fix++].blk=I->operands[2]; ei32(X,0); break; }
+            eb(X,0xE9); bfix(X,I->operands[2]); break; }
         case BIR_PHI: break; /* resolved by predecessor edge-copies */
         case BIR_RET:
             if (is_kernel){ /* return = this thread is done; jump to loop continue */
-                eb(X,0xE9); if(n_ret<CPU_RET_MAX) retfix[n_ret++]=X->codelen; ei32(X,0);
+                eb(X,0xE9); if(n_ret<CPU_RET_MAX) retfix[n_ret++]=X->codelen;
+                else cpu_cap(X,"kernel return sites",(unsigned)CPU_RET_MAX);
+                ei32(X,0);
             } else { /* plain function: inline epilogue (a RET block need not be last) */
                 if(I->num_operands) load_val(X,X_RAX,I->operands[0]);
                 rexw(X,X_RSP,X_RBP);eb(X,0x89);modrm(X,3,X_RBP,X_RSP);eb(X,0x5D);eb(X,0xC3);
@@ -747,14 +784,31 @@ static void cpu_func(cpu_mod_t *X,const bir_func_t *F){
             rexw(X,0,X_RSP);eb(X,0x83);modrm(X,3,4,X_RSP);eb(X,0xF0);   /* and rsp,-16 */
             eb(X,0xE8);                                                  /* call rel32 (patched once every func_off is known) */
             if (X->n_callfix<CPU_FIX_MAX){ X->callfix[X->n_callfix].off=X->codelen; X->callfix[X->n_callfix].func=callee; X->n_callfix++; }
+            else cpu_cap(X,"call fixups",(unsigned)CPU_FIX_MAX);
             ei32(X,0);
             if (is_float_ty(X,I->type)){ int w64=(I->type<X->M->num_types&&X->M->types[I->type].width==64); st_xmm_slot(X,X_XMM0,s,w64); }
             else st_slot(X,X_RAX,s);
             break; }
-        case BIR_MMA: case BIR_MFRG:
-            fprintf(stderr,"kath: warp-collective mma not supported on the x86-64 backend\n");
+        case BIR_INLINE_ASM:
+            (void)be_fail(BC_E541,"cpu-x86-64",
+                          "inline asm, which Booth binds for PTX only");
             X->n_errs++; break;
-        default: mov_imm(X,X_RAX,0); st_slot(X,X_RAX,s); break;
+        case BIR_TRAP: eb(X,0x0F);eb(X,0x0B); break;
+        case BIR_FNREF:
+            (void)be_fail(BC_E541,"cpu-x86-64",
+                          "taking the address of a device function");
+            X->n_errs++; break;
+        case BIR_PRINTF:
+            (void)be_fail(BC_E541,"cpu-x86-64",
+                          "device printf, which needs a data section to hold "
+                          "the format string");
+            X->n_errs++; break;
+        case BIR_MMA: case BIR_MFRG:
+            (void)be_fail(BC_E541,"cpu-x86-64","warp-collective mma");
+            X->n_errs++; break;
+        default:
+            (void)be_fail(BC_E542,"cpu-x86-64",bir_op_name(I->op));
+            X->n_errs++; break;
         }}
     }
     if (is_kernel){

@@ -16,6 +16,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+
+void tterr(bc_eid_t eid, ...)
+{
+    const char *f = bc_efmt(eid);
+    va_list ap;
+
+    if (f == NULL) f = "unspecified Tensix refusal";
+    fprintf(stderr, "kath: error[E%03d]: ", (int)eid);
+    va_start(ap, eid);
+    vfprintf(stderr, f, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
 
 /* ---- Metalium ----
  * tt_wrap keeps the BIR pointer alive through emit so datamov
@@ -112,7 +126,7 @@ static void tt_free(void *mmod)
 const be_desc_t be_tsx = {
     .name    = "tensix",
     .triple  = NULL,
-    .feats   = BE_F_SIMT | BE_F_SHARED | BE_F_BARRIER | BE_F_MFMA | BE_F_NOCALL
+    .feats   = BE_F_SIMT | BE_F_BARRIER | BE_F_MFMA | BE_F_NOCALL
              | BE_F_MULTIOUT | BE_F_F16 | BE_F_BF16,
     .opts_size = sizeof(tt_opts_t),
     .flags   = tt_flags,

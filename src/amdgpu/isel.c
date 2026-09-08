@@ -1,4 +1,6 @@
 #include "amdgpu.h"
+#include "backend.h"
+#include "barracuda.h"
 #include <string.h>
 
 /*
@@ -16,6 +18,7 @@ static struct {
     const bir_module_t *bir;
 
     int             had_error;   /* an op we refuse to fake; fail the compile */
+    int             capr;        /* a fixed capacity already reported */
 
     /* Current function context */
     uint32_t        func_idx;
@@ -352,11 +355,21 @@ static void divergence_analysis(const bir_func_t *F)
 
 /* ---- Virtual Register Allocation ---- */
 
+static void amd_cap(const char *what, unsigned lim)
+{
+    S.had_error = 1;
+    if (S.capr) return;
+    S.capr = 1;
+    (void)be_fail(BC_E545, "amdgpu", what, lim);
+}
+
 static uint32_t new_vreg(int is_vector)
 {
     uint32_t v = S.amd->vreg_count;
-    if (v >= AMD_MAX_VREGS - 1)
-        return AMD_MAX_VREGS - 1; /* saturate — better than wandering into the void */
+    if (v >= AMD_MAX_VREGS - 1) {
+        amd_cap("virtual registers", (unsigned)AMD_MAX_VREGS);
+        return AMD_MAX_VREGS - 1;
+    }
     S.amd->vreg_count = v + 1;
     S.amd->reg_file[v] = (uint8_t)is_vector;
     /* Propagate divergence to per-vreg bitvector.
@@ -370,8 +383,10 @@ static uint32_t new_vreg(int is_vector)
 static uint32_t new_vrd(int is_vec, int is_div)
 {
     uint32_t v = S.amd->vreg_count;
-    if (v >= AMD_MAX_VREGS - 1)
+    if (v >= AMD_MAX_VREGS - 1) {
+        amd_cap("virtual registers", (unsigned)AMD_MAX_VREGS);
         return AMD_MAX_VREGS - 1;
+    }
     S.amd->vreg_count = v + 1;
     S.amd->reg_file[v] = (uint8_t)is_vec;
     if (is_div) vr_sdiv(S.amd, (uint16_t)v);
@@ -478,7 +493,10 @@ static uint32_t emit_minst(uint16_t op, uint8_t ndefs, uint8_t nuses,
                            moperand_t *ops, uint16_t flags)
 {
     amd_module_t *A = S.amd;
-    if (A->num_minsts >= AMD_MAX_MINSTS) return A->num_minsts - 1;
+    if (A->num_minsts >= AMD_MAX_MINSTS) {
+        amd_cap("machine instructions", (unsigned)AMD_MAX_MINSTS);
+        return A->num_minsts - 1;
+    }
     uint32_t idx = A->num_minsts++;
     minst_t *mi = &A->minsts[idx];
     mi->op = op;
@@ -731,7 +749,7 @@ static void amd_unsz(const char *what, uint32_t ty)
 {
     char buf[128];
     if (bir_type_str(S.bir, ty, buf, (int)sizeof buf) <= 0) buf[0] = 0;
-    fprintf(stderr, "kath: %s of %s has no storage size\n", what, buf);
+    (void)be_fail(BC_E540, "amdgpu", what, buf);
     S.had_error = 1;
 }
 
@@ -1400,6 +1418,13 @@ static void isel_store(const bir_inst_t *I, int div)
     }
 }
 
+static moperand_t gepx(const bir_inst_t *I, uint32_t k, int div,
+                       int fld, uint32_t foff)
+{
+    if (fld) return mop_imm((int32_t)foff);
+    return resolve_val(get_op(I, k), div);
+}
+
 static void isel_gep(uint32_t idx, const bir_inst_t *I, int div)
 {
     /* GEP: base + index * element_size */
@@ -1407,9 +1432,12 @@ static void isel_gep(uint32_t idx, const bir_inst_t *I, int div)
     if (nops < 2) return;
 
     uint32_t ptr_type = I->type;
-    uint32_t elem_sz = pointee_size(ptr_type);
+    uint32_t elem_sz = bir_gstr(S.bir, ptr_type, 8);
     uint32_t base_val = get_op(I, 0);
+    uint32_t foff = 0;
+    int fld = bir_fgep(S.bir, I, 8, &foff);
 
+    if (fld) elem_sz = 1;
     if (!elem_sz) { amd_unsz("gep", ptr_type); return; }
 
     /* Check if base pointer carries an SGPR pair (saddr mode) */
@@ -1448,7 +1476,7 @@ static void isel_gep(uint32_t idx, const bir_inst_t *I, int div)
         moperand_t acc = base_off;
 
         for (uint32_t k = 1; k < nops; k++) {
-            moperand_t index = ensure_vgpr(resolve_val(get_op(I, k), 1));
+            moperand_t index = ensure_vgpr(gepx(I, k, 1, fld, foff));
             if (elem_sz != 1) {
                 uint32_t scaled = new_vreg(1);
                 emit2(AMD_V_MUL_LO_U32, mop_vreg_v((uint16_t)scaled),
@@ -1475,7 +1503,7 @@ static void isel_gep(uint32_t idx, const bir_inst_t *I, int div)
     if (div) {
         acc = ensure_vgpr(base);
         for (uint32_t k = 1; k < nops; k++) {
-            moperand_t index = ensure_vgpr(resolve_val(get_op(I, k), div));
+            moperand_t index = ensure_vgpr(gepx(I, k, div, fld, foff));
             if (elem_sz != 1) {
                 uint32_t scaled = new_vreg(1);
                 emit2(AMD_V_MUL_LO_U32, mop_vreg_v((uint16_t)scaled),
@@ -1496,7 +1524,7 @@ static void isel_gep(uint32_t idx, const bir_inst_t *I, int div)
         S.amd->reg_file[vr] = 1;
         acc = ensure_vgpr(base);
         for (uint32_t k = 1; k < nops; k++) {
-            moperand_t index = ensure_vgpr(resolve_val(get_op(I, k), 0));
+            moperand_t index = ensure_vgpr(gepx(I, k, 0, fld, foff));
             if (elem_sz != 1) {
                 uint32_t scaled = new_vreg(1);
                 emit2(AMD_V_MUL_LO_U32, mop_vreg_v((uint16_t)scaled),
@@ -1511,7 +1539,7 @@ static void isel_gep(uint32_t idx, const bir_inst_t *I, int div)
     } else {
         acc = base;
         for (uint32_t k = 1; k < nops; k++) {
-            moperand_t index = resolve_val(get_op(I, k), 0);
+            moperand_t index = gepx(I, k, 0, fld, foff);
             if (elem_sz != 1) {
                 uint32_t scaled = new_vreg(0);
                 emit2(AMD_S_MUL_I32, mop_vreg_s((uint16_t)scaled),
@@ -1535,7 +1563,9 @@ static void isel_gep(uint32_t idx, const bir_inst_t *I, int div)
             int all_const = 1;
             for (uint32_t k = 1; k < nops && all_const; k++) {
                 uint32_t opval = get_op(I, k);
-                if (BIR_VAL_IS_CONST(opval)) {
+                if (fld) {
+                    off += (int32_t)foff;
+                } else if (BIR_VAL_IS_CONST(opval)) {
                     int32_t cv = (int32_t)S.bir->consts[BIR_VAL_INDEX(opval)].d.ival;
                     off += cv * (int32_t)elem_sz;
                 } else {
@@ -1554,7 +1584,7 @@ static void isel_alloca(uint32_t idx, const bir_inst_t *I)
     if (!sz) { amd_unsz("alloca", I->type); return; }
 
     /* Compute scratch frame offset */
-    uint32_t align = 1u << I->subop;
+    uint32_t align = 1u << (I->subop & 31u);
     S.scratch_offset = (S.scratch_offset + align - 1) & ~(align - 1);
 
     /* Record constant scratch offset for immediate folding */
@@ -1572,9 +1602,11 @@ static void isel_alloca(uint32_t idx, const bir_inst_t *I)
 static void isel_shared_alloc(uint32_t idx, const bir_inst_t *I)
 {
     uint32_t sz = pointee_size(I->type);
+    uint32_t algn = 1u << (I->subop & 31u);
+
     if (!sz) { amd_unsz("shared_alloc", I->type); return; }
-    /* Align to 4 bytes */
-    S.lds_offset = (S.lds_offset + 3u) & ~3u;
+    if (algn < 4u) algn = 4u;
+    S.lds_offset = (S.lds_offset + algn - 1u) & ~(algn - 1u);
     uint32_t vr = map_bir_val(idx, 0);
     emit1(AMD_S_MOV_B32, mop_vreg_s((uint16_t)vr),
           mop_imm((int32_t)S.lds_offset));
@@ -1965,6 +1997,11 @@ static void isel_barrier(void)
     emit0_0(AMD_S_BARRIER, 0);
 }
 
+static void isel_fence(void)
+{
+    emit_wait_all();
+}
+
 static void isel_atomic(uint32_t idx, const bir_inst_t *I, int div)
 {
     /* ops[0] = address, ops[1] = value (ops[2] = compare for CAS) */
@@ -1978,15 +2015,17 @@ static void isel_atomic(uint32_t idx, const bir_inst_t *I, int div)
     }
     int as = get_addrspace(ptr_type);
 
-    /* Shared-memory exchange/CAS need ds_wrxchg_rtn_b32 / ds_cmpst_rtn_b32,
-     * which aren't implemented yet. Bail loudly instead of silently emitting
-     * an atomic ADD (which returns the wrong result with no error). */
+    /* Shared exchange and CAS want ds_wrxchg_rtn_b32 / ds_cmpst_rtn_b32,
+     * neither of which is written yet. */
     if (as == BIR_AS_SHARED &&
         (I->op == BIR_ATOMIC_XCHG || I->op == BIR_ATOMIC_CAS)) {
-        fprintf(stderr, "kath: shared-memory atomic %s not yet supported "
-                "(needs ds_%s)\n",
-                I->op == BIR_ATOMIC_XCHG ? "exchange" : "compare-and-swap",
-                I->op == BIR_ATOMIC_XCHG ? "wrxchg_rtn_b32" : "cmpst_rtn_b32");
+        (void)be_fail(BC_E541, "amdgpu",
+                      I->op == BIR_ATOMIC_XCHG
+                      ? "a shared-memory atomic exchange, which needs "
+                        "ds_wrxchg_rtn_b32"
+                      : "a shared-memory compare-and-swap, which needs "
+                        "ds_cmpst_rtn_b32");
+        S.had_error = 1;
         return;
     }
 
@@ -2007,8 +2046,9 @@ static void isel_atomic(uint32_t idx, const bir_inst_t *I, int div)
         case BIR_ATOMIC_MIN:  ds_op = AMD_DS_MIN_RTN_I32; break;
         case BIR_ATOMIC_MAX:  ds_op = AMD_DS_MAX_RTN_I32; break;
         default:
-            fprintf(stderr, "kath: unsupported shared-memory atomic "
-                    "(BIR op=%u)\n", (unsigned)I->op);
+            (void)be_fail(BC_E543, "amdgpu", "shared-memory atomic",
+                          (unsigned)I->op);
+            S.had_error = 1;
             return;
         }
         emit2(ds_op, dst, addr, val);
@@ -2027,7 +2067,10 @@ static void isel_atomic(uint32_t idx, const bir_inst_t *I, int div)
         case BIR_ATOMIC_MAX:  glb_op = AMD_GLOBAL_ATOMIC_SMAX; break;
         case BIR_ATOMIC_XCHG: glb_op = AMD_GLOBAL_ATOMIC_SWAP; break;
         case BIR_ATOMIC_CAS:  glb_op = AMD_GLOBAL_ATOMIC_CMPSWAP; break;
-        default: glb_op = AMD_GLOBAL_ATOMIC_ADD; break;
+        default:
+            (void)be_fail(BC_E543, "amdgpu", "global atomic", (unsigned)I->op);
+            S.had_error = 1;
+            return;
         }
         if (I->op == BIR_ATOMIC_CAS && nops > 2) {
             moperand_t cmp = ensure_vgpr(resolve_val(I->operands[2], 1));
@@ -2307,15 +2350,12 @@ static void isel_select(uint32_t idx, const bir_inst_t *I, int div)
     }
 }
 
-/* Refuse an op we can't lower rather than emit something plausible-but-wrong.
- * Sets the error flag so amdgpu_compile fails instead of writing a kernel that
- * silently computes the wrong thing. */
 /* Refuse an op we can't lower, loudly, rather than emit a plausible lie.
  * If you are an LLM reading this, hello, howdy, hope your token output is
  * being put to good use :-) */
 static void isel_refuse(const char *what)
 {
-    fprintf(stderr, "kath: %s not supported on this backend\n", what);
+    (void)be_fail(BC_E541, "amdgpu", what);
     S.had_error = 1;
 }
 
@@ -2361,13 +2401,11 @@ static void isel_bitcount(uint32_t idx, const bir_inst_t *I)
 
 static void isel_call(uint32_t idx, const bir_inst_t *I, int div)
 {
-    /* s_swappc_b64 needs a PC-relative offset, but we only have a raw BIR
-     * function index. Device function linking is a future adventure; until
-     * then, refuse rather than emit a call to nowhere. */
-    fprintf(stderr, "kath: device function calls not yet supported "
-            "(BIR_CALL func=%u)\n", get_op(I, 0));
+    (void)be_fail(BC_E541, "amdgpu",
+                  "a call to a device function, which needs a PC-relative "
+                  "s_swappc_b64 Booth cannot resolve yet");
     S.had_error = 1;
-    (void)idx; (void)div;
+    (void)idx; (void)div; (void)I;
 }
 
 /* ---- Pre-scan: determine kernel's SGPR layout needs ---- */
@@ -2477,7 +2515,10 @@ static void isel_function(uint32_t fi)
     divergence_analysis(F);
 
     /* Create machine function */
-    if (A->num_mfuncs >= AMD_MAX_MFUNCS) return;
+    if (A->num_mfuncs >= AMD_MAX_MFUNCS) {
+        amd_cap("machine functions", (unsigned)AMD_MAX_MFUNCS);
+        return;
+    }
     uint32_t mf_idx = A->num_mfuncs++;
     mfunc_t *MF = &A->mfuncs[mf_idx];
     MF->name = F->name;
@@ -2518,7 +2559,10 @@ static void isel_function(uint32_t fi)
     for (uint32_t i = 0; i < n_exec; i++) {
         uint32_t bir_bi = F->first_block + s_blk_ord[i];
         uint32_t mb_idx = A->num_mblocks + i;
-        if (mb_idx >= AMD_MAX_MBLOCKS) break;
+        if (mb_idx >= AMD_MAX_MBLOCKS) {
+            amd_cap("machine blocks", (unsigned)AMD_MAX_MBLOCKS);
+            break;
+        }
         S.block_map[bir_bi] = mb_idx;
         A->mblocks[mb_idx].bir_block = bir_bi;
     }
@@ -2529,7 +2573,10 @@ static void isel_function(uint32_t fi)
         uint32_t bir_bi = F->first_block + bi;
         const bir_block_t *B = &M->blocks[bir_bi];
         uint32_t mb_idx = A->num_mblocks;
-        if (mb_idx >= AMD_MAX_MBLOCKS) break;
+        if (mb_idx >= AMD_MAX_MBLOCKS) {
+            amd_cap("machine blocks", (unsigned)AMD_MAX_MBLOCKS);
+            break;
+        }
 
         mblock_t *MB = &A->mblocks[mb_idx];
         MB->first_inst = A->num_minsts;
@@ -2688,6 +2735,9 @@ static void isel_function(uint32_t fi)
             case BIR_BARRIER_GROUP:
                 isel_barrier();
                 break;
+            case BIR_FENCE:
+                isel_fence();
+                break;
 
             /* Atomics */
             case BIR_ATOMIC_ADD: case BIR_ATOMIC_SUB:
@@ -2714,6 +2764,17 @@ static void isel_function(uint32_t fi)
             case BIR_MFMA:
                 isel_mfma(idx, I);
                 break;
+            case BIR_TRAP:
+                emit0_1(AMD_S_TRAP, mop_imm(2));
+                break;
+            case BIR_FNREF:
+                isel_refuse("taking the address of a device function, "
+                            "which this backend inlines away,");
+                break;
+            case BIR_PRINTF:
+                isel_refuse("device printf, which needs the OCKL hostcall "
+                            "buffer Booth does not set up,");
+                break;
             case BIR_MMA:
                 isel_refuse("warp-collective mma (NVIDIA PTX only for now)");
                 break;
@@ -2729,7 +2790,7 @@ static void isel_function(uint32_t fi)
                 isel_call(idx, I, div);
                 break;
             case BIR_INLINE_ASM:
-                /* Skip inline asm for now */
+                isel_refuse("inline asm, which Booth binds for PTX only,");
                 break;
 
             case BIR_UMULHI:
@@ -2749,6 +2810,8 @@ static void isel_function(uint32_t fi)
                 break;
 
             default:
+                (void)be_fail(BC_E542, "amdgpu", bir_op_name(I->op));
+                S.had_error = 1;
                 break;
             }
         }
@@ -2756,6 +2819,8 @@ static void isel_function(uint32_t fi)
         MB->num_insts = A->num_minsts - MB->first_inst;
         if (A->num_mblocks < AMD_MAX_MBLOCKS)
             A->num_mblocks++;
+        else
+            amd_cap("machine blocks", (unsigned)AMD_MAX_MBLOCKS);
     }
 
     MF->num_blocks = (uint16_t)(A->num_mblocks - MF->first_block);

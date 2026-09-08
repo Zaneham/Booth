@@ -1,4 +1,6 @@
 #include "amdgpu.h"
+#include "backend.h"
+#include "barracuda.h"
 #include "encode.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1992,7 +1994,7 @@ static void ra_func(amd_module_t *A, uint32_t mf_idx)
 
 static void asm_append(amd_module_t *A, const char *fmt, ...)
 {
-    if (A->asm_len >= AMD_ASM_SIZE - 256) return;
+    if (A->asm_len >= AMD_ASM_SIZE - 256) { A->asm_ovf = 1; return; }
     va_list ap;
     va_start(ap, fmt);
     int n = vsnprintf(A->asm_buf + A->asm_len, AMD_ASM_SIZE - A->asm_len, fmt, ap);
@@ -2041,7 +2043,7 @@ static void print_operand(amd_module_t *A, const moperand_t *op)
         case AMD_SPEC_SCC:       asm_append(A, "scc"); break;
         case AMD_SPEC_M0:        asm_append(A, "m0"); break;
         case AMD_SPEC_PRIV_BASE: asm_append(A, "src_private_base"); break;
-        default:                 asm_append(A, "???"); break;
+        default: A->asm_bad = 1; asm_append(A, "???"); break;
         }
         break;
     default:
@@ -2056,7 +2058,7 @@ static void print_sgpr_pair(amd_module_t *A, uint16_t base)
 
 static void print_minst(amd_module_t *A, const minst_t *mi)
 {
-    if (mi->op >= AMD_OP_COUNT) return;
+    if (mi->op >= AMD_OP_COUNT) { A->asm_bad = 1; return; }
     const amd_enc_entry_t *tbl = get_enc_table(A);
     const amd_enc_entry_t *enc = &tbl[mi->op];
     if (enc->mnemonic == NULL) return;
@@ -2250,12 +2252,14 @@ void amdgpu_regalloc(amd_module_t *A)
         ra_func(A, fi);
 }
 
-void amdgpu_emit_asm(const amd_module_t *amd, FILE *out)
+int amdgpu_emit_asm(const amd_module_t *amd, FILE *out)
 {
     /* We need to cast away const for the asm buffer operations */
     amd_module_t *A = (amd_module_t *)amd;
 
     A->asm_len = 0;
+    A->asm_ovf = 0;
+    A->asm_bad = 0;
     asm_append(A, "    .amdgcn_target \"amdgcn-amd-amdhsa--%s\"\n",
                A->chip_name);
     asm_append(A, "    .text\n\n");
@@ -2264,8 +2268,17 @@ void amdgpu_emit_asm(const amd_module_t *amd, FILE *out)
         emit_asm_function(A, fi);
     }
 
+    if (A->asm_bad)
+        return be_fail(BC_E541, "amdgpu",
+                       "an instruction or operand the assembly printer "
+                       "cannot name");
+    if (A->asm_ovf)
+        return be_fail(BC_E545, "amdgpu", "the assembly text",
+                       (unsigned)AMD_ASM_SIZE);
+
     /* Write to output */
     fwrite(A->asm_buf, 1, A->asm_len, out);
+    return BC_OK;
 }
 
 /* ---- Msgpack Encoder (minimal, bounded) ---- */
@@ -2479,8 +2492,8 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
     for (uint32_t fi = 0; fi < A->num_mfuncs; fi++) {
         if (!A->mfuncs[fi].is_kernel) continue;
         if (num_kernels >= AMD_MAX_ELFK) {
-            fprintf(stderr, "amdgpu: more kernels than one object holds "
-                            "(max %u)\n", AMD_MAX_ELFK);
+            (void)be_fail(BC_E545, "amdgpu", "kernels in one object",
+                          (unsigned)AMD_MAX_ELFK);
             return BC_ERR_AMDGPU;
         }
 

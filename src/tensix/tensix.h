@@ -117,6 +117,9 @@ typedef enum {
 #define TT_LOADI_MOD0_FLOATB  1     /* FP32 lower */
 #define TT_LOADI_MOD0_INTA    2     /* INT32 upper */
 #define TT_LOADI_MOD0_INTB    4     /* INT32 lower */
+#define TT_LOADI_MOD0_U16     2
+#define TT_LOADI_MOD0_UPPER   8
+#define TT_LOADI_MOD0_LOWER  10
 
 #define TT_LDST_MOD0_SRCB     0
 #define TT_LDST_MOD0_FP16A    1
@@ -124,9 +127,15 @@ typedef enum {
 #define TT_LDST_MOD0_FP32     3
 
 #define TT_CC_LT             0
-#define TT_CC_GE             1
-#define TT_CC_EQ             2
-#define TT_CC_NE             3
+#define TT_CC_NE             2
+#define TT_CC_GE             4
+#define TT_CC_EQ             6
+
+#define TT_SHFT_MOD1_REG     0
+#define TT_SHFT_MOD1_IMM     1
+
+#define TT_IADD_MOD1_SUB     2
+#define TT_IADD_MOD1_NOCC    4
 
 #define TT_ENCC_INIT         0
 #define TT_ENCC_COMP         1
@@ -261,6 +270,8 @@ typedef struct {
 } tt_enc_entry_t;
 
 /* ---- Public API ---- */
+
+void tterr(bc_eid_t eid, ...);
 
 int  tensix_compile(const bir_module_t *bir, tt_module_t *tt);
 void tensix_coarsen(tt_module_t *tt);

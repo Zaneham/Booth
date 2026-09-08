@@ -117,7 +117,6 @@ static const char *sr_clean[] = {
 /* Fixtures where it still leaves vregs unallocated. */
 static const char *sr_leaky[] = {
     "tests/canonical.cu",
-    "tests/notgpt.cu",
     "tests/stress.cu",
     "tests/cuda_features.cu",
     "tests/device_calls.cu",

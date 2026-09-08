@@ -337,8 +337,16 @@ void bb_ret(bb_t *B) { emit(B, BIR_RET, 0, bb_void(B), NULL, 0); }
  * and ty is only what an immediate operand would be typed as. */
 void bb_retv(bb_t *B, uint32_t ty, bb_val v)
 {
-    (void)ty;
     uint32_t o[1] = { BIR_MAKE_VAL(v) };
+
+    if (B != NULL && B->func != BB_NONE && B->func < B->M->num_funcs) {
+        uint32_t ft = B->M->funcs[B->func].type;
+        if (ft < B->M->num_types
+            && B->M->types[ft].kind == BIR_TYPE_FUNC
+            && B->M->types[ft].inner < B->M->num_types
+            && B->M->types[B->M->types[ft].inner].kind == BIR_TYPE_VOID)
+            B->M->types[ft].inner = ty;
+    }
     emit(B, BIR_RET, 0, bb_void(B), o, 1);
 }
 

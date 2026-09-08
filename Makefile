@@ -23,7 +23,7 @@ CFLAGS  = -std=c99 -MMD -MP -Wall -Wextra -pedantic -O2 \
           -Wdouble-promotion -Wswitch-enum -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE $(CF_PROT) \
           $(GCC_ONLY) \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Iruntime/include \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Iruntime/include \
           $(COVFLAGS)
 LDFLAGS = -pie
 LIBS    = -lm
@@ -71,7 +71,7 @@ SOURCES = src/main.c src/kauri_impl.c \
           src/amdgpu/amd_rplan.c src/amdgpu/isel.c src/amdgpu/emit.c src/amdgpu/ra_ssa.c src/amdgpu/encode.c src/amdgpu/enc_tab.c src/amdgpu/sched.c src/amdgpu/verify.c src/amdgpu/amd_be.c \
           src/tensix/isel.c src/tensix/emit.c src/tensix/coarsen.c src/tensix/datamov.c src/tensix/noc.c \
           src/tensix/rv_enc.c src/tensix/rv_buf.c src/tensix/rv_elf.c src/tensix/rv_isel.c src/tensix/tensix_be.c src/cpu/cpu_emit.c src/cpu/cpu_elf.c src/cpu/rv64_emit.c src/cpu/rv64_elf.c src/cpu/cpu_be.c \
-          src/nvidia/isel.c src/nvidia/emit.c src/nvidia/nv_be.c \
+          src/nvidia/isel.c src/nvidia/emit.c src/nvidia/nv_be.c src/nvidia/emit_sass.c src/nvidia/verify.c \
           src/metal/emit.c src/metal/metal_be.c \
           src/intel/emit.c src/intel/intel_be.c \
           src/triton/lex.c src/triton/parse.c src/triton/sema.c src/triton/lower.c \
@@ -109,7 +109,18 @@ VSOURCES = $(VDIR)/tokenizer.c $(VDIR)/mlir_parser.c $(VDIR)/op_parsers.c \
 VCFLAGS := $(subst -std=c99,-std=c2x,$(CFLAGS)) -Wno-switch-enum \
            -DPLATFORM_SKIP_ENTRY -DCOREC_STDLIB_PROVIDES_MEM -I$(VDIR)
 
-OBJECTS = $(SOURCES:%.c=$(OBJDIR)/%.o) $(VSOURCES:%.c=$(OBJDIR)/%.o)
+# Zane's SASS back end, vendored across from Latimer under src/nvidia/vendor.
+# The instruction encoder, the cubin writer and the note tables came over whole;
+# lt_nvcf.c is the only file that changed, and only so the reconvergence pass
+# takes a control-flow graph the caller has already built rather than deriving
+# one from Latimer's Wave IR. It meets the strict flags unaltered, so unlike
+# the MLIR reader below it needs no relaxed warning set of its own.
+NVDIR = src/nvidia/vendor
+NVSOURCES = $(NVDIR)/lt_nvi.c $(NVDIR)/lt_nv.c $(NVDIR)/lt_nvcf.c \
+            $(NVDIR)/nv_note.c
+
+OBJECTS = $(SOURCES:%.c=$(OBJDIR)/%.o) $(VSOURCES:%.c=$(OBJDIR)/%.o) \
+          $(NVSOURCES:%.c=$(OBJDIR)/%.o)
 
 # Everything under src/mlir compiles on VCFLAGS, vendored or not. mlir_fe.c and
 # lower.c are ours but they speak corec types, so they want the same flags.
@@ -127,8 +138,7 @@ TARGET  = kath
 # strict flags without libhsa or libcuda having to be present. Neither is a
 # trunner test; both carry their own main and want real hardware.
 EXAMPLE_SRC = $(wildcard examples/*.c)
-HOSTCHK     = $(OBJDIR)/tests/tnv_rt.o $(OBJDIR)/tests/tnv_i1.o $(OBJDIR)/tests/tnv_bstr.o $(OBJDIR)/tests/gpu_mma.o $(patsubst examples/%.c,$(OBJDIR)/examples/%.o,$(EXAMPLE_SRC))
-
+HOSTCHK     = $(OBJDIR)/tests/tnv_rt.o $(OBJDIR)/tests/tnv_sass.o $(OBJDIR)/tests/tnv_i1.o $(OBJDIR)/tests/tnv_bstr.o $(OBJDIR)/tests/tnv_sret.o $(OBJDIR)/tests/tnv_call.o $(OBJDIR)/tests/tnv_grid.o $(OBJDIR)/tests/gpu_tid.o $(OBJDIR)/tests/gpu_mma.o $(OBJDIR)/tests/gpu_wmma.o $(OBJDIR)/tests/gpu_hcvt.o $(patsubst examples/%.c,$(OBJDIR)/examples/%.o,$(EXAMPLE_SRC))
 all: $(TARGET) $(ALT_RT) $(HOSTCHK)
 
 $(TARGET): $(OBJECTS)
@@ -140,7 +150,7 @@ $(OBJDIR)/%.o: %.c
 
 # ---- Test Suite ----
 TCFLAGS = -std=c99 -MMD -MP -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build \
           -Isrc/mlir -Iruntime/include $(COVFLAGS)
 TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/ttabs.c tests/ttypes.c tests/terrs.c tests/tphase.c \
@@ -171,7 +181,12 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tbir.c \
           tests/tocm.c \
           tests/tpack.c \
-          tests/tmtu.c
+          tests/tmtu.c \
+          tests/tcxp.c \
+          tests/ttpl.c \
+          tests/tvec.c \
+          tests/tref.c tests/ttyc.c tests/tcpp.c \
+          tests/tmof.c tests/tasm.c
 
 TOBJS   = $(TSRC:%.c=$(OBJDIR)/%.o)
 COBJS   = $(OBJDIR)/src/kauri_impl.o $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir_print.o $(OBJDIR)/src/ir/bir_lower.o $(OBJDIR)/src/ir/bir_mem2reg.o $(OBJDIR)/src/ir/bir_cfold.o $(OBJDIR)/src/ir/bir_dce.o $(OBJDIR)/src/ir/bir_struct.o $(OBJDIR)/src/ir/bir_insert.o $(OBJDIR)/src/ir/bir_sroa.o $(OBJDIR)/src/ir/bir_inline.o \
@@ -185,14 +200,18 @@ COBJS   = $(OBJDIR)/src/kauri_impl.o $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir
           $(OBJDIR)/src/amdgpu/amd_be.o $(OBJDIR)/src/nvidia/nv_be.o \
           $(OBJDIR)/src/tensix/tensix_be.o $(OBJDIR)/src/cpu/cpu_be.o \
           $(OBJDIR)/src/metal/metal_be.o $(OBJDIR)/src/intel/intel_be.o \
-          $(OBJDIR)/src/nvidia/isel.o $(OBJDIR)/src/nvidia/emit.o \
+          $(OBJDIR)/src/nvidia/isel.o $(OBJDIR)/src/nvidia/emit.o $(OBJDIR)/src/nvidia/emit_sass.o $(OBJDIR)/src/nvidia/verify.o \
           $(OBJDIR)/src/cpu/cpu_emit.o $(OBJDIR)/src/cpu/cpu_elf.o \
           $(OBJDIR)/src/cpu/rv64_emit.o $(OBJDIR)/src/cpu/rv64_elf.o \
           $(OBJDIR)/src/tensix/isel.o $(OBJDIR)/src/tensix/coarsen.o $(OBJDIR)/src/tensix/datamov.o \
           $(OBJDIR)/src/metal/emit.o $(OBJDIR)/src/intel/emit.o \
-          $(OBJDIR)/src/mlir/mlir_fe.o $(OBJDIR)/src/mlir/lower.o $(VSOURCES:%.c=$(OBJDIR)/%.o)
+          $(OBJDIR)/src/mlir/mlir_fe.o $(OBJDIR)/src/mlir/lower.o $(VSOURCES:%.c=$(OBJDIR)/%.o) $(NVSOURCES:%.c=$(OBJDIR)/%.o)
+
+rules:
+	@sh tests/rules.sh
 
 test: $(TARGET) trunner
+	@sh tests/rules.sh
 	./trunner --all
 
 # bir.h claims a deterministic layout. This makes that a property rather
@@ -310,7 +329,7 @@ coverage:
 
 clean:
 	rm -rf $(OBJDIR) $(COVDIR)
-	rm -f $(TARGET) $(TARGET).exe trunner trunner.exe tnv_rt tnv_rt.exe
+	rm -f $(TARGET) $(TARGET).exe trunner trunner.exe tnv_rt tnv_rt.exe tnv_sass tnv_sass.exe
 	rm -rf coverage.txt coverage-html
 	rm -f *.hsaco *.ptx *.spv *.metal *.elf *.bin *.ttinsn *.o
 	rm -f *_host.cpp *_reader.cpp *_writer.cpp *_compute.cpp
@@ -320,4 +339,4 @@ clean:
 # linked in and the build silently disagrees with the source.
 -include $(OBJECTS:.o=.d) $(TOBJS:.o=.d) $(HOSTRT:.o=.d)
 
-.PHONY: all clean test repro mutate mutate-discover install uninstall coverage hostchk
+.PHONY: all clean test rules repro mutate mutate-discover install uninstall coverage hostchk

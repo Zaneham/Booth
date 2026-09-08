@@ -125,6 +125,7 @@ uint32_t rv_remu  (uint8_t rd, uint8_t rs1, uint8_t rs2);
 uint32_t rv_fence (uint8_t pred, uint8_t succ);
 uint32_t rv_ecall (void);
 uint32_t rv_ebreak(void);
+uint32_t rv_unimp(void);
 
 /* ---- Convenience ----
  * Canonical NOP per spec: addi x0, x0, 0. */

@@ -21,7 +21,7 @@ typedef struct {
     tfunc_t     func;
 } tcase_t;
 
-#define TH_MAXTS 512
+#define TH_MAXTS 1024
 #define TH_BUFSZ 4096
 
 /* Column widths for the result line. TH_DESCW is a budget, not a hint. A

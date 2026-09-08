@@ -128,6 +128,7 @@ typedef enum {
     AMD_S_CBRANCH_EXECNZ,
     AMD_S_ENDPGM,
     AMD_S_BARRIER,
+    AMD_S_TRAP,
     AMD_S_WAITCNT,
     AMD_S_NOP,
     AMD_S_WAIT_LOADCNT,   /* GFX12: wait for VMEM loads */
@@ -457,6 +458,9 @@ typedef struct {
 
     char        asm_buf[AMD_ASM_SIZE];
     uint32_t    asm_len;
+    uint8_t     asm_ovf;
+    uint8_t     asm_bad;
+    uint8_t     asm_pad[2];
 
     int         enc_err;   /* encoder refused something; fail the compile */
 } amd_module_t;
@@ -482,7 +486,7 @@ void amdgpu_phi_elim(amd_module_t *amd);
 void amdgpu_regalloc(amd_module_t *amd);
 
 /* Emit assembly text to stdout or file */
-void amdgpu_emit_asm(const amd_module_t *amd, FILE *out);
+int  amdgpu_emit_asm(const amd_module_t *amd, FILE *out);
 
 /* Emit binary ELF code object (.hsaco) to file */
 int  amdgpu_emit_elf(amd_module_t *amd, const char *path);

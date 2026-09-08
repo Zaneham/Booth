@@ -4,6 +4,7 @@
 #include "barracuda.h"
 
 #define BC_MAX_NODES    (1 << 18)
+#define BC_MAX_ASMOP    24
 
 typedef enum {
     AST_NONE = 0,
@@ -32,11 +33,15 @@ typedef enum {
     AST_PACK_EXP,
     AST_PACK_SIZE,
     AST_FOLD,
+    AST_LAMBDA,
+    AST_NEW,
+    AST_DELETE,
 
     AST_EXPR_STMT,
     AST_BLOCK,
     AST_IF,
     AST_FOR,
+    AST_RANGE_FOR,
     AST_WHILE,
     AST_DO_WHILE,
     AST_SWITCH,
@@ -47,6 +52,8 @@ typedef enum {
     AST_CONTINUE,
     AST_GOTO,
     AST_LABEL,
+    AST_ASM,
+    AST_ASM_OP,
 
     AST_TYPE_SPEC,
     AST_DECLARATOR,
@@ -63,6 +70,8 @@ typedef enum {
     AST_TEMPLATE_DECL,
     AST_TEMPLATE_PARAM,
 
+    AST_BASE,
+
     AST_PP_DIRECTIVE,
     AST_TRANSLATION_UNIT,
 
@@ -74,6 +83,12 @@ typedef enum {
 
 #define PRM_PACK        0x01
 #define PRM_VARG        0x02
+
+#define IF_CEXP         0x01
+
+#define LAM_BADC        0x01
+#define LAM_RREF        0x02
+#define LAM_PDSH        4
 
 #define FLD_UL          0x01
 #define FLD_UR          0x02
@@ -88,6 +103,14 @@ typedef enum {
 #define QUAL_REGISTER   0x20
 #define QUAL_CONSTEXPR  0x40
 #define QUAL_TYPEDEF    0x80
+#define QUAL_SCOPED     0x100
+#define QUAL_PINIT      0x200
+#define QUAL_REF        0x400
+#define QUAL_RREF       0x800
+#define QUAL_DECOR      0x1000
+#define QUAL_PDEF       0x2000
+#define QUAL_PTR1       0x4000
+#define QUAL_PTR2       0x8000
 
 typedef enum {
     TYPE_VOID, TYPE_BOOL, TYPE_CHAR, TYPE_SHORT, TYPE_INT, TYPE_LONG,
@@ -96,6 +119,7 @@ typedef enum {
     TYPE_STRUCT, TYPE_ENUM, TYPE_UNION, TYPE_CLASS,
     TYPE_AUTO,
     TYPE_NAME,
+    TYPE_DECLTYPE,
 } basic_type_t;
 
 /* Left-child / right-sibling. 0 = no node. Simple as a tree should be. */
@@ -109,6 +133,7 @@ typedef struct {
     uint32_t    next_sibling;
     uint32_t    launch_bounds_max;  /* 0 = not set. Outside union to avoid the oper.flags conflict. */
     uint32_t    launch_bounds_min;  /* 0 = not set */
+    uint32_t    algn;
     union {
         int64_t     ival;
         double      fval;

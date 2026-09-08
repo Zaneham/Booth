@@ -839,8 +839,11 @@ static void step7_compact(m2r_t *S)
                     else if (j >= 2 && j % 2 == 0) /* case values */
                         M->extra_operands[start + j] =
                             remap_operand(S, ref, inst_renum, old_num_insts);
+                } else if (I->op == BIR_CALL) {
+                    if (j > 0) /* [0] is the callee index */
+                        M->extra_operands[start + j] =
+                            remap_operand(S, ref, inst_renum, old_num_insts);
                 } else {
-                    /* CALL etc: remap all */
                     M->extra_operands[start + j] =
                         remap_operand(S, ref, inst_renum, old_num_insts);
                 }
@@ -859,6 +862,10 @@ static void step7_compact(m2r_t *S)
                     is_block_ref = (j == 1); break;
                 case BIR_PHI:
                     is_block_ref = (j % 2 == 0); break;
+                case BIR_CALL:
+                case BIR_FNREF:
+                case BIR_GLOBAL_REF:
+                    is_block_ref = (j == 0); break;
                 default:
                     break;
                 }
