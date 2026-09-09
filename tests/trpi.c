@@ -5764,3 +5764,172 @@ static void rpi287(void)
     PASS();
 }
 TH_REG("rpi", 287, "popc gets a 32-bit operand, not a 16", rpi287)
+
+static const char *rpi_amd(const char *src, const char *stem)
+{
+    static char txt[1 << 16];
+    char cmd[512], cu[128], out[128];
+    FILE *f, *g;
+    size_t n;
+
+    txt[0] = '\0';
+    snprintf(cu, sizeof cu, "build/%s.cu", stem);
+    snprintf(out, sizeof out, "build/%s.s", stem);
+    f = fopen(cu, "w");
+    if (!f) return NULL;
+    fputs(src, f);
+    fclose(f);
+    remove(out);
+    snprintf(cmd, sizeof cmd, "%s --amdgpu %s -o %s", BC_BIN, cu, out);
+    if (th_run(cmd, obuf, (int)sizeof obuf) != 0) return NULL;
+    g = fopen(out, "rb");
+    if (!g) return NULL;
+    n = fread(txt, 1, sizeof txt - 1, g);
+    fclose(g);
+    txt[n] = '\0';
+    return txt;
+}
+
+static void rpi288(void)
+{
+    const char *p = rpi_amd(
+        "__global__ void k(int *o){ o[0] = \"alpha\"[2]; }\n", "rpi288");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "s_getpc_b64 s["), NULL);
+        CHNE(strstr(p, "@rel32@lo+4"), NULL);
+        CHNE(strstr(p, "@rel32@hi+12"), NULL);
+        CHNE(strstr(p, ".section .rodata"), NULL);
+        CHNE(strstr(p, ".byte 97, 108, 112, 104, 97, 0"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 288, "a string literal reaches amdgcn .rodata", rpi288)
+
+static void rpi289(void)
+{
+    const char *p = rpi_amd(
+        "__global__ void a(int *o){ o[0] = \"alpha\"[1]; }\n"
+        "__global__ void b(int *o){ o[0] = \"alpha\"[3]; }\n", "rpi289");
+    const char *q;
+    int n = 0;
+
+    CHNE(p, NULL);
+    if (p) {
+        for (q = p; (q = strstr(q, ".Lgs0.str.0@rel32@lo")) != NULL; q++) n++;
+        CHEQ(n, 2);
+        CHEQ(strstr(p, ".Lgs1"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 289, "one literal, two kernels, one copy", rpi289)
+
+static void rpi290(void)
+{
+    const char *p = rpi_amd(
+        "__device__ int f(const char *s){ return s[0]; }\n"
+        "__global__ void k(int *o){ o[0] = f(\"\") + f(\"gamma\"); }\n",
+        "rpi290");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, ".Lgs0.str.0:"), NULL);
+        CHNE(strstr(p, ".byte 0"), NULL);
+        CHNE(strstr(p, ".byte 103, 97, 109, 109, 97, 0"), NULL);
+        CHNE(strstr(p, ".Lgs0.str.0@rel32@lo+4"), NULL);
+        CHNE(strstr(p, ".Lgs1.str.1@rel32@lo+4"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 290, "an empty literal still gets an address", rpi290)
+
+static void rpi291(void)
+{
+    const char *p = rpi_amd(
+        "__device__ int gtab[4];\n"
+        "__global__ void k(int *o, int i){ o[0] = gtab[i]; }\n", "rpi291");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "s_load_dwordx2"), NULL);
+        CHEQ(strstr(p, "s_getpc_b64"), NULL);
+        CHEQ(strstr(p, ".section .rodata"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 291, "a host-owned global keeps the kernarg path", rpi291)
+
+static void rpi292(void)
+{
+    const char *p = rpi_amd(
+        "__global__ void k(int *o){ o[0] = \"alpha\"[1]; }\n", "rpi292");
+    const char *g, *a, *c;
+
+    CHNE(p, NULL);
+    if (p) {
+        g = strstr(p, "s_getpc_b64 s[");
+        CHNE(g, NULL);
+        if (g) {
+            a = strstr(g, "\n");
+            CHNE(a, NULL);
+            if (a) {
+                CHEQ(strncmp(a + 1, "    s_add_u32 ", 14), 0);
+                c = strstr(a + 1, "\n");
+                CHNE(c, NULL);
+                if (c) CHEQ(strncmp(c + 1, "    s_addc_u32 ", 15), 0);
+            }
+        }
+        CHNE(strstr(p, "global_load_dword"), NULL);
+        CHEQ(strstr(p, "s_load_dword s"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 292, "the carry add follows its own add", rpi292)
+
+static void rpi293(void)
+{
+    const char *path = scratch("rpi293.cu",
+        "__global__ void k(int *o){ o[0] = \"alpha\"[2] + \"gamma\"[1]; }\n");
+    static char obj[1 << 18];
+    char cmd[512];
+    FILE *f;
+    size_t n = 0, i;
+    int seen = 0;
+
+    CHNE(path, NULL);
+    remove("build/rpi293.hsaco");
+    snprintf(cmd, sizeof cmd, "%s --amdgpu-bin %s -o build/rpi293.hsaco",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    f = fopen("build/rpi293.hsaco", "rb");
+    CHNE(f, NULL);
+    if (f) {
+        n = fread(obj, 1, sizeof obj, f);
+        fclose(f);
+    }
+    for (i = 0; i + 6 <= n; i++)
+        if (memcmp(obj + i, "alpha", 6) == 0) seen++;
+    CHEQ(seen, 1);
+    seen = 0;
+    for (i = 0; i + 6 <= n; i++)
+        if (memcmp(obj + i, "gamma", 6) == 0) seen++;
+    CHEQ(seen, 1);
+    PASS();
+}
+TH_REG("rpi", 293, "the object carries the literal bytes", rpi293)
+
+static void rpi294(void)
+{
+    const char *p = rpi_amd(
+        "__constant__ int ctab[8];\n"
+        "__global__ void k(int *o, int i){ o[0] = ctab[i]; }\n", "rpi294");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "global_load_dword"), NULL);
+        CHEQ(strstr(p, "s_load_dword s"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 294, "a constant read uses a base the salu can hold", rpi294)

@@ -2056,6 +2056,59 @@ static void print_sgpr_pair(amd_module_t *A, uint16_t base)
     asm_append(A, "s[%u:%u]", base, base + 1);
 }
 
+static int glabl(amd_module_t *A, uint32_t slot, char *out, int size)
+{
+    int n;
+    const bir_module_t *M = A->bir;
+    uint32_t gi = (slot < A->nglit) ? A->glit[slot].gi : 0;
+    const char *nm = (gi < M->num_globals && M->globals[gi].name < M->string_len)
+                   ? &M->strings[M->globals[gi].name] : "";
+    int ok = 1;
+
+    for (uint32_t i = 0; nm[i] != '\0' && i < 96u; i++) {
+        char c = nm[i];
+        if (c >= 'a' && c <= 'z') continue;
+        if (c >= 'A' && c <= 'Z') continue;
+        if (c >= '0' && c <= '9') continue;
+        if (c == '_' || c == '.' || c == '$') continue;
+        ok = 0;
+        break;
+    }
+    if (!ok || nm[0] == '\0')
+        n = snprintf(out, (size_t)size, ".Lgs%u", (unsigned)slot);
+    else
+        n = snprintf(out, (size_t)size, ".Lgs%u%s", (unsigned)slot, nm);
+    return (n < 0 || n >= size) ? 1 : 0;
+}
+
+/* per CDNA3 12.3 S_GETPC_B64: D0.i64 = PC + 4, the next instruction's address */
+/* per CDNA3 12.1 S_ADD_U32: SCC = carry-out, the carry-in S_ADDC_U32 reads */
+static void gaddr_asm(amd_module_t *A, const minst_t *mi)
+{
+    char lb[128];
+    uint16_t base;
+
+    if (mi->num_defs < 1 || mi->num_uses < 1 ||
+        mi->operands[0].kind != MOP_SGPR ||
+        mi->operands[1].kind != MOP_GSYM) {
+        A->asm_bad = 1;
+        return;
+    }
+    base = mi->operands[0].reg_num;
+    if (glabl(A, mi->operands[1].reg_num, lb, (int)sizeof lb)) {
+        A->asm_bad = 1;
+        return;
+    }
+
+    asm_append(A, "    s_getpc_b64 ");
+    print_sgpr_pair(A, base);
+    asm_append(A, "\n");
+    asm_append(A, "    s_add_u32 s%u, s%u, %s@rel32@lo+4\n",
+               base, base, lb);
+    asm_append(A, "    s_addc_u32 s%u, s%u, %s@rel32@hi+12\n",
+               base + 1, base + 1, lb);
+}
+
 static void print_minst(amd_module_t *A, const minst_t *mi)
 {
     if (mi->op >= AMD_OP_COUNT) { A->asm_bad = 1; return; }
@@ -2065,6 +2118,11 @@ static void print_minst(amd_module_t *A, const minst_t *mi)
 
     /* Skip pseudo-instructions that survived */
     if (enc->fmt == AMD_FMT_PSEUDO) return;
+
+    if (enc->fmt == AMD_FMT_GADDR) {
+        gaddr_asm(A, mi);
+        return;
+    }
 
     asm_append(A, "    %s", enc->mnemonic);
 
@@ -2252,6 +2310,31 @@ void amdgpu_regalloc(amd_module_t *A)
         ra_func(A, fi);
 }
 
+static void glit_asm(amd_module_t *A)
+{
+    char lb[128];
+
+    if (A->nglit == 0) return;
+
+    asm_append(A, "    .section .rodata,\"a\",@progbits\n");
+    for (uint32_t i = 0; i < A->nglit && i < AMD_MAX_GLIT; i++) {
+        uint32_t off = A->glit[i].off;
+        uint32_t len = A->glit[i].len;
+
+        if (off > A->gdlen || len > A->gdlen - off) { A->asm_bad = 1; return; }
+        if (glabl(A, i, lb, (int)sizeof lb)) { A->asm_bad = 1; return; }
+        asm_append(A, "    .p2align 3\n%s:\n", lb);
+        for (uint32_t b = 0; b < len; b++) {
+            if (b % 16u == 0u)
+                asm_append(A, "    .byte %u", (unsigned)A->gdat[off + b]);
+            else
+                asm_append(A, ", %u", (unsigned)A->gdat[off + b]);
+            if (b % 16u == 15u || b + 1u == len) asm_append(A, "\n");
+        }
+    }
+    asm_append(A, "    .text\n");
+}
+
 int amdgpu_emit_asm(const amd_module_t *amd, FILE *out)
 {
     /* We need to cast away const for the asm buffer operations */
@@ -2267,6 +2350,8 @@ int amdgpu_emit_asm(const amd_module_t *amd, FILE *out)
     for (uint32_t fi = 0; fi < A->num_mfuncs; fi++) {
         emit_asm_function(A, fi);
     }
+
+    glit_asm(A);
 
     if (A->asm_bad)
         return be_fail(BC_E541, "amdgpu",
@@ -2480,10 +2565,8 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
     /* First, encode all functions to binary */
     A->code_len = 0;
 
-    /* Build .rodata (kernel descriptors) and .text (code) separately.
-     * The HSA runtime wants KDs in .rodata — data and deeds, separated
-     * like a well-organised criminal enterprise. */
-    static uint8_t rodata[16384];   /* up to ~256 KDs with alignment */
+    /* KDs go to .rodata, code to .text; the HSA runtime wants them apart. */
+    static uint8_t rodata[16384 + AMD_GDAT_SIZE];
     uint32_t rodata_len = 0;
     static uint32_t rodata_kd_off[AMD_MAX_ELFK]; /* KD offset within .rodata */
     static uint32_t code_offsets[AMD_MAX_ELFK];  /* code offset within .text */
@@ -2560,12 +2643,7 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
             kd.compute_pgm_rsrc3 = accum_off & 0x3F;
         }
 
-        /* kernel_code_properties */
         kd.kernel_code_properties = (1u << 3);   /* ENABLE_SGPR_KERNARG_PTR */
-        /* Bit 0 = ENABLE_SGPR_PRIVATE_SEGMENT_BUFFER — shifts SGPR
-         * layout on GFX9. SCRATCH_EN (RSRC2) + private_segment_fixed_size
-         * handle scratch allocation. Tested: bit 0 ON did not fix
-         * the y=1.0 scratch bug and may cause SGPR shift. */
 
         if (rodata_len + 64 <= sizeof(rodata)) {
             memcpy(rodata + rodata_len, &kd, 64);
@@ -2587,12 +2665,26 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
         encode_function(A, fi);
     }
 
+    if (A->enc_err) {
+        (void)be_fail(BC_E541, "amdgpu",
+                      "an instruction the binary encoder cannot lay down");
+        return BC_ERR_AMDGPU;
+    }
+
+    while (rodata_len % 8 != 0 && rodata_len < sizeof(rodata))
+        rodata[rodata_len++] = 0;
+    A->grbase = rodata_len;
+    if (A->gdlen > sizeof(rodata) - rodata_len) {
+        (void)be_fail(BC_E545, "amdgpu", "bytes of read-only data",
+                      (unsigned)(sizeof(rodata) - rodata_len));
+        return BC_ERR_AMDGPU;
+    }
+    memcpy(rodata + rodata_len, A->gdat, A->gdlen);
+    rodata_len += A->gdlen;
+
     /* ---- Build .debug_bc section ----
-     * Maps code offsets to source lines. Currently we emit what we know,
-     * which is per-instruction byte offsets. Line numbers are zero until
-     * the frontend grows source location tracking. But the section exists,
-     * the format is defined, and the ABEND dump machinery can read it.
-     * Patience, grasshopper. */
+     * Code offset per instruction; line numbers stay zero until the
+     * frontend tracks source locations. The ABEND dump reads it. */
     static uint8_t dbcbuf[65536];
     uint32_t dbc_len = 0;
 
@@ -2801,11 +2893,8 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
         note_buf[note_len++] = 0;
 
     /* ---- Build the DSO envelope ----
-     *
-     * The HSA runtime loads code objects like a drunk bouncer inspects IDs:
-     * it WILL check program headers, dynamic symbols, and ABI version,
-     * and it WILL reject you if any are missing. Our previous bare ELF
-     * worked fine for the emulator but real hardware has standards.
+     * The runtime checks program headers, dynamic symbols and ABI version
+     * and rejects the object if any are missing.
      *
      * Sections: 0=NULL 1=.note 2=.dynsym 3=.hash 4=.dynstr
      *           5=.rodata 6=.text 7=.dynamic 8=.symtab 9=.strtab
@@ -2843,7 +2932,7 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
     #undef SHSTR
 
     /* ---- .dynstr + .strtab: kernel name strings ---- */
-    #define STRTAB_MAX 4096
+    #define STRTAB_MAX 65536
     static char dynstr[STRTAB_MAX];
     static char strtab[STRTAB_MAX];
     uint32_t dynstr_len = 0, strtab_len = 0;
@@ -2876,6 +2965,25 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
         sf_name[ki] = strtab_len;
         if (strtab_len + nl <= STRTAB_MAX) { memcpy(strtab + strtab_len, name, nl); strtab_len += nl; }
         ki++;
+    }
+
+    static uint32_t gl_name[AMD_MAX_GLIT];
+    uint32_t ngsym = (A->nglit < AMD_MAX_GLIT) ? A->nglit : AMD_MAX_GLIT;
+
+    for (uint32_t gi = 0; gi < ngsym; gi++) {
+        uint32_t bg = A->glit[gi].gi;
+        const char *nm = (bg < A->bir->num_globals
+                          && A->bir->globals[bg].name < A->bir->string_len)
+                       ? &A->bir->strings[A->bir->globals[bg].name] : ".str";
+        uint32_t nl = (uint32_t)strlen(nm) + 1;
+        gl_name[gi] = strtab_len;
+        if (strtab_len + nl > STRTAB_MAX) {
+            (void)be_fail(BC_E545, "amdgpu", "bytes of symbol names",
+                          (unsigned)STRTAB_MAX);
+            return BC_ERR_AMDGPU;
+        }
+        memcpy(strtab + strtab_len, nm, nl);
+        strtab_len += nl;
     }
 
     /* ---- Compute sizes ---- */
@@ -2911,7 +3019,7 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
     uint64_t dyn_va    = dyn_off + 0x2000;
 
     uint64_t sym_off   = (dyn_off + dyn_size + 7) & ~7ULL;
-    uint64_t sym_size  = ndynsym * 24; /* .symtab mirrors .dynsym */
+    uint64_t sym_size  = (ndynsym + ngsym) * 24; /* .dynsym plus the literals */
     uint64_t str_off   = sym_off + sym_size;
     uint64_t dbc_off   = (str_off + strtab_len + 3) & ~3ULL;
     uint64_t shs_off   = dbc_off + dbc_len;
@@ -2925,9 +3033,28 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
         memcpy(rodata + rodata_kd_off[ri] + 16, &entry_off, 8);
     }
 
+    for (uint32_t fi = 0; fi < A->ngfix; fi++) {
+        uint32_t slot = A->gfix[fi].slot;
+        uint32_t anch = A->gfix[fi].anch;
+        int64_t  d;
+        uint32_t lo, hi;
+
+        if (slot >= A->nglit || anch + 12u > A->code_len) {
+            (void)be_fail(BC_E541, "amdgpu",
+                          "a read-only data reference the layout lost track of");
+            return BC_ERR_AMDGPU;
+        }
+        d = (int64_t)(rod_va + A->grbase + A->glit[slot].off)
+          - (int64_t)(text_va + anch);
+        lo = (uint32_t)((uint64_t)d & 0xFFFFFFFFu);
+        hi = (uint32_t)(((uint64_t)d >> 32) & 0xFFFFFFFFu);
+        memcpy(A->code + anch + 4,  &lo, 4);
+        memcpy(A->code + anch + 12, &hi, 4);
+    }
+
     /* ---- Build .dynsym + .symtab (now we know VAs) ---- */
     static elf64_sym_t dynsym[256];
-    static elf64_sym_t symtab[256];
+    static elf64_sym_t symtab[AMD_MAX_GLIT + 256];
     memset(&dynsym[0], 0, 24);
     memset(&symtab[0], 0, 24);
     uint32_t si = 1;
@@ -2969,15 +3096,26 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
         ki++;
     }
     uint32_t num_syms = si;
+    uint32_t num_dsym = si;
+
+    for (uint32_t gi = 0; gi < ngsym && num_syms < AMD_MAX_GLIT + 256; gi++) {
+        symtab[num_syms].st_name  = gl_name[gi];
+        symtab[num_syms].st_info  = (STB_GLOBAL << 4) | STT_OBJECT;
+        symtab[num_syms].st_other = 0;
+        symtab[num_syms].st_shndx = 5; /* .rodata */
+        symtab[num_syms].st_value = rod_va + A->grbase + A->glit[gi].off;
+        symtab[num_syms].st_size  = A->glit[gi].len;
+        num_syms++;
+    }
 
     /* ---- Build .hash (SysV, 1 bucket — all symbols in one chain) ---- */
     static uint32_t hash_buf[256];
     hash_buf[0] = 1;         /* nbucket */
-    hash_buf[1] = num_syms;  /* nchain  */
-    hash_buf[2] = (num_syms > 1) ? 1 : 0; /* bucket[0] = first real sym */
+    hash_buf[1] = num_dsym;  /* nchain  */
+    hash_buf[2] = (num_dsym > 1) ? 1 : 0; /* bucket[0] = first real sym */
     hash_buf[3] = 0;         /* chain[0] = end (null sym) */
-    for (uint32_t hi = 1; hi < num_syms && hi + 3 < 256; hi++)
-        hash_buf[3 + hi] = (hi + 1 < num_syms) ? hi + 1 : 0;
+    for (uint32_t hi = 1; hi < num_dsym && hi + 3 < 256; hi++)
+        hash_buf[3 + hi] = (hi + 1 < num_dsym) ? hi + 1 : 0;
 
     /* ---- Build .dynamic ---- */
     static elf64_dyn_t dynamic[8];
@@ -3093,11 +3231,11 @@ int amdgpu_emit_elf(amd_module_t *A, const char *path)
 
     /* .dynsym */
     fwrite_pad(fp, 8);
-    fwrite(dynsym, 24, num_syms, fp);
+    fwrite(dynsym, 24, num_dsym, fp);
 
     /* .hash */
     fwrite_pad(fp, 4);
-    fwrite(hash_buf, 4, 3 + num_syms, fp);
+    fwrite(hash_buf, 4, 3 + num_dsym, fp);
 
     /* .dynstr */
     fwrite(dynstr, 1, dynstr_len, fp);

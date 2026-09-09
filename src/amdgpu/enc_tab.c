@@ -13,6 +13,8 @@
 const amd_enc_entry_t amd_enc_table[AMD_OP_COUNT] = {
     /* SOP2 */
     [AMD_S_ADD_U32]         = { AMD_FMT_SOP2, 0x00, "s_add_u32"         },
+    /* per CDNA3 12.1, RDNA2 t.66, RDNA3 t.66: SOP2 S_ADDC_U32 = 4 */
+    [AMD_S_ADDC_U32]        = { AMD_FMT_SOP2, 0x04, "s_addc_u32"        },
     [AMD_S_ADD_I32]         = { AMD_FMT_SOP2, 0x02, "s_add_i32"         },
     [AMD_S_SUB_U32]         = { AMD_FMT_SOP2, 0x01, "s_sub_u32"         },
     [AMD_S_MUL_I32]         = { AMD_FMT_SOP2, 0x2C, "s_mul_i32"         },
@@ -34,6 +36,7 @@ const amd_enc_entry_t amd_enc_table[AMD_OP_COUNT] = {
     [AMD_S_SETPC_B64]       = { AMD_FMT_SOP1, 0x48, "s_setpc_b64"       },
     [AMD_S_SWAPPC_B64]      = { AMD_FMT_SOP1, 0x49, "s_swappc_b64"      },
     [AMD_S_GETPC_B64]       = { AMD_FMT_SOP1, 0x47, "s_getpc_b64"       },
+    [AMD_GADDR]             = { AMD_FMT_GADDR, 0x00, "s_getpc_b64"       },
 
     /* SOPC */
     [AMD_S_CMP_EQ_U32]      = { AMD_FMT_SOPC, 0x06, "s_cmp_eq_u32"      },
@@ -200,6 +203,8 @@ const amd_enc_entry_t amd_enc_table[AMD_OP_COUNT] = {
 const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT] = {
     /* SOP2 — extensively renumbered from GFX11 */
     [AMD_S_ADD_U32]         = { AMD_FMT_SOP2, 0x00, "s_add_u32"         },
+    /* per CDNA3 12.1, RDNA2 t.66, RDNA3 t.66: SOP2 S_ADDC_U32 = 4 */
+    [AMD_S_ADDC_U32]        = { AMD_FMT_SOP2, 0x04, "s_addc_u32"        },
     [AMD_S_ADD_I32]         = { AMD_FMT_SOP2, 0x02, "s_add_i32"         },
     [AMD_S_SUB_U32]         = { AMD_FMT_SOP2, 0x01, "s_sub_u32"         },
     [AMD_S_MUL_I32]         = { AMD_FMT_SOP2, 0x24, "s_mul_i32"         },
@@ -220,7 +225,9 @@ const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT] = {
     [AMD_S_AND_SAVEEXEC_B32]= { AMD_FMT_SOP1, 0x21, "s_and_saveexec_b32"},
     [AMD_S_SETPC_B64]       = { AMD_FMT_SOP1, 0x1D, "s_setpc_b64"       },
     [AMD_S_SWAPPC_B64]      = { AMD_FMT_SOP1, 0x1E, "s_swappc_b64"      },
-    [AMD_S_GETPC_B64]       = { AMD_FMT_SOP1, 0x1C, "s_getpc_b64"       },
+    /* per RDNA2 t.65: SOP1 S_GETPC_B64 = 31 */
+    [AMD_S_GETPC_B64]       = { AMD_FMT_SOP1, 0x1F, "s_getpc_b64"       },
+    [AMD_GADDR]             = { AMD_FMT_GADDR, 0x00, "s_getpc_b64"       },
 
     /* SOPC — GFX9: NE is "lg" (less-or-greater) */
     [AMD_S_CMP_EQ_U32]      = { AMD_FMT_SOPC, 0x06, "s_cmp_eq_u32"      },
@@ -391,6 +398,8 @@ const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT] = {
 const amd_enc_entry_t amd_enc_table_gfx9[AMD_OP_COUNT] = {
     /* SOP2 — GFX9 interleaves _b32/_b64 as consecutive opcodes */
     [AMD_S_ADD_U32]         = { AMD_FMT_SOP2, 0x00, "s_add_u32"         },
+    /* per CDNA3 12.1, RDNA2 t.66, RDNA3 t.66: SOP2 S_ADDC_U32 = 4 */
+    [AMD_S_ADDC_U32]        = { AMD_FMT_SOP2, 0x04, "s_addc_u32"        },
     [AMD_S_ADD_I32]         = { AMD_FMT_SOP2, 0x02, "s_add_i32"         },
     [AMD_S_SUB_U32]         = { AMD_FMT_SOP2, 0x01, "s_sub_u32"         },
     [AMD_S_MUL_I32]         = { AMD_FMT_SOP2, 0x24, "s_mul_i32"         },
@@ -421,6 +430,7 @@ const amd_enc_entry_t amd_enc_table_gfx9[AMD_OP_COUNT] = {
     [AMD_S_SETPC_B64]       = { AMD_FMT_SOP1, 0x1D, "s_setpc_b64"       },
     [AMD_S_SWAPPC_B64]      = { AMD_FMT_SOP1, 0x1E, "s_swappc_b64"      },
     [AMD_S_GETPC_B64]       = { AMD_FMT_SOP1, 0x1C, "s_getpc_b64"       },
+    [AMD_GADDR]             = { AMD_FMT_GADDR, 0x00, "s_getpc_b64"       },
 
     /* SOPC — GFX10: NE is "lg" (less-or-greater) */
     [AMD_S_CMP_EQ_U32]      = { AMD_FMT_SOPC, 0x06, "s_cmp_eq_u32"      },

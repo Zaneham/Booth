@@ -17,7 +17,7 @@
  * E070-E099  Sema
  * E100-E158  Lowering */
 
-#define BC_EID_MAX 1000
+#define BC_EID_MAX 1100
 
 
 
@@ -286,7 +286,11 @@ typedef enum {
     BC_E940 = 940,
     BC_E960 = 960,
 
-    BC_E980 = 980
+    BC_E980 = 980,
+
+    BC_E1060 = 1060,
+    BC_E1061 = 1061,
+    BC_E1062 = 1062
 } bc_eid_t;
 
 /* Returns format string for eid -- loaded translation or compiled-in English */

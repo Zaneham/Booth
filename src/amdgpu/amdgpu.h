@@ -66,6 +66,7 @@ typedef enum {
     AMD_FMT_FLAT,       /* true flat (SEG=0, private aperture) */
     AMD_FMT_VOP3P_MAI,  /* MFMA matrix instructions (64-bit, CDNA only) */
     AMD_FMT_PSEUDO,     /* pseudo-instruction (eliminated before emit) */
+    AMD_FMT_GADDR,
     AMD_FMT_COUNT
 } amd_fmt_t;
 
@@ -74,6 +75,7 @@ typedef enum {
 typedef enum {
     /* -- SOP2: scalar two-input -- */
     AMD_S_ADD_U32,
+    AMD_S_ADDC_U32,
     AMD_S_ADD_I32,
     AMD_S_SUB_U32,
     AMD_S_MUL_I32,
@@ -294,6 +296,7 @@ typedef enum {
     AMD_PSEUDO_PHI,
     AMD_PSEUDO_COPY,
     AMD_PSEUDO_DEF,       /* defines a vreg (for phi elimination temps) */
+    AMD_GADDR,
 
     AMD_OP_COUNT
 } amd_op_t;
@@ -308,7 +311,8 @@ typedef enum {
     MOP_VREG_V,         /* virtual vector reg (maps to VGPR) */
     MOP_IMM,            /* 32-bit immediate */
     MOP_LABEL,          /* machine block index */
-    MOP_SPECIAL         /* VCC, EXEC, SCC, M0 */
+    MOP_SPECIAL,        /* VCC, EXEC, SCC, M0 */
+    MOP_GSYM
 } mop_kind_t;
 
 typedef struct {
@@ -415,6 +419,20 @@ typedef struct {
 #define AMD_MAX_VREGS     (1 << 16)
 #define AMD_CODE_SIZE     (4*1024*1024)
 #define AMD_ASM_SIZE      (4*1024*1024)
+#define AMD_MAX_GLIT      1024
+#define AMD_MAX_GFIX      (1 << 14)
+#define AMD_GDAT_SIZE     (256*1024)
+
+typedef struct {
+    uint32_t gi;
+    uint32_t off;
+    uint32_t len;
+} amd_glit_t;
+
+typedef struct {
+    uint32_t anch;
+    uint32_t slot;
+} amd_gfix_t;
 
 typedef struct {
     const bir_module_t *bir;
@@ -463,6 +481,15 @@ typedef struct {
     uint8_t     asm_pad[2];
 
     int         enc_err;   /* encoder refused something; fail the compile */
+
+    amd_glit_t  glit[AMD_MAX_GLIT];
+    uint32_t    nglit;
+    uint8_t     gdat[AMD_GDAT_SIZE];
+    uint32_t    gdlen;
+    uint32_t    grbase;
+
+    amd_gfix_t  gfix[AMD_MAX_GFIX];
+    uint32_t    ngfix;
 } amd_module_t;
 
 /* ---- Encoding Table Entry ---- */

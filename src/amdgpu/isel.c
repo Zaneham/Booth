@@ -488,6 +488,15 @@ static moperand_t mop_vreg(uint16_t vreg, int is_vector)
     return is_vector ? mop_vreg_v(vreg) : mop_vreg_s(vreg);
 }
 
+static moperand_t mop_gsym(uint16_t slot)
+{
+    moperand_t o;
+    memset(&o, 0, sizeof(o));
+    o.kind = MOP_GSYM;
+    o.reg_num = slot;
+    return o;
+}
+
 /* Emit a machine instruction, returns its index */
 static uint32_t emit_minst(uint16_t op, uint8_t ndefs, uint8_t nuses,
                            moperand_t *ops, uint16_t flags)
@@ -1293,10 +1302,11 @@ static void isel_load(uint32_t idx, const bir_inst_t *I, int div)
     }
     int as = get_addrspace(ptr_type);
 
-    int result_vec = (as != BIR_AS_CONSTANT);
-    uint32_t vr = map_bir_val(idx, result_vec);
+    uint32_t vr = map_bir_val(idx, 1);
 
     switch (as) {
+    /* per RDNA3 t.34 SMEM: SBASE is an SGPR-pair, SOFFSET only an SGPR, M0 or NULL */
+    case BIR_AS_CONSTANT:
     case BIR_AS_GLOBAL: case BIR_AS_GENERIC: {
         if (sbase != 0xFFFF) {
             /* saddr form: global_load_dword vDst, vOffset, s[base:base+1] */
@@ -1317,12 +1327,6 @@ static void isel_load(uint32_t idx, const bir_inst_t *I, int div)
         moperand_t vaddr = ensure_vgpr(resolve_val(I->operands[0], div));
         emit2(AMD_DS_READ_B32, mop_vreg_v((uint16_t)vr), vaddr, mop_imm(0));
         emit_wait_ds();
-        break;
-    }
-    case BIR_AS_CONSTANT: {
-        moperand_t addr = resolve_val(I->operands[0], 0);
-        emit2(AMD_S_LOAD_DWORD, mop_vreg_s((uint16_t)vr), addr, mop_imm(0));
-        emit_wait_smem();
         break;
     }
     case BIR_AS_PRIVATE: {
@@ -1613,9 +1617,97 @@ static void isel_shared_alloc(uint32_t idx, const bir_inst_t *I)
     S.lds_offset += sz;
 }
 
+static const char *glnam(uint32_t gi)
+{
+    const bir_module_t *M = S.bir;
+    if (gi >= M->num_globals) return "<oob>";
+    if (M->globals[gi].name >= M->string_len) return "<anon>";
+    return &M->strings[M->globals[gi].name];
+}
+
+static uint16_t glslot(uint32_t gi)
+{
+    amd_module_t *A = S.amd;
+    const bir_module_t *M = S.bir;
+    uint32_t ci, off, len, dst;
+
+    for (uint32_t i = 0; i < A->nglit && i < AMD_MAX_GLIT; i++)
+        if (A->glit[i].gi == gi) return (uint16_t)i;
+
+    if (M->globals[gi].addrspace != BIR_AS_CONSTANT &&
+        M->globals[gi].addrspace != BIR_AS_GLOBAL) {
+        (void)be_fail(BC_E1060, "amdgpu", glnam(gi),
+                      bir_addrspace_name(M->globals[gi].addrspace));
+        S.had_error = 1;
+        return 0xFFFF;
+    }
+    if (!M->globals[gi].is_const) {
+        (void)be_fail(BC_E1061, "amdgpu", glnam(gi));
+        S.had_error = 1;
+        return 0xFFFF;
+    }
+
+    ci  = BIR_VAL_INDEX(M->globals[gi].initializer);
+    off = M->consts[ci].d.bytes.off;
+    len = M->consts[ci].d.bytes.len;
+    if (off > M->string_len || len > M->string_len - off) {
+        (void)be_fail(BC_E1062, "amdgpu", glnam(gi));
+        S.had_error = 1;
+        return 0xFFFF;
+    }
+
+    if (A->nglit >= AMD_MAX_GLIT) {
+        amd_cap("read-only data globals", (unsigned)AMD_MAX_GLIT);
+        return 0xFFFF;
+    }
+    dst = (A->gdlen + 7u) & ~7u;
+    if (len > AMD_GDAT_SIZE || dst > AMD_GDAT_SIZE - len) {
+        amd_cap("bytes of read-only data", (unsigned)AMD_GDAT_SIZE);
+        return 0xFFFF;
+    }
+    memset(A->gdat + A->gdlen, 0, dst - A->gdlen);
+    memcpy(A->gdat + dst, &M->strings[off], len);
+    A->gdlen = dst + len;
+
+    A->glit[A->nglit].gi  = gi;
+    A->glit[A->nglit].off = dst;
+    A->glit[A->nglit].len = len;
+    return (uint16_t)A->nglit++;
+}
+
+static void isel_gaddr(uint32_t idx, uint32_t gi)
+{
+    uint16_t slot = glslot(gi);
+    if (slot == 0xFFFF) return;
+
+    uint16_t sbase = S.next_param_sgpr;
+    if (sbase & 1) sbase++;
+    if (sbase + 1 >= AMD_MAX_SGPRS) {
+        amd_cap("scalar registers", (unsigned)AMD_MAX_SGPRS);
+        return;
+    }
+    S.next_param_sgpr = sbase + 2;
+
+    moperand_t dst = mop_sgpr(sbase);
+    dst.nreg = 2;
+    emit1(AMD_GADDR, dst, mop_gsym(slot));
+    S.amd->val_sbase[idx] = sbase;
+
+    uint32_t vr = map_bir_val(idx, 1);
+    S.amd->val_file[idx] = 1;
+    S.amd->reg_file[vr] = 1;
+    emit1(AMD_V_MOV_B32, mop_vreg_v((uint16_t)vr), mop_imm(0));
+}
+
 static void isel_global_ref(uint32_t idx, const bir_inst_t *I)
 {
-    (void)I;
+    uint32_t gi = I->operands[0];
+
+    if (gi < S.bir->num_globals && bir_global_is_bytes(S.bir, gi)) {
+        isel_gaddr(idx, gi);
+        return;
+    }
+
     /* Hidden kernarg: 64-bit pointer appended after explicit params.
        Load into SGPR pair for saddr, VGPR gets zero offset. */
     uint32_t offst = S.hkrarg;
@@ -2859,6 +2951,10 @@ int amdgpu_compile(const bir_module_t *bir, amd_module_t *amd)
     memset(amd->vr_divg, 0, sizeof(amd->vr_divg));
     memset(amd->val_sbase, 0xFF, sizeof(amd->val_sbase));
     memset(amd->val_scroff, 0xFF, sizeof(amd->val_scroff)); /* -1 = dynamic */
+    amd->nglit  = 0;
+    amd->gdlen  = 0;
+    amd->grbase = 0;
+    amd->ngfix  = 0;
 
     /* Process each function */
     for (uint32_t fi = 0; fi < bir->num_funcs; fi++) {

@@ -84,10 +84,10 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     /* String literal globals (BIR_CONST_BYTES initializer) need the
      * backend to put the bytes somewhere a pointer can reach. A backend
      * that does says so with BE_F_BYTES; the rest refuse rather than hand
-     * out an address of nothing. NVIDIA lays them in .global and takes
-     * the address with mov.u64; AMD .rodata is #93 and Tensix static
-     * const is #95, both open. The IR carries the bytes either way, so
-     * only a run that reaches a backend has anything to refuse. */
+     * out an address of nothing. NVIDIA lays them in .global and takes the
+     * address with mov.u64; AMD puts them in .rodata and takes it with
+     * s_getpc_b64; Tensix static const is #95, still open. The IR carries
+     * the bytes either way, so only a backend run has anything to refuse. */
     {
         const be_desc_t *sbe = be_active();
         if (sbe != NULL && (sbe->feats & BE_F_BYTES) == 0) {
@@ -99,8 +99,8 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
             fprintf(stderr,
                 "E110: string literal global '%s' requires backend "
                 "codegen support that is not yet wired for %s (see "
-                "issues #93 AMD, #95 Tensix). String literals in "
-                "device code will not compile until those land.\n",
+                "issue #95 Tensix). String literals in device "
+                "code will not compile until that lands.\n",
                 gname, sbe->name);
             return BC_ERR_VERIFY;
         }

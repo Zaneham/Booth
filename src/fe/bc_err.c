@@ -286,6 +286,11 @@ static const char *bc_dflt[BC_EID_MAX] = {
     /* E960 */ "Booth cannot tell which specialisation '%s' names here",
     NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
     /* E980 */ "%s names global %u, and the module holds %u",
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+    /* E1060 */ "%s: the byte-array global '%s' lives in the %s address space, which this backend cannot lay down in .rodata",
+    /* E1061 */ "%s: the byte-array global '%s' is writable, and this backend only lays read-only data in .rodata",
+    /* E1062 */ "%s: the byte initialiser of '%s' names a slice outside the module string table",
 };
 
 /* ---- ABEND compiled-in defaults ----

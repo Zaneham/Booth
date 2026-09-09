@@ -1,4 +1,6 @@
 #include "encode.h"
+#include "backend.h"
+#include "bc_err.h"
 #include <string.h>
 
 /*
@@ -493,6 +495,47 @@ static void encode_vop3p_mai(amd_module_t *A, const minst_t *mi, uint16_t hw_op)
 
 /* ---- Function Encoder ---- */
 
+/* per CDNA3 12.3 S_GETPC_B64: this instruction must be 4 bytes */
+/* per CDNA3 12.1 SOP2: a 32-bit literal constant follows the instruction */
+static void encode_gaddr(amd_module_t *A, const minst_t *mi)
+{
+    const amd_enc_entry_t *tbl = get_enc_table(A);
+    uint16_t base;
+    uint32_t anch;
+
+    if (mi->num_defs < 1 || mi->num_uses < 1 ||
+        mi->operands[0].kind != MOP_SGPR ||
+        mi->operands[1].kind != MOP_GSYM) {
+        A->enc_err = 1;
+        return;
+    }
+    base = mi->operands[0].reg_num;
+    if (base + 1 >= AMD_MAX_SGPRS) { A->enc_err = 1; return; }
+
+    emit_dword(A, 0xBE800000u | ((uint32_t)base << 16) |
+                  ((uint32_t)(tbl[AMD_S_GETPC_B64].hw_opcode & 0xFF) << 8));
+
+    anch = A->code_len;
+    if (A->ngfix >= AMD_MAX_GFIX) {
+        (void)be_fail(BC_E545, "amdgpu", "read-only data references",
+                      (unsigned)AMD_MAX_GFIX);
+        A->enc_err = 1;
+        return;
+    }
+    A->gfix[A->ngfix].anch = anch;
+    A->gfix[A->ngfix].slot = mi->operands[1].reg_num;
+    A->ngfix++;
+
+    emit_dword(A, (2u << 30) |
+                  ((uint32_t)(tbl[AMD_S_ADD_U32].hw_opcode & 0x7F) << 23) |
+                  ((uint32_t)base << 16) | (255u << 8) | base);
+    emit_dword(A, 0);
+    emit_dword(A, (2u << 30) |
+                  ((uint32_t)(tbl[AMD_S_ADDC_U32].hw_opcode & 0x7F) << 23) |
+                  ((uint32_t)(base + 1) << 16) | (255u << 8) | (base + 1));
+    emit_dword(A, 0);
+}
+
 /* Instruction offsets for branch fixup */
 static uint32_t inst_offsets[AMD_MAX_MINSTS];
 static uint32_t block_offsets[AMD_MAX_MBLOCKS];
@@ -538,6 +581,9 @@ void encode_function(amd_module_t *A, uint32_t mf_idx)
                 break;
             case AMD_FMT_FLAT_GBL: case AMD_FMT_FLAT_SCR: case AMD_FMT_FLAT:
                 offset += (A->target >= AMD_TARGET_GFX1200) ? 12 : 8;
+                break;
+            case AMD_FMT_GADDR:
+                offset += 20;
                 break;
             case AMD_FMT_PSEUDO:
                 break; /* no bytes */
@@ -603,6 +649,9 @@ void encode_function(amd_module_t *A, uint32_t mf_idx)
             case AMD_FMT_FLAT_SCR:
             case AMD_FMT_FLAT:
                 encode_flat_global(A, mi, enc->hw_opcode);
+                break;
+            case AMD_FMT_GADDR:
+                encode_gaddr(A, mi);
                 break;
             case AMD_FMT_PSEUDO:
                 break;
