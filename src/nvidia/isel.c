@@ -578,7 +578,8 @@ static void is_bitcount(uint32_t idx, const bir_inst_t *I)
     nv_opnd_t a = rslv(I->operands[0]);
 
     if (I->op == BIR_POPCOUNT) {
-        em1u(w64 ? NV_POPC_B64 : NV_POPC_B32, d, a);
+        em1u(w64 ? NV_POPC_B64 : NV_POPC_B32, d,
+             cofit(a, w64 ? NV_RF_U64 : NV_RF_U32, 0));
     } else if (I->op == BIR_CLZ) {
         em1u(w64 ? NV_CLZ_B64 : NV_CLZ_B32, d, a);
     } else if (I->op == BIR_BREV) {

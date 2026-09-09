@@ -5751,3 +5751,16 @@ static void rpi267(void)
     PASS();
 }
 TH_REG("rpi", 267, "every spliced block is still branched to", rpi267)
+
+static void rpi287(void)
+{
+    const char *p = rpi_ptx(
+        "__global__ void k(unsigned *o, unsigned short s){\n"
+        "  o[0] = (unsigned)__popc((unsigned)s); }\n", "rpi287");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, "popc.b32"), NULL);
+    CHEQ(strstr(p, "popc.b32 %r1, %rh"), NULL);
+    PASS();
+}
+TH_REG("rpi", 287, "popc gets a 32-bit operand, not a 16", rpi287)
