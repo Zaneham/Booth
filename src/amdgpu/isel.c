@@ -1204,12 +1204,9 @@ static void isel_conversion(uint32_t idx, const bir_inst_t *I, int div)
             }
         }
         if (skind == BIR_TYPE_BFLOAT) {
-            if (S.amd->target >= AMD_TARGET_GFX1100)
-                emit1(AMD_V_CVT_F32_BF16, mop_vreg_v((uint16_t)vr),
-                      ensure_vgpr(src));
-            else
-                emit2(AMD_V_LSHLREV_B32, mop_vreg_v((uint16_t)vr),
-                      mop_imm(16), ensure_vgpr(src));
+            /* per RDNA4 t.89: VOP1 72 is V_MOVRELSD_2_B32, not a bf16 convert */
+            emit2(AMD_V_LSHLREV_B32, mop_vreg_v((uint16_t)vr),
+                  mop_imm(16), ensure_vgpr(src));
         } else if (bir_type_width(I->type) >= 64)
             emit1(AMD_V_CVT_F64_F32, mop_vreg_v((uint16_t)vr), ensure_vgpr(src));
         else

@@ -100,6 +100,7 @@ static const tfam_t fam_order[] = {
     { "inl", "tinline.c",   "inlining",                 2 },
 
     { "enc", "tenc.c",      "AMD encoding",             2 },
+    { "asy", "tasy.c",      "AMD encoding assay",       2 },
     { "sch", "tsched.c",    "AMD scheduling",           2 },
     { "ral", "tregalloc.c", "AMD register allocation",  2 },
     { "rss", "tra_ssa.c",   "AMD SSA allocation",       2 },

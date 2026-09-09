@@ -102,7 +102,6 @@ const amd_enc_entry_t amd_enc_table[AMD_OP_COUNT] = {
     [AMD_V_CVT_F16_F32]      = { AMD_FMT_VOP1, 0x0A, "v_cvt_f16_f32"      },
     [AMD_V_CVT_F64_F32]      = { AMD_FMT_VOP1, 0x10, "v_cvt_f64_f32"      },
     [AMD_V_CVT_F32_F64]      = { AMD_FMT_VOP1, 0x0F, "v_cvt_f32_f64"      },
-    [AMD_V_CVT_F32_BF16]     = { AMD_FMT_VOP1, 0x72, "v_cvt_f32_bf16"    },
     [AMD_V_RCP_F32]          = { AMD_FMT_VOP1, 0x2A, "v_rcp_f32"          },
     [AMD_V_SQRT_F32]         = { AMD_FMT_VOP1, 0x33, "v_sqrt_f32"         },
     [AMD_V_RSQ_F32]          = { AMD_FMT_VOP1, 0x2E, "v_rsq_f32"          },
@@ -198,6 +197,15 @@ const amd_enc_entry_t amd_enc_table[AMD_OP_COUNT] = {
     [AMD_PSEUDO_DEF]             = { AMD_FMT_PSEUDO, 0, "PSEUDO_DEF"  },
 };
 
+/* ---- GFX12 Opcode Overrides (gfx1200/gfx1201, RDNA 4) ---- */
+
+const amd_enc_entry_t amd_enc_ovr_gfx12[AMD_OP_COUNT] = {
+    /* per RDNA4 t.87: VOP2 V_MIN_NUM_F32 = 21 */
+    [AMD_V_MIN_F32]          = { AMD_FMT_VOP2, 0x15, "v_min_num_f32"      },
+    /* per RDNA4 t.87: VOP2 V_MAX_NUM_F32 = 22 */
+    [AMD_V_MAX_F32]          = { AMD_FMT_VOP2, 0x16, "v_max_num_f32"      },
+};
+
 /* ---- GFX10 Encoding Table (gfx1030, RDNA 2) ---- */
 
 const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT] = {
@@ -207,24 +215,35 @@ const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT] = {
     [AMD_S_ADDC_U32]        = { AMD_FMT_SOP2, 0x04, "s_addc_u32"        },
     [AMD_S_ADD_I32]         = { AMD_FMT_SOP2, 0x02, "s_add_i32"         },
     [AMD_S_SUB_U32]         = { AMD_FMT_SOP2, 0x01, "s_sub_u32"         },
-    [AMD_S_MUL_I32]         = { AMD_FMT_SOP2, 0x24, "s_mul_i32"         },
+    /* per RDNA2 t.64: SOP2 S_MUL_I32 = 38 */
+    [AMD_S_MUL_I32]         = { AMD_FMT_SOP2, 0x26, "s_mul_i32"         },
     [AMD_S_AND_B32]         = { AMD_FMT_SOP2, 0x0E, "s_and_b32"         },
-    [AMD_S_OR_B32]          = { AMD_FMT_SOP2, 0x0F, "s_or_b32"          },
-    [AMD_S_XOR_B32]         = { AMD_FMT_SOP2, 0x10, "s_xor_b32"         },
-    [AMD_S_LSHL_B32]        = { AMD_FMT_SOP2, 0x08, "s_lshl_b32"        },
-    [AMD_S_LSHR_B32]        = { AMD_FMT_SOP2, 0x09, "s_lshr_b32"        },
-    [AMD_S_ASHR_I32]        = { AMD_FMT_SOP2, 0x0A, "s_ashr_i32"        },
-    [AMD_S_ANDN2_B32]       = { AMD_FMT_SOP2, 0x12, "s_andn2_b32"       },
-    [AMD_S_ORN2_B32]        = { AMD_FMT_SOP2, 0x13, "s_orn2_b32"        },
+    /* per RDNA2 t.64: SOP2 S_OR_B32 = 16 */
+    [AMD_S_OR_B32]          = { AMD_FMT_SOP2, 0x10, "s_or_b32"          },
+    /* per RDNA2 t.64: SOP2 S_XOR_B32 = 18 */
+    [AMD_S_XOR_B32]         = { AMD_FMT_SOP2, 0x12, "s_xor_b32"         },
+    /* per RDNA2 t.64: SOP2 S_LSHL_B32 = 30 */
+    [AMD_S_LSHL_B32]        = { AMD_FMT_SOP2, 0x1E, "s_lshl_b32"        },
+    /* per RDNA2 t.64: SOP2 S_LSHR_B32 = 32 */
+    [AMD_S_LSHR_B32]        = { AMD_FMT_SOP2, 0x20, "s_lshr_b32"        },
+    /* per RDNA2 t.64: SOP2 S_ASHR_I32 = 34 */
+    [AMD_S_ASHR_I32]        = { AMD_FMT_SOP2, 0x22, "s_ashr_i32"        },
+    /* per RDNA2 t.64: SOP2 S_ANDN2_B32 = 20 */
+    [AMD_S_ANDN2_B32]       = { AMD_FMT_SOP2, 0x14, "s_andn2_b32"       },
+    /* per RDNA2 t.64: SOP2 S_ORN2_B32 = 22 */
+    [AMD_S_ORN2_B32]        = { AMD_FMT_SOP2, 0x16, "s_orn2_b32"        },
     [AMD_S_BFE_I32]         = { AMD_FMT_SOP2, 0x28, "s_bfe_i32"         },
     [AMD_S_CSELECT_B32]     = { AMD_FMT_SOP2, 0x0A, "s_cselect_b32"     },
 
     /* SOP1 — all renumbered */
     [AMD_S_MOV_B32]         = { AMD_FMT_SOP1, 0x03, "s_mov_b32"         },
     [AMD_S_NOT_B32]         = { AMD_FMT_SOP1, 0x07, "s_not_b32"         },
-    [AMD_S_AND_SAVEEXEC_B32]= { AMD_FMT_SOP1, 0x21, "s_and_saveexec_b32"},
-    [AMD_S_SETPC_B64]       = { AMD_FMT_SOP1, 0x1D, "s_setpc_b64"       },
-    [AMD_S_SWAPPC_B64]      = { AMD_FMT_SOP1, 0x1E, "s_swappc_b64"      },
+    /* per RDNA2 t.68: SOP1 S_AND_SAVEEXEC_B32 = 60 */
+    [AMD_S_AND_SAVEEXEC_B32]= { AMD_FMT_SOP1, 0x3C, "s_and_saveexec_b32"},
+    /* per RDNA2 t.68: SOP1 S_SETPC_B64 = 32 */
+    [AMD_S_SETPC_B64]       = { AMD_FMT_SOP1, 0x20, "s_setpc_b64"       },
+    /* per RDNA2 t.68: SOP1 S_SWAPPC_B64 = 33 */
+    [AMD_S_SWAPPC_B64]      = { AMD_FMT_SOP1, 0x21, "s_swappc_b64"      },
     /* per RDNA2 t.65: SOP1 S_GETPC_B64 = 31 */
     [AMD_S_GETPC_B64]       = { AMD_FMT_SOP1, 0x1F, "s_getpc_b64"       },
     [AMD_GADDR]             = { AMD_FMT_GADDR, 0x00, "s_getpc_b64"       },
@@ -269,16 +288,23 @@ const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT] = {
     [AMD_V_SUB_U32]          = { AMD_FMT_VOP2, 0x26, "v_sub_u32"          },
     [AMD_V_MUL_LO_U32]      = { AMD_FMT_VOP3, 0x169,"v_mul_lo_u32"       },
     [AMD_V_MUL_HI_U32]      = { AMD_FMT_VOP3, 0x16A,"v_mul_hi_u32"       },
-    [AMD_V_AND_B32]          = { AMD_FMT_VOP2, 0x15, "v_and_b32"          },
-    [AMD_V_OR_B32]           = { AMD_FMT_VOP2, 0x16, "v_or_b32"           },
-    [AMD_V_XOR_B32]          = { AMD_FMT_VOP2, 0x17, "v_xor_b32"          },
-    [AMD_V_LSHLREV_B32]      = { AMD_FMT_VOP2, 0x12, "v_lshlrev_b32"      },
-    [AMD_V_LSHRREV_B32]      = { AMD_FMT_VOP2, 0x13, "v_lshrrev_b32"      },
-    [AMD_V_ASHRREV_I32]      = { AMD_FMT_VOP2, 0x14, "v_ashrrev_i32"      },
+    /* per RDNA2 t.76: VOP2 V_AND_B32 = 27 */
+    [AMD_V_AND_B32]          = { AMD_FMT_VOP2, 0x1B, "v_and_b32"          },
+    /* per RDNA2 t.76: VOP2 V_OR_B32 = 28 */
+    [AMD_V_OR_B32]           = { AMD_FMT_VOP2, 0x1C, "v_or_b32"           },
+    /* per RDNA2 t.76: VOP2 V_XOR_B32 = 29 */
+    [AMD_V_XOR_B32]          = { AMD_FMT_VOP2, 0x1D, "v_xor_b32"          },
+    /* per RDNA2 t.76: VOP2 V_LSHLREV_B32 = 26 */
+    [AMD_V_LSHLREV_B32]      = { AMD_FMT_VOP2, 0x1A, "v_lshlrev_b32"      },
+    /* per RDNA2 t.76: VOP2 V_LSHRREV_B32 = 22 */
+    [AMD_V_LSHRREV_B32]      = { AMD_FMT_VOP2, 0x16, "v_lshrrev_b32"      },
+    /* per RDNA2 t.76: VOP2 V_ASHRREV_I32 = 24 */
+    [AMD_V_ASHRREV_I32]      = { AMD_FMT_VOP2, 0x18, "v_ashrrev_i32"      },
     [AMD_V_ADD_F32]          = { AMD_FMT_VOP2, 0x03, "v_add_f32"          },
     [AMD_V_SUB_F32]          = { AMD_FMT_VOP2, 0x04, "v_sub_f32"          },
     [AMD_V_MUL_F32]          = { AMD_FMT_VOP2, 0x08, "v_mul_f32"          },
-    [AMD_V_CNDMASK_B32]      = { AMD_FMT_VOP2, 0x00, "v_cndmask_b32"      },
+    /* per RDNA2 t.76: VOP2 V_CNDMASK_B32 = 1 */
+    [AMD_V_CNDMASK_B32]      = { AMD_FMT_VOP2, 0x01, "v_cndmask_b32"      },
     [AMD_V_MIN_F32]          = { AMD_FMT_VOP2, 0x0F, "v_min_f32"          },
     [AMD_V_MAX_F32]          = { AMD_FMT_VOP2, 0x10, "v_max_f32"          },
     [AMD_V_MIN_U32]          = { AMD_FMT_VOP2, 0x13, "v_min_u32"          },
@@ -313,11 +339,16 @@ const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT] = {
 
     /* VOP3 — GFX10: prefix=0x34, 10-bit opcodes all renumbered */
     [AMD_V_BCNT_U32_B32]     = { AMD_FMT_VOP3, 0x364,"v_bcnt_u32_b32"     },
-    [AMD_V_MAD_U32_U24]      = { AMD_FMT_VOP3, 0x1C3,"v_mad_u32_u24"      },
-    [AMD_V_BFE_I32]          = { AMD_FMT_VOP3, 0x1C5,"v_bfe_i32"          },
-    [AMD_V_BFE_U32]          = { AMD_FMT_VOP3, 0x1C4,"v_bfe_u32"          },
-    [AMD_V_LSHL_ADD_U32]     = { AMD_FMT_VOP3, 0x1FC,"v_lshl_add_u32"     },
-    [AMD_V_ADD3_U32]         = { AMD_FMT_VOP3, 0x1FF,"v_add3_u32"         },
+    /* per RDNA2 t.83: VOP3A V_MAD_U32_U24 = 323 */
+    [AMD_V_MAD_U32_U24]      = { AMD_FMT_VOP3, 0x143,"v_mad_u32_u24"      },
+    /* per RDNA2 t.83: VOP3A V_BFE_I32 = 329 */
+    [AMD_V_BFE_I32]          = { AMD_FMT_VOP3, 0x149,"v_bfe_i32"          },
+    /* per RDNA2 t.83: VOP3A V_BFE_U32 = 328 */
+    [AMD_V_BFE_U32]          = { AMD_FMT_VOP3, 0x148,"v_bfe_u32"          },
+    /* per RDNA2 t.83: VOP3A V_LSHL_ADD_U32 = 838 */
+    [AMD_V_LSHL_ADD_U32]     = { AMD_FMT_VOP3, 0x346,"v_lshl_add_u32"     },
+    /* per RDNA2 t.83: VOP3A V_ADD3_U32 = 877 */
+    [AMD_V_ADD3_U32]         = { AMD_FMT_VOP3, 0x36D,"v_add3_u32"         },
 
     /* VOPC — GCN heritage: float=0x00+, int-signed=0x80+, int-unsigned=0xC0+ */
     [AMD_V_CMP_EQ_U32]       = { AMD_FMT_VOPC, 0xC2, "v_cmp_eq_u32"       },

@@ -5933,3 +5933,127 @@ static void rpi294(void)
     PASS();
 }
 TH_REG("rpi", 294, "a constant read uses a base the salu can hold", rpi294)
+
+static int rpi_hasdis(void)
+{
+    static int known = -1;
+    if (known < 0)
+        known = (th_run("llvm-objdump --version", obuf, (int)sizeof obuf) == 0);
+    return known;
+}
+
+static const char *rpi_dis(const char *src, const char *stem,
+                           const char *flag, const char *cpu)
+{
+    static char txt[1 << 16];
+    char cmd[512], cu[128], obj[128];
+    FILE *f;
+
+    txt[0] = '\0';
+    snprintf(cu, sizeof cu, "build/%s.cu", stem);
+    snprintf(obj, sizeof obj, "build/%s.hsaco", stem);
+    f = fopen(cu, "w");
+    if (!f) return NULL;
+    fputs(src, f);
+    fclose(f);
+    remove(obj);
+    snprintf(cmd, sizeof cmd, "%s --amdgpu-bin %s %s -o %s",
+             BC_BIN, flag, cu, obj);
+    if (th_run(cmd, obuf, (int)sizeof obuf) != 0) return NULL;
+    if (!th_exist(obj)) return NULL;
+    snprintf(cmd, sizeof cmd, "llvm-objdump -d --mcpu=%s %s", cpu, obj);
+    if (th_run(cmd, txt, (int)sizeof txt) != 0) return NULL;
+    return txt;
+}
+
+static void rpi295(void)
+{
+    const char *p;
+    if (!rpi_hasdis()) SKIP("llvm-objdump is not on the path");
+    p = rpi_dis(
+        "__global__ void k(unsigned *o, unsigned a, unsigned b)\n"
+        "{ o[0] = (a << b) ^ (a >> b); }\n", "rpi295", "--gfx1030", "gfx1030");
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "s_lshl_b32"), NULL);
+        CHNE(strstr(p, "s_lshr_b32"), NULL);
+        CHNE(strstr(p, "s_xor_b32"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 295, "gfx1030 scalar shifts survive a round trip", rpi295)
+
+static void rpi296(void)
+{
+    const char *p;
+    if (!rpi_hasdis()) SKIP("llvm-objdump is not on the path");
+    p = rpi_dis(
+        "__global__ void k(unsigned *o, unsigned *a, unsigned *b)\n"
+        "{ unsigned i = threadIdx.x;\n"
+        "  o[i] = ((a[i] << b[i]) ^ (a[i] & b[i])) | (a[i] >> 3); }\n",
+        "rpi296", "--gfx1030", "gfx1030");
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "v_lshlrev_b32"), NULL);
+        CHNE(strstr(p, "v_lshrrev_b32"), NULL);
+        CHNE(strstr(p, "v_and_b32"), NULL);
+        CHNE(strstr(p, "v_or_b32"), NULL);
+        CHNE(strstr(p, "v_xor_b32"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 296, "gfx1030 vector logic survives a round trip", rpi296)
+
+static void rpi297(void)
+{
+    const char *p;
+    if (!rpi_hasdis()) SKIP("llvm-objdump is not on the path");
+    p = rpi_dis(
+        "__global__ void k(int *o)\n"
+        "{ __shared__ int s[64];\n"
+        "  s[threadIdx.x] = threadIdx.x; __syncthreads();\n"
+        "  o[threadIdx.x] = s[63 - threadIdx.x]; }\n",
+        "rpi297", "--gfx90a", "gfx90a");
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "ds_write_b32"), NULL);
+        CHNE(strstr(p, "ds_read_b32"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 297, "an lds access round trips on gfx90a", rpi297)
+
+static void rpi298(void)
+{
+    const char *p;
+    if (!rpi_hasdis()) SKIP("llvm-objdump is not on the path");
+    p = rpi_dis(
+        "__global__ void k(unsigned *o, unsigned *a)\n"
+        "{ o[threadIdx.x] = a[threadIdx.x] + 1; }\n",
+        "rpi298", "--gfx90a", "gfx90a");
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "s_waitcnt vmcnt(0)"), NULL);
+        CHEQ(strstr(p, "lgkmcnt(63)"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 298, "a gfx90a idle wait fits lgkmcnt 4 bits", rpi298)
+
+static void rpi299(void)
+{
+    const char *p;
+    if (!rpi_hasdis()) SKIP("llvm-objdump is not on the path");
+    p = rpi_dis(
+        "#include <cuda_bf16.h>\n"
+        "__global__ void k(float *o, __nv_bfloat16 *a)\n"
+        "{ o[0] = __bfloat162float(a[0]); }\n",
+        "rpi299", "--gfx1100", "gfx1100");
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "v_lshlrev_b32"), NULL);
+        CHEQ(strstr(p, "movrel"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 299, "a bfloat widen shifts, not movrelsd", rpi299)

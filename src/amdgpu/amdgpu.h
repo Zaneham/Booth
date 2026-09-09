@@ -549,5 +549,6 @@ void ra_ssa(amd_module_t *A, uint32_t mf_idx);
 extern const amd_enc_entry_t amd_enc_table[AMD_OP_COUNT];
 extern const amd_enc_entry_t amd_enc_table_gfx10[AMD_OP_COUNT];
 extern const amd_enc_entry_t amd_enc_table_gfx9[AMD_OP_COUNT];
+extern const amd_enc_entry_t amd_enc_ovr_gfx12[AMD_OP_COUNT];
 
 #endif /* BARRACUDA_AMDGPU_H */

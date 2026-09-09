@@ -173,7 +173,6 @@ static void vfy_bnds(const minst_t *mi, uint32_t idx, const char *mn)
 
 vfy_res_t bc_vfy(const amd_module_t *A, int phase)
 {
-    const amd_enc_entry_t *tbl = get_enc_table(A);
     uint32_t i;
     vfy_res_t res;
 
@@ -182,11 +181,17 @@ vfy_res_t bc_vfy(const amd_module_t *A, int phase)
 
     for (i = 0; i < A->num_minsts; i++) {
         const minst_t *mi = &A->minsts[i];
-        uint8_t fmt = tbl[mi->op].fmt;
-        const char *mn = tbl[mi->op].mnemonic;
+        const amd_enc_entry_t *ent = amd_enc_ent(A, mi->op);
+        uint8_t fmt = ent->fmt;
+        const char *mn = ent->mnemonic;
 
         /* skip pseudos and bare instructions (labels, nops) */
         if (fmt == AMD_FMT_PSEUDO) continue;
+        if (mn == NULL) {
+            vfy_err(i, "?", "opcode %u has no encoding on this target",
+                    (unsigned)mi->op);
+            continue;
+        }
         if (mi->num_defs == 0 && mi->num_uses == 0) continue;
 
         /* checks 1-3: encoding format constraints */

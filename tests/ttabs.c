@@ -70,9 +70,9 @@ static void tab04(void)
     CHEQ(amd_enc_table[AMD_S_AND_B32].hw_opcode,         0x16);
     CHEQ(amd_enc_table_gfx10[AMD_S_AND_B32].hw_opcode,   0x0E);
 
-    /* v_cndmask_b32: GFX10=0x00, GFX11=0x01 */
-    CHEQ(amd_enc_table[AMD_V_CNDMASK_B32].hw_opcode,       0x01);
-    CHEQ(amd_enc_table_gfx10[AMD_V_CNDMASK_B32].hw_opcode, 0x00);
+    /* s_lshl_b32: GFX10=0x1E, GFX11=0x08 */
+    CHEQ(amd_enc_table[AMD_S_LSHL_B32].hw_opcode,       0x08);
+    CHEQ(amd_enc_table_gfx10[AMD_S_LSHL_B32].hw_opcode, 0x1E);
 
     /* s_endpgm: GFX10=0x01, GFX11=0x30 */
     CHEQ(amd_enc_table[AMD_S_ENDPGM].hw_opcode,       0x30);

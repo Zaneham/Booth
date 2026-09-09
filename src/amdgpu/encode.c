@@ -89,6 +89,16 @@ const amd_enc_entry_t *get_enc_table(const amd_module_t *A)
     return amd_enc_table;
 }
 
+static const amd_enc_entry_t amd_enc_null;
+
+const amd_enc_entry_t *amd_enc_ent(const amd_module_t *A, uint16_t op)
+{
+    if (op >= AMD_OP_COUNT) return &amd_enc_null;
+    if (A->target >= AMD_TARGET_GFX1200 && amd_enc_ovr_gfx12[op].mnemonic)
+        return &amd_enc_ovr_gfx12[op];
+    return &get_enc_table(A)[op];
+}
+
 /* Encode SDST field: handles both physical SGPRs and special registers */
 static uint8_t encode_sdst(const moperand_t *op)
 {
@@ -164,7 +174,14 @@ static void encode_sopp(amd_module_t *A, const minst_t *mi, uint16_t hw_op)
         if (mi->flags & AMD_WAIT_VMCNT0)   vm   = 0;
         if (mi->flags & AMD_WAIT_LGKMCNT0) lgkm = 0;
 
-        if (A->target <= AMD_TARGET_GFX1030) {
+        if (A->target <= AMD_TARGET_GFX942) {
+            /* per CDNA3 12.5 S_WAITCNT: SIMM16[11:8] = LGKMcnt */
+            uint16_t lg9 = (lgkm > 15) ? 15 : lgkm;
+            simm16 = (uint16_t)(((vm >> 4) & 0x3) << 14) |
+                     (uint16_t)((lg9 & 0xF) << 8) |
+                     (uint16_t)((exp & 0x7) << 4) |
+                     (uint16_t)(vm & 0xF);
+        } else if (A->target <= AMD_TARGET_GFX1030) {
             /* GFX10 waitcnt SIMM16 (verified against llvm-mc):
                [15:14]=vmcnt[5:4] [13:8]=lgkmcnt[5:0] [6:4]=expcnt[2:0] [3:0]=vmcnt[3:0] */
             simm16 = (uint16_t)(((vm >> 4) & 0x3) << 14) |
@@ -334,7 +351,9 @@ static void encode_ds(amd_module_t *A, const minst_t *mi, uint16_t hw_op)
         mi->operands[last_use].kind == MOP_IMM)
         offset = (uint16_t)mi->operands[last_use].imm;
 
-    uint32_t dw0 = (0x36u << 26) | ((uint32_t)(hw_op & 0xFF) << 18) | offset;
+    /* per CDNA3 t.93: DS OP is [24:17] */
+    uint32_t opsh = (A->target <= AMD_TARGET_GFX942) ? 17u : 18u;
+    uint32_t dw0 = (0x36u << 26) | ((uint32_t)(hw_op & 0xFF) << opsh) | offset;
     uint32_t dw1 = ((uint32_t)vdst << 24) | ((uint32_t)data0 << 8) | addr;
     emit_dword(A, dw0);
     emit_dword(A, dw1);
@@ -344,9 +363,9 @@ static void encode_flat_global(amd_module_t *A, const minst_t *mi, uint16_t hw_o
 {
     uint8_t vdst = 0, addr = 0, data = 0;
     int32_t offset = 0;
-    const amd_enc_entry_t *tbl = get_enc_table(A);
-    int is_scratch = (tbl[mi->op].fmt == AMD_FMT_FLAT_SCR);
-    int is_flat = (tbl[mi->op].fmt == AMD_FMT_FLAT);
+    const amd_enc_entry_t *ent = amd_enc_ent(A, mi->op);
+    int is_scratch = (ent->fmt == AMD_FMT_FLAT_SCR);
+    int is_flat = (ent->fmt == AMD_FMT_FLAT);
 
     /* Extract def: VDST */
     if (mi->num_defs > 0 && mi->operands[0].kind == MOP_VGPR)
@@ -412,13 +431,17 @@ static void encode_flat_global(amd_module_t *A, const minst_t *mi, uint16_t hw_o
            DW1: [31:24]=VDST [23:16]=SADDR [15:8]=DATA [7:0]=ADDR
            Null SADDR=0x7F. SEG: 0=flat 1=scratch 2=global */
         uint8_t seg = is_flat ? 0 : (is_scratch ? 1 : 2);
-        if (saddr == 0x7C) saddr = 0x7F;
+        /* per CDNA3 t.99: SADDR is unused for FLAT_* */
+        if (saddr == 0x7C) saddr = is_flat ? 0x00u : 0x7Fu;
 
         uint32_t off_lo = (uint32_t)offset & 0x1FFF;
         uint32_t dw0 = (0x37u << 26) | ((uint32_t)(hw_op & 0x7F) << 18) |
                        ((uint32_t)seg << 14) | off_lo;
         uint32_t dw1 = ((uint32_t)vdst << 24) | ((saddr & 0xFF) << 16) |
                        ((uint32_t)data << 8) | addr;
+        /* per CDNA3 t.54: scratch SVE=1 takes the VGPR offset */
+        if (A->target >= AMD_TARGET_GFX942 && is_scratch && got_addr)
+            dw0 |= (1u << 13);
         if (mi->flags & AMD_FLAG_GLC) dw0 |= (1u << 16);
         emit_dword(A, dw0);
         emit_dword(A, dw1);
@@ -499,7 +522,6 @@ static void encode_vop3p_mai(amd_module_t *A, const minst_t *mi, uint16_t hw_op)
 /* per CDNA3 12.1 SOP2: a 32-bit literal constant follows the instruction */
 static void encode_gaddr(amd_module_t *A, const minst_t *mi)
 {
-    const amd_enc_entry_t *tbl = get_enc_table(A);
     uint16_t base;
     uint32_t anch;
 
@@ -513,7 +535,7 @@ static void encode_gaddr(amd_module_t *A, const minst_t *mi)
     if (base + 1 >= AMD_MAX_SGPRS) { A->enc_err = 1; return; }
 
     emit_dword(A, 0xBE800000u | ((uint32_t)base << 16) |
-                  ((uint32_t)(tbl[AMD_S_GETPC_B64].hw_opcode & 0xFF) << 8));
+                  ((uint32_t)(amd_enc_ent(A, AMD_S_GETPC_B64)->hw_opcode & 0xFF) << 8));
 
     anch = A->code_len;
     if (A->ngfix >= AMD_MAX_GFIX) {
@@ -527,11 +549,11 @@ static void encode_gaddr(amd_module_t *A, const minst_t *mi)
     A->ngfix++;
 
     emit_dword(A, (2u << 30) |
-                  ((uint32_t)(tbl[AMD_S_ADD_U32].hw_opcode & 0x7F) << 23) |
+                  ((uint32_t)(amd_enc_ent(A, AMD_S_ADD_U32)->hw_opcode & 0x7F) << 23) |
                   ((uint32_t)base << 16) | (255u << 8) | base);
     emit_dword(A, 0);
     emit_dword(A, (2u << 30) |
-                  ((uint32_t)(tbl[AMD_S_ADDC_U32].hw_opcode & 0x7F) << 23) |
+                  ((uint32_t)(amd_enc_ent(A, AMD_S_ADDC_U32)->hw_opcode & 0x7F) << 23) |
                   ((uint32_t)(base + 1) << 16) | (255u << 8) | (base + 1));
     emit_dword(A, 0);
 }
@@ -543,7 +565,6 @@ static uint32_t block_offsets[AMD_MAX_MBLOCKS];
 void encode_function(amd_module_t *A, uint32_t mf_idx)
 {
     const mfunc_t *F = &A->mfuncs[mf_idx];
-    const amd_enc_entry_t *tbl = get_enc_table(A);
 
     /* Pass 1: compute instruction byte offsets */
     uint32_t offset = A->code_len;
@@ -560,7 +581,7 @@ void encode_function(amd_module_t *A, uint32_t mf_idx)
             inst_offsets[mi_idx] = offset;
 
             if (mi->op >= AMD_OP_COUNT) { offset += 4; continue; }
-            const amd_enc_entry_t *enc = &tbl[mi->op];
+            const amd_enc_entry_t *enc = amd_enc_ent(A, mi->op);
 
             switch (enc->fmt) {
             case AMD_FMT_SOP2: case AMD_FMT_SOP1: case AMD_FMT_SOPC:
@@ -618,7 +639,7 @@ void encode_function(amd_module_t *A, uint32_t mf_idx)
             minst_t *mi = &A->minsts[mi_idx]; /* non-const for branch fixup */
 
             if (mi->op >= AMD_OP_COUNT) continue;
-            const amd_enc_entry_t *enc = &tbl[mi->op];
+            const amd_enc_entry_t *enc = amd_enc_ent(A, mi->op);
 
             /* Fix up branch targets: convert block index to PC-relative offset */
             if (enc->fmt == AMD_FMT_SOPP && mi->num_uses > 0 &&

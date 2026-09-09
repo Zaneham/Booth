@@ -2112,8 +2112,7 @@ static void gaddr_asm(amd_module_t *A, const minst_t *mi)
 static void print_minst(amd_module_t *A, const minst_t *mi)
 {
     if (mi->op >= AMD_OP_COUNT) { A->asm_bad = 1; return; }
-    const amd_enc_entry_t *tbl = get_enc_table(A);
-    const amd_enc_entry_t *enc = &tbl[mi->op];
+    const amd_enc_entry_t *enc = amd_enc_ent(A, mi->op);
     if (enc->mnemonic == NULL) return;
 
     /* Skip pseudo-instructions that survived */
