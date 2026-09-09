@@ -3125,24 +3125,22 @@ TH_REG("rpi", 125, "a nested device chain leaves no call", rpi125)
 
 static void rpi126(void)
 {
-    CHNE(scratch("rpi126.cu",
+    const char *p = rpi_ptx(
         "__device__ int rec(int n, int mode)\n"
         "{\n"
         "    if (mode == 0) { return 4242; }\n"
         "    if (n <= 0) { return rec(0, 0); }\n"
         "    return rec(n - 1, mode) + 1;\n"
         "}\n"
-        "__global__ void ker(int *o) { o[0] = rec(3, 1); }\n"), NULL);
-    remove("build/rpi126.ptx");
-    CHNE(th_run(BC_BIN " --nvidia-ptx build/rpi126.cu -o build/rpi126.ptx",
-                obuf, (int)sizeof obuf), 0);
-    CHNE(strstr(obuf, "E864"), NULL);
-    CHNE(strstr(obuf, "names a predecessor that does not branch there"), NULL);
-    CHEQ(strstr(obuf, "E541"), NULL);
-    CHEQ(th_exist("build/rpi126.ptx"), 0);
+        "__global__ void ker(int *o) { o[0] = rec(3, 1); }\n", "rpi126");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, ".func"), NULL);
+    CHNE(strstr(p, "call.uni"), NULL);
+    CHNE(strstr(p, "4242"), NULL);
     PASS();
 }
-TH_REG("rpi", 126, "a recursive device call refuses, not lies", rpi126)
+TH_REG("rpi", 126, "a recursive device call becomes a call", rpi126)
 
 static void rpi127(void)
 {
@@ -5663,3 +5661,93 @@ static void rpi286(void)
     PASS();
 }
 TH_REG("rpi", 286, "an mma asm gets .b32 registers", rpi286)
+
+static void rpi264(void)
+{
+    const char *p = rpi_ptx(
+        "__device__ int hlp(int x)\n"
+        "{\n"
+        "    int d = x * 13 + 7;\n"
+        "    if (x > 3) { if (x > 9) return x * 2 + d; return x * 5; }\n"
+        "    if (x < 0) return x - 1;\n"
+        "    return x + 1;\n"
+        "}\n"
+        "extern \"C\" __global__ void ka(int *o)\n"
+        "{\n"
+        "    int t = (int)threadIdx.x;\n"
+        "    o[0] = hlp(t) + hlp(t + 4) + hlp(t + 12);\n"
+        "}\n"
+        "extern \"C\" __global__ void kb(int *o)\n"
+        "{\n"
+        "    int t = (int)threadIdx.x;\n"
+        "    int a = t * 3, b = a + 5, c = b * 7, d = c - 2, e = d * 11;\n"
+        "    o[1] = ((e + 13) * 17 - 19) * 23 + 29;\n"
+        "}\n", "rpi264");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, ".entry ka"), NULL);
+    CHNE(strstr(p, ".entry kb"), NULL);
+    CHNE(strstr(p, "29"), NULL);
+    PASS();
+}
+TH_REG("rpi", 264, "two kernels, one inlined, both survive", rpi264)
+
+static void rpi265(void)
+{
+    const char *p = rpi_ptx(
+        "__device__ int add3(int x) { return x + 3; }\n"
+        "extern \"C\" __global__ void ker(int *o)\n"
+        "{\n"
+        "    int t = (int)threadIdx.x;\n"
+        "    o[t] = add3(t) + add3(t + 100);\n"
+        "}\n", "rpi265");
+
+    CHNE(p, NULL);
+    CHEQ(strstr(p, "call.uni"), NULL);
+    CHEQ(strstr(p, ".func"), NULL);
+    PASS();
+}
+TH_REG("rpi", 265, "a straight callee still splices in place", rpi265)
+
+static void rpi266(void)
+{
+    CHNE(scratch("rpi266.cu",
+        "__device__ int rec(int n)\n"
+        "{\n"
+        "    if (n <= 0) { return 11; }\n"
+        "    return rec(n - 1) + 2;\n"
+        "}\n"
+        "__global__ void ker(int *o) { o[0] = rec(4); }\n"), NULL);
+    remove("build/rpi266.ptx");
+    CHEQ(th_run(BC_BIN " --nvidia-ptx build/rpi266.cu -o build/rpi266.ptx",
+                obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "reaches a call cycle"), NULL);
+    CHNE(strstr(obuf, "'rec'"), NULL);
+    CHNE(th_exist("build/rpi266.ptx"), 0);
+    PASS();
+}
+TH_REG("rpi", 266, "a call cycle is named in the warning", rpi266)
+
+static void rpi267(void)
+{
+    const char *p = rpi_ptx(
+        "__device__ int hlp(int x) { if (x > 3) return x * 2; return x + 1; }\n"
+        "extern \"C\" __global__ void ker(int *o)\n"
+        "{\n"
+        "    int t = (int)threadIdx.x;\n"
+        "    o[t] = hlp(t) + hlp(t + 5) + hlp(t + 9);\n"
+        "}\n", "rpi267");
+    char lbl[32];
+    int n;
+
+    CHNE(p, NULL);
+    for (n = 1; n < 13; n++) {
+        snprintf(lbl, sizeof lbl, "$L0_%d:", n);
+        if (strstr(p, lbl) == NULL) break;
+        snprintf(lbl, sizeof lbl, "bra $L0_%d;", n);
+        CHNE(strstr(p, lbl), NULL);
+    }
+    CHEQ(n > 8, 1);
+    PASS();
+}
+TH_REG("rpi", 267, "every spliced block is still branched to", rpi267)

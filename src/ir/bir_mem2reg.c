@@ -880,6 +880,28 @@ static void step7_compact(m2r_t *S)
 
 }
 
+static int m2iblk(uint16_t op, uint8_t j)
+{
+    switch (op) {
+    case BIR_BR:         return j == 0;
+    case BIR_BR_COND:    return j >= 1 && j <= 3;
+    case BIR_SWITCH:     return j == 1;
+    case BIR_PHI:        return j % 2 == 0;
+    case BIR_CALL:       return j == 0;
+    case BIR_FNREF:      return j == 0;
+    case BIR_GLOBAL_REF: return j == 0;
+    default:             return 0;
+    }
+}
+
+static int m2xblk(uint16_t op, uint32_t j)
+{
+    if (op == BIR_PHI)    return j % 2 == 0;
+    if (op == BIR_SWITCH) return j == 1 || (j >= 3 && j % 2 == 1);
+    if (op == BIR_CALL)   return j == 0;
+    return 0;
+}
+
 /* ---- Per-Function Driver ---- */
 
 static int m2r_run_func(m2r_t *S, uint32_t fi)
@@ -965,6 +987,7 @@ int bir_mem2reg(bir_module_t *M)
                     for (uint32_t j = 0; j < cnt
                          && (start + j) < M->num_extra_ops; j++) {
                         uint32_t ref = M->extra_operands[start + j];
+                        if (m2xblk(I->op, j)) continue;
                         if (BIR_VAL_IS_CONST(ref) || ref == BIR_VAL_NONE)
                             continue;
                         uint32_t idx = BIR_VAL_INDEX(ref);
@@ -976,6 +999,7 @@ int bir_mem2reg(bir_module_t *M)
                     for (uint8_t j = 0; j < I->num_operands
                          && j < BIR_OPERANDS_INLINE; j++) {
                         uint32_t ref = I->operands[j];
+                        if (m2iblk(I->op, j)) continue;
                         if (BIR_VAL_IS_CONST(ref) || ref == BIR_VAL_NONE)
                             continue;
                         uint32_t idx = BIR_VAL_INDEX(ref);
