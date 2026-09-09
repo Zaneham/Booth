@@ -352,8 +352,8 @@ typedef struct {
 
 /* ---- Module ---- */
 
-#define NV_MAX_MINST  (1 << 18)   /* 262144 */
-#define NV_MAX_MBLK   (1 << 16)   /* 65536 */
+#define NV_MAX_MINST  (1 << 21)   /* 2097152 */
+#define NV_MAX_MBLK   (1 << 18)   /* 262144 */
 #define NV_MAX_MFUNC  (1 << 12)   /* 4096 */
 #define NV_MAX_OUT    (2 * 1024 * 1024)  /* 2 MB output buffer */
 

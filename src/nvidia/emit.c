@@ -1512,7 +1512,7 @@ static void em_func(nv_module_t *nv, uint32_t fi)
 
     /* .reg declarations — one per used register file */
     if (MF->rc[NV_RF_U32] > 1)
-        nv_apnd(nv, "\t.reg .u32  %%r<%u>;\n",  MF->rc[NV_RF_U32]);
+        nv_apnd(nv, "\t.reg .b32  %%r<%u>;\n",  MF->rc[NV_RF_U32]);
     if (MF->rc[NV_RF_U64] > 1)
         nv_apnd(nv, "\t.reg .u64  %%rd<%u>;\n", MF->rc[NV_RF_U64]);
     if (MF->rc[NV_RF_F32] > 1)

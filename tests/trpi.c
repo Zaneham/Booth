@@ -5572,3 +5572,94 @@ static void rpi263(void)
     PASS();
 }
 TH_REG("rpi", 263, "the lambda table refuses by name when full", rpi263)
+
+static const char *farms(int n, int nif)
+{
+    static char src[1 << 17];
+    int at = snprintf(src, sizeof src,
+                      "template<int N> __global__ void kt(int *d, int x)"
+                      "{ int s = N;\n");
+
+    if (at < 0) return NULL;
+    for (int i = 0; i < nif; i++) {
+        int w = snprintf(src + at, sizeof src - (size_t)at,
+                         "if (x > %d) { s += %d; }\n", i, i);
+        if (w < 0 || (size_t)(at + w) >= sizeof src) return NULL;
+        at += w;
+    }
+    {
+        int w = snprintf(src + at, sizeof src - (size_t)at,
+                         "d[0] = s;\n}\n"
+                         "void h(int *d, int x) {\n");
+        if (w < 0 || (size_t)(at + w) >= sizeof src) return NULL;
+        at += w;
+    }
+    for (int i = 0; i < n; i++) {
+        int w = snprintf(src + at, sizeof src - (size_t)at,
+                         "kt<%d><<<1,1>>>(d, x);\n", i);
+        if (w < 0 || (size_t)(at + w) >= sizeof src) return NULL;
+        at += w;
+    }
+    if (snprintf(src + at, sizeof src - (size_t)at, "}\n") < 0)
+        return NULL;
+    return src;
+}
+
+static void rpi284(void)
+{
+    const char *s = farms(600, 70);
+    char cmd[512];
+    const char *path;
+
+    CHNE(s, NULL);
+    path = scratch("rpi284.cu", s);
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s -o build/rpi284.ptx",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHEQ(strstr(obuf, "E545"), NULL);
+    CHNE(strstr(obuf, "600 kernels"), NULL);
+    PASS();
+}
+TH_REG("rpi", 284, "a kernel farm clears the nvptx caps", rpi284)
+
+static void rpi285(void)
+{
+    const char *s = farms(4200, 0);
+    char cmd[512];
+    const char *path;
+
+    CHNE(s, NULL);
+    path = scratch("rpi285.cu", s);
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s -o build/rpi285.ptx",
+             BC_BIN, path);
+    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "machine functions exceeds"), NULL);
+    PASS();
+}
+TH_REG("rpi", 285, "the nvptx function cap refuses by name", rpi285)
+
+static void rpi286(void)
+{
+    static const char *const src =
+        "__global__ void k(float *o, const int *a, const int *b)\n"
+        "{\n"
+        "    int D[4]; D[0]=0; D[1]=0; D[2]=0; D[3]=0;\n"
+        "    asm(\"mma.sync.aligned.m16n8k8.row.col."
+        "f32.tf32.tf32.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, "
+        "{%8, %9}, {%0, %1, %2, %3};\"\n"
+        "        : \"+r\"(D[0]), \"+r\"(D[1]), \"+r\"(D[2]), \"+r\"(D[3])\n"
+        "        : \"r\"(a[0]), \"r\"(a[1]), \"r\"(a[2]), \"r\"(a[3]),\n"
+        "          \"r\"(b[0]), \"r\"(b[1]));\n"
+        "    o[0] = (float)D[0];\n"
+        "}\n";
+    const char *p = rpi_ptx(src, "rpi286");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, ".reg .b32  %r<"), NULL);
+    CHEQ(strstr(p, ".reg .u32  %r<"), NULL);
+    CHNE(strstr(p, "mma.sync.aligned.m16n8k8"), NULL);
+    PASS();
+}
+TH_REG("rpi", 286, "an mma asm gets .b32 registers", rpi286)

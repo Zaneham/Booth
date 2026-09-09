@@ -2841,6 +2841,10 @@ static int isel_func(uint32_t fi)
      * pred-to-pred copies allocate temporary U32 registers. */
     phi_fix();
 
+    if (S.nv->num_mblk - MF->first_blk > 0xFFFFu) {
+        nv_cap("blocks in one function", 0xFFFFu);
+        return BC_ERR_NVIDIA;
+    }
     MF->num_blks = (uint16_t)(S.nv->num_mblk - MF->first_blk);
     MF->lds_bytes = S.shr_off;
     MF->lcl_bytes = S.lcl_off;
