@@ -26,6 +26,12 @@ frontend:
 The compiled binary is `kath` (after Kathleen Booth); the project is Booth. They differ on purpose, since a `booth` already lives in the Linux HA stack and you may have both on your PATH.
 
 ```bash
+# Front-door verbs: build, then run on the detected device
+./kath run <file>                 # compile and run on whatever device is here
+./kath run --cpu <file>           # force the CPU host
+./kath build <file> -o out.o      # compile only
+./kath doctor                     # report devices and toolchain, then self-test
+
 # Compile to AMD GPU binary (RDNA 3, default)
 ./kath --amdgpu-bin kernel.cu -o kernel.hsaco
 

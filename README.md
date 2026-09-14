@@ -62,6 +62,12 @@ compiler if you want that frontend. Neither is needed to build Booth:
 ```bash
 # compile a CUDA kernel to an AMD GPU binary
 ./kath --amdgpu-bin kernel.cu -o kernel.hsaco
+
+# or compile and run it on whatever device you have, in one command
+./kath run kernel.cu
+
+# see what your machine can do, then self-test it
+./kath doctor
 ```
 
 The binary is `kath` (after Kathleen but if she picked Australia or New Zealand instead of Canada), not `booth`: there's already a `booth` in the Linux HA stack, so you'll likely end up with both on your PATH. The full command reference, every backend and flag, lives in [docs/usage.md](docs/usage.md).
