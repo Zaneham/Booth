@@ -12,7 +12,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(booth_cmake_example LANGUAGES NONE)
 
-find_package(Booth 0.5 REQUIRED)
+find_package(Booth 0.6 REQUIRED)
 message(STATUS "Booth ${Booth_VERSION} at ${Booth_EXECUTABLE}")
 
 booth_add_kernel(vadd_ptx    SOURCE vadd.cu BACKEND nvidia-ptx)

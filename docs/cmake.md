@@ -19,7 +19,7 @@ That puts `kath` in `<prefix>/bin`, the `--lang` catalogues in
 ## Finding it
 
 ```cmake
-find_package(Booth 0.5 REQUIRED)
+find_package(Booth 0.6 REQUIRED)
 ```
 
 If the prefix is not one CMake already searches, point it there with
