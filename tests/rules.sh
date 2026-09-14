@@ -1,17 +1,6 @@
 #!/bin/sh
-# rules.sh -- the Power of Ten, as a ratchet rather than a gate.
-#
-# Booth does not pass JPL's rules today and a check that fails on every run is
-# a check nobody reads. So the counts below are recorded in tests/rules.tbl and
-# this fails when one rises, not when it is above zero. Lower a number, commit
-# the new baseline, and it can never go back up.
-#
-# Rule 7 is the exception and is checked outright, because it is the one that
-# cost a day: pp_emit_char guarded its write, dropped the byte when full, and
-# returned void, so nothing downstream could tell the buffer had been truncated
-# and the lexer read off the end of it.
-#
-# src/mlir/vendor is Certik's and is not ours to hold to this.
+# Holds me to account on what's already in the CONTRIBUTING.md, if you're new
+# please read that :-)
 
 set -e
 cd "$(dirname "$0")/.."

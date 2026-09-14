@@ -51,9 +51,8 @@ const be_desc_t * const be_list[] = {
     NULL
 };
 
-/* One slot per registered backend, indexed the same as be_list. Static
- * because a compiler run has exactly one of each and JPL style keeps
- * malloc out of the driver. */
+/* One slot per registered backend, indexed the same as be_list. Static,
+ * so there is no malloc in the driver. */
 static be_opts_t be_opts_store[BE_MAX];
 
 void be_reset(void)

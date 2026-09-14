@@ -1,10 +1,9 @@
-# The Power of Ten, as they stand today. tests/rules.sh fails when one rises.
-# Lower a number, commit the new baseline, and it can never go back up.
+# tests/rules.sh fails when one of these rises. Lower one, commit it.
 #
 # name   count  label
 goto     63     goto, setjmp or longjmp
 alloc    99     allocation calls
 fnptr    25     function pointers
 long     148    functions over 60 lines
-comment  6511   comment lines
+comment  6510   comment lines
 snprintf 89     snprintf calls whose return is discarded

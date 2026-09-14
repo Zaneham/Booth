@@ -183,8 +183,8 @@ static nv_opnd_t rslv_p(uint32_t val)
             uint8_t rf = bir_rfile(C->type);
             if (rf == NV_RF_F64) {
                 /* Materialise f64 constant into a register.
-                 * Can't fit 64 bits in a 32-bit imm field (JPL
-                 * doesn't do struct bloat), so we emit a pseudo-op
+                 * Can't fit 64 bits in a 32-bit imm field, so we
+                 * emit a pseudo-op
                  * that carries the two halves and let the emitter
                  * reassemble the 0dXXXX literal. The eigenvalue
                  * thanks us for not truncating to float. */

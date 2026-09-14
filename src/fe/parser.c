@@ -3263,7 +3263,7 @@ static void dump_node_data(const parser_t *P, const ast_node_t *n)
 
 void ast_dump(const parser_t *P, uint32_t idx, int depth)
 {
-    /* Iterative tree walk. JPL Rule 1: thou shalt not recurse. */
+    /* Iterative tree walk. Thou shalt not recurse. */
     struct { uint32_t node; int depth; int phase; } stack[BC_MAX_DEPTH];
     int sp = 0;
 
