@@ -33,7 +33,7 @@ jobs:
           environment-name: lf
           create-args: >-
             python=3.11
-            lfortran
+            lfortran=0.65.0
 
       - name: Numeric regression vs baseline
         env:

@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install gcovr
-        run: sudo apt-get update && sudo apt-get install -y gcovr
+        run: pipx install "gcovr>=8"
       - name: Build instrumented and run suite
         run: make coverage
       - name: Summary
