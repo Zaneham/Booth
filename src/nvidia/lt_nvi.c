@@ -2,6 +2,7 @@
 
 #include "lt_nv.h"
 #include <assert.h>
+#include <stddef.h>
 
 /* ---- Bits ---- */
 
