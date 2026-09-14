@@ -3,6 +3,14 @@ Booth — Changelog
 
 ## Unreleased
 
+### Runtime
+
+- `kath run`, `kath build` and `kath doctor` are verbs in the binary: run
+  builds a source and executes it on the detected device through the revived
+  src/exec launcher (CPU in-process, NVIDIA PTX on the card), build collapses
+  the OCaml and Fortran chains to one command, and doctor self-tests a vadd
+  through each path (Zane Hambly, 2026-09-14)
+
 ### Backends
 
 - `--nvidia-cubin` emits SASS and writes its own cubin, with no NVCC,

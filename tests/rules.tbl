@@ -3,8 +3,8 @@
 #
 # name   count  label
 goto     63     goto, setjmp or longjmp
-alloc    78     allocation calls
-fnptr    24     function pointers
-long     146    functions over 60 lines
-comment  6458   comment lines
-snprintf 75     snprintf calls whose return is discarded
+alloc    99     allocation calls
+fnptr    25     function pointers
+long     148    functions over 60 lines
+comment  6480   comment lines
+snprintf 89     snprintf calls whose return is discarded

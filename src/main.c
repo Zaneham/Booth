@@ -28,6 +28,7 @@
 #include "rv64.h"
 #include "backend.h"
 #include "backend_cfg.h"
+#include "exec/front.h"
 #include <stdlib.h>
 
 static char       source_buf[BC_MAX_SOURCE];
@@ -35,6 +36,27 @@ static char       pp_out_buf[BC_MAX_SOURCE];  /* preprocessor output */
 static token_t    token_buf[BC_MAX_TOKENS];
 static ast_node_t node_buf[BC_MAX_NODES];
 static bir_module_t *bir_module; /* heap-allocated (~11 MB) */
+
+/* The run verb needs the kernel's name to hand the launcher, and only the
+ * built module knows it. krec copies the first __global__ name out of any
+ * module a frontend finishes, but only when kath_compile was asked. */
+static kath_out_t *g_kout;
+
+static void krec(const bir_module_t *M)
+{
+    if (g_kout == NULL || g_kout->have || M == NULL) return;
+    for (uint32_t i = 0; i < M->num_funcs; i++) {
+        if ((M->funcs[i].cuda_flags & CUDA_GLOBAL) == 0) continue;
+        if (M->funcs[i].name >= M->string_len) continue;
+        const char *n = &M->strings[M->funcs[i].name];
+        size_t k = strlen(n);
+        if (k >= KATH_KERN_MAX) k = KATH_KERN_MAX - 1;
+        memcpy(g_kout->kernel, n, k);
+        g_kout->kernel[k] = '\0';
+        g_kout->have = 1;
+        return;
+    }
+}
 
 /* ---- Shared Backend Dispatcher ----
  * After a frontend has filled bir_module, the optimisation passes
@@ -447,8 +469,10 @@ static void usage(const char *prog)
         "\n", prog);
 }
 
-int main(int argc, char *argv[])
+int kath_compile(int argc, char *argv[], kath_out_t *out)
 {
+    g_kout = out;
+    be_reset();
     const char *files[BC_MAX_TUS];
     int nfile = 0;
     const char *output_file = NULL;
@@ -654,6 +678,7 @@ int main(int argc, char *argv[])
         cfg.mode_tdf_fission = mode_tdf_fission;
         cfg.output_file      = output_file;
 
+        krec((bir_module_t *)bb_module(B));
         int brc = (run_bir_backends((bir_module_t *)bb_module(B), &cfg) == BC_OK)
                   ? 0 : 1;
         bb_free(B);
@@ -779,6 +804,7 @@ int main(int argc, char *argv[])
                     tn_lower_init(tnl, tnp, tns, bir_module);
                     int lrc = tn_lower(tnl);
                     bc_diag(file, source_buf, tnl->errors, tnl->num_errors);
+                    if (lrc == BC_OK) krec(bir_module);
 
                     int brc = BC_OK;
                     if (lrc == BC_OK && (mode_ir || want_backend)) {
@@ -853,6 +879,7 @@ int main(int argc, char *argv[])
     }
 
     if (rc == BC_OK && want_bir) {
+        krec(bir_module);
         backend_cfg_t cfg = {0};
         cfg.no_mem2reg = no_mem2reg;
         cfg.no_cfold   = no_cfold;
@@ -869,4 +896,11 @@ int main(int argc, char *argv[])
     if (bir_module) free(bir_module);
 
     return rc != BC_OK ? 1 : 0;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc >= 2 && booth_is_verb(argv[1]))
+        return booth_verb(argc, argv);
+    return kath_compile(argc, argv, NULL);
 }

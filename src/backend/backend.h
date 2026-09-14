@@ -123,6 +123,8 @@ extern const be_desc_t * const be_list[];   /* NULL-terminated */
 
 const be_desc_t *be_find(const char *name);
 
+void be_reset(void);
+
 int be_fail(int eid, ...);
 
 /* Offer one argv entry to the registry. Returns 1 if a backend took it,

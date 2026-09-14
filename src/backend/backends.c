@@ -56,6 +56,11 @@ const be_desc_t * const be_list[] = {
  * malloc out of the driver. */
 static be_opts_t be_opts_store[BE_MAX];
 
+void be_reset(void)
+{
+    memset(be_opts_store, 0, sizeof be_opts_store);
+}
+
 int be_parse_flag(const char *arg, const char *next, int *used_next)
 {
     if (arg == NULL || used_next == NULL) return 0;

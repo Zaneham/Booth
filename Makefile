@@ -23,7 +23,7 @@ CFLAGS  = -std=c99 -MMD -MP -Wall -Wextra -pedantic -O2 \
           -Wdouble-promotion -Wswitch-enum -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE $(CF_PROT) \
           $(GCC_ONLY) \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Iruntime/include \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec -Iruntime/include \
           $(COVFLAGS)
 LDFLAGS = -pie
 LIBS    = -lm
@@ -75,7 +75,9 @@ SOURCES = src/main.c src/kauri_impl.c \
           src/metal/emit.c src/metal/metal_be.c \
           src/intel/emit.c src/intel/intel_be.c \
           src/triton/lex.c src/triton/parse.c src/triton/sema.c src/triton/lower.c \
-          src/mlir/mlir_fe.c src/mlir/lower.c
+          src/mlir/mlir_fe.c src/mlir/lower.c \
+          src/exec/execs.c src/exec/cpu_exec.c src/exec/booth_run.c src/exec/verbs.c \
+          runtime/host/cuda/nv_rt.c runtime/host/cuda/nv_exec.c
 
 # Certik's pure-C MLIR reader, vendored under src/mlir/vendor. It carries his
 # corec base library and a syscall shim per host, so only one of the three
@@ -142,7 +144,7 @@ HOSTCHK     = $(OBJDIR)/tests/tnv_rt.o $(OBJDIR)/tests/tnv_sass.o $(OBJDIR)/test
 all: $(TARGET) $(ALT_RT) $(HOSTCHK)
 
 $(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) $(DL_LIB)
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -150,7 +152,7 @@ $(OBJDIR)/%.o: %.c
 
 # ---- Test Suite ----
 TCFLAGS = -std=c99 -MMD -MP -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec \
           -Isrc/mlir -Iruntime/include $(COVFLAGS)
 TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tasy.c \
