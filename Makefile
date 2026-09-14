@@ -23,7 +23,7 @@ CFLAGS  = -std=c99 -MMD -MP -Wall -Wextra -pedantic -O2 \
           -Wdouble-promotion -Wswitch-enum -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE $(CF_PROT) \
           $(GCC_ONLY) \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec -Iruntime/include \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec -Iruntime/include \
           $(COVFLAGS)
 LDFLAGS = -pie
 LIBS    = -lm
@@ -72,6 +72,7 @@ SOURCES = src/main.c src/kauri_impl.c \
           src/tensix/isel.c src/tensix/emit.c src/tensix/coarsen.c src/tensix/datamov.c src/tensix/noc.c \
           src/tensix/rv_enc.c src/tensix/rv_buf.c src/tensix/rv_elf.c src/tensix/rv_isel.c src/tensix/tensix_be.c src/cpu/cpu_emit.c src/cpu/cpu_elf.c src/cpu/rv64_emit.c src/cpu/rv64_elf.c src/cpu/cpu_be.c \
           src/nvidia/isel.c src/nvidia/emit.c src/nvidia/nv_be.c src/nvidia/emit_sass.c src/nvidia/verify.c \
+          src/nvidia/lt_nvi.c src/nvidia/lt_nv.c src/nvidia/lt_nvcf.c src/nvidia/nv_note.c \
           src/metal/emit.c src/metal/metal_be.c \
           src/intel/emit.c src/intel/intel_be.c \
           src/triton/lex.c src/triton/parse.c src/triton/sema.c src/triton/lower.c \
@@ -111,18 +112,7 @@ VSOURCES = $(VDIR)/tokenizer.c $(VDIR)/mlir_parser.c $(VDIR)/op_parsers.c \
 VCFLAGS := $(subst -std=c99,-std=c2x,$(CFLAGS)) -Wno-switch-enum \
            -DPLATFORM_SKIP_ENTRY -DCOREC_STDLIB_PROVIDES_MEM -I$(VDIR)
 
-# Zane's SASS back end, vendored across from Latimer under src/nvidia/vendor.
-# The instruction encoder, the cubin writer and the note tables came over whole;
-# lt_nvcf.c is the only file that changed, and only so the reconvergence pass
-# takes a control-flow graph the caller has already built rather than deriving
-# one from Latimer's Wave IR. It meets the strict flags unaltered, so unlike
-# the MLIR reader below it needs no relaxed warning set of its own.
-NVDIR = src/nvidia/vendor
-NVSOURCES = $(NVDIR)/lt_nvi.c $(NVDIR)/lt_nv.c $(NVDIR)/lt_nvcf.c \
-            $(NVDIR)/nv_note.c
-
-OBJECTS = $(SOURCES:%.c=$(OBJDIR)/%.o) $(VSOURCES:%.c=$(OBJDIR)/%.o) \
-          $(NVSOURCES:%.c=$(OBJDIR)/%.o)
+OBJECTS = $(SOURCES:%.c=$(OBJDIR)/%.o) $(VSOURCES:%.c=$(OBJDIR)/%.o)
 
 # Everything under src/mlir compiles on VCFLAGS, vendored or not. mlir_fe.c and
 # lower.c are ours but they speak corec types, so they want the same flags.
@@ -152,7 +142,7 @@ $(OBJDIR)/%.o: %.c
 
 # ---- Test Suite ----
 TCFLAGS = -std=c99 -MMD -MP -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O0 -g \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/nvidia/vendor -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec \
           -Isrc/mlir -Iruntime/include $(COVFLAGS)
 TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/tasy.c \
@@ -204,11 +194,12 @@ COBJS   = $(OBJDIR)/src/kauri_impl.o $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir
           $(OBJDIR)/src/tensix/tensix_be.o $(OBJDIR)/src/cpu/cpu_be.o \
           $(OBJDIR)/src/metal/metal_be.o $(OBJDIR)/src/intel/intel_be.o \
           $(OBJDIR)/src/nvidia/isel.o $(OBJDIR)/src/nvidia/emit.o $(OBJDIR)/src/nvidia/emit_sass.o $(OBJDIR)/src/nvidia/verify.o \
+          $(OBJDIR)/src/nvidia/lt_nvi.o $(OBJDIR)/src/nvidia/lt_nv.o $(OBJDIR)/src/nvidia/lt_nvcf.o $(OBJDIR)/src/nvidia/nv_note.o \
           $(OBJDIR)/src/cpu/cpu_emit.o $(OBJDIR)/src/cpu/cpu_elf.o \
           $(OBJDIR)/src/cpu/rv64_emit.o $(OBJDIR)/src/cpu/rv64_elf.o \
           $(OBJDIR)/src/tensix/isel.o $(OBJDIR)/src/tensix/coarsen.o $(OBJDIR)/src/tensix/datamov.o \
           $(OBJDIR)/src/metal/emit.o $(OBJDIR)/src/intel/emit.o \
-          $(OBJDIR)/src/mlir/mlir_fe.o $(OBJDIR)/src/mlir/lower.o $(VSOURCES:%.c=$(OBJDIR)/%.o) $(NVSOURCES:%.c=$(OBJDIR)/%.o)
+          $(OBJDIR)/src/mlir/mlir_fe.o $(OBJDIR)/src/mlir/lower.o $(VSOURCES:%.c=$(OBJDIR)/%.o)
 
 rules:
 	@sh tests/rules.sh

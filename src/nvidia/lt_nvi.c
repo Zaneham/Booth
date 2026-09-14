@@ -1,8 +1,4 @@
-/*
- * lt_nvi.c — placing bits into a Volta instruction word.
- *
- * (c) 2026 Zane Hambly.
- */
+/* lt_nvi.c -- placing bits into a Volta instruction word. (c) 2026 Zane Hambly. */
 
 #include "lt_nv.h"
 #include <assert.h>

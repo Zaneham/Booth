@@ -1,8 +1,4 @@
-/*
- * lt_nvcf.c — where a warp's lanes part and where they meet again.
- *
- * (c) 2026 Zane Hambly.
- */
+/* lt_nvcf.c -- where a warp's lanes part and where they meet again. (c) 2026 Zane Hambly. */
 
 #include "lt_nv.h"
 #include <string.h>

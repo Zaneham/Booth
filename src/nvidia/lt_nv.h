@@ -1,8 +1,4 @@
-/*
- * lt_nv.h — NVIDIA host back end.
- *
- * (c) 2026 Zane Hambly.
- */
+/* lt_nv.h -- NVIDIA host back end. (c) 2026 Zane Hambly. */
 
 #ifndef LT_NV_H
 #define LT_NV_H

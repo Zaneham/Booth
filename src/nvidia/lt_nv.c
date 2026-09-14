@@ -1,8 +1,4 @@
-/*
- * lt_nv.c — the cubin a kernel arrives in.
- *
- * (c) 2026 Zane Hambly.
- */
+/* lt_nv.c -- the cubin a kernel arrives in. (c) 2026 Zane Hambly. */
 
 #include "lt_nv.h"
 #include <string.h>

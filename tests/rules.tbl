@@ -6,5 +6,5 @@ goto     63     goto, setjmp or longjmp
 alloc    99     allocation calls
 fnptr    25     function pointers
 long     148    functions over 60 lines
-comment  6480   comment lines
+comment  6511   comment lines
 snprintf 89     snprintf calls whose return is discarded
