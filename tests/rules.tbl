@@ -6,4 +6,4 @@ alloc    99     allocation calls
 fnptr    25     function pointers
 long     148    functions over 60 lines
 comment  6510   comment lines
-snprintf 89     snprintf calls whose return is discarded
+snprintf 83     snprintf calls whose return is discarded

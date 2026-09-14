@@ -30,6 +30,8 @@ static const char VADD_SRC[] =
 
 static int streq(const char *a, const char *b) { return a && b && strcmp(a, b) == 0; }
 
+static int fits(int w, size_t n) { return w >= 0 && (size_t)w < n; }
+
 static const char *ext_of(const char *path)
 {
     const char *dot = strrchr(path, '.');
@@ -139,7 +141,10 @@ static int cvt_f90(const char *file, char *out, size_t n)
         fprintf(stderr, "kath: LFortran failed on %s\n", file);
         return 1;
     }
-    snprintf(side, sizeof side, "%s.cuda.cu", obj);
+    if (!fits(snprintf(side, sizeof side, "%s.cuda.cu", obj), sizeof side)) {
+        fprintf(stderr, "kath: temp path too long for %s\n", file);
+        return 1;
+    }
     FILE *f = fopen(side, "rb");
     if (f == NULL) { fprintf(stderr, "kath: LFortran wrote no CUDA for %s\n", file); return 1; }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 1; }
@@ -182,13 +187,20 @@ static int cvt_ml(const char *file, char *out, size_t n)
     tmppath(out, n, "ml", "bir");
     char kc[PATHN], cmt[PATHN];
     snprintf(kc, sizeof kc, "src/ocaml/_build/default/kcomp.exe");
-    snprintf(cmt, sizeof cmt,
-             "src/ocaml/_build/default/.kernels.objs/byte/%s.cmt", stem);
+    if (!fits(snprintf(cmt, sizeof cmt,
+                       "src/ocaml/_build/default/.kernels.objs/byte/%s.cmt", stem),
+              sizeof cmt)) {
+        fprintf(stderr, "kath: path too long for %s\n", file);
+        return 1;
+    }
 #ifdef _WIN32
     for (char *p = kc; *p; p++) if (*p == '/') *p = '\\';
     for (char *p = cmt; *p; p++) if (*p == '/') *p = '\\';
 #endif
-    snprintf(cmd, sizeof cmd, "%s %s -o \"%s\" >" DEVNULL, kc, cmt, out);
+    if (!fits(snprintf(cmd, sizeof cmd, "%s %s -o \"%s\" >" DEVNULL, kc, cmt, out), sizeof cmd)) {
+        fprintf(stderr, "kath: command too long for %s\n", file);
+        return 1;
+    }
     if (!ok_status(system(cmd))) { fprintf(stderr, "kath: kcomp failed on %s\n", file); return 1; }
     return 0;
 }
@@ -431,13 +443,13 @@ static int selftest(const char *target, const char *bflag, const char *ext)
         rt_dim_t dim; memset(&dim, 0, sizeof dim);
         dim.grid[0] = dim.grid[1] = dim.grid[2] = 1u;
         dim.block[0] = (uint32_t)N; dim.block[1] = dim.block[2] = 1u;
-        char outspec[PATHN];
-        snprintf(outspec, sizeof outspec, "out:%s:%u", cp, (unsigned)(N * sizeof(int32_t)));
-        char inA[PATHN], inB[PATHN];
-        snprintf(inA, sizeof inA, "in:%s", ap);
-        snprintf(inB, sizeof inB, "in:%s", bp);
+        char outspec[PATHN], inA[PATHN], inB[PATHN];
+        int pfit = fits(snprintf(outspec, sizeof outspec, "out:%s:%u", cp,
+                                 (unsigned)(N * sizeof(int32_t))), sizeof outspec)
+                && fits(snprintf(inA, sizeof inA, "in:%s", ap), sizeof inA)
+                && fits(snprintf(inB, sizeof inB, "in:%s", bp), sizeof inB);
         brun_reset();
-        if (brun_addarg(outspec) && brun_addarg(inA) && brun_addarg(inB)
+        if (pfit && brun_addarg(outspec) && brun_addarg(inA) && brun_addarg(inB)
             && brun_launch(art, ko.kernel, target, &dim) == 0
             && rd_i32(cp, c, N)) {
             int good = 1;
