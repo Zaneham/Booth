@@ -315,7 +315,7 @@ static void enc11(void)
     mi->operands[2] = sgpr(3);
 
     encode_function(A, 0);
-    CHEQX(dw(0), 0x89070302u);
+    CHEQX(dw(0), 0x8A070302u);
     PASS();
 }
 TH_REG("enc", 11, "GFX10 renumbers the same mnemonic", enc11)

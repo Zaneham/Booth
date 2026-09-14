@@ -82,6 +82,7 @@ typedef struct {
     int       n_callfix;
 
     int       n_errs;
+    int       capr;
 } cpu_mod_t;
 
 void cpu_init(cpu_mod_t *X, const bir_module_t *M);

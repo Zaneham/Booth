@@ -702,11 +702,10 @@ static int64_t pp_eval_expr(preproc_t *pp, const char *expr, uint32_t len)
  * Returns bytes written to out.
  */
 /*
- * Per-arg and per-expansion buffer sizes.
+ * Per-expansion buffer size.
  * Kept small so the recursive expand function doesn't blow the stack.
- * Macro args are rarely > 256 chars; bodies rarely > 2KB.
+ * Bodies are rarely > 2KB; arguments are spans and cost nothing here.
  */
-#define PP_ARG_BUF  1024
 #define PP_TMP_BUF  8192
 
 /* __VA_ARGS__ is the last parameter and it swallows every argument from its
@@ -871,38 +870,53 @@ static uint32_t pp_expand_text(preproc_t *pp,
             }
             i++; /* skip '(' */
 
-            /* Collect arguments (1KB per arg — plenty for real macros) */
-            char args[PP_MAX_PARAMS][PP_ARG_BUF];
-            uint32_t arg_lens[PP_MAX_PARAMS];
+            uint32_t aoff[PP_MAX_ARGS];
+            uint32_t arg_lens[PP_MAX_ARGS];
             int nargs = 0;
             int paren_depth = 0;
-            uint32_t arg_len = 0;
+            int closed = 0;
+            int full = 0;
+            uint32_t arg_beg = i;
 
-            while (i < in_len && nargs < PP_MAX_PARAMS) {
+            while (i < in_len) {
                 if (in[i] == '(') {
                     paren_depth++;
-                    if (arg_len < PP_ARG_BUF - 1) args[nargs][arg_len++] = in[i];
                     i++;
                 } else if (in[i] == ')' && paren_depth > 0) {
                     paren_depth--;
-                    if (arg_len < PP_ARG_BUF - 1) args[nargs][arg_len++] = in[i];
                     i++;
                 } else if (in[i] == ')' && paren_depth == 0) {
-                    args[nargs][arg_len] = '\0';
-                    arg_lens[nargs] = arg_len;
-                    nargs++;
+                    if (nargs >= PP_MAX_ARGS) full = 1;
+                    else {
+                        aoff[nargs] = arg_beg;
+                        arg_lens[nargs] = i - arg_beg;
+                        nargs++;
+                    }
                     i++;
+                    closed = 1;
                     break;
                 } else if (in[i] == ',' && paren_depth == 0) {
-                    args[nargs][arg_len] = '\0';
-                    arg_lens[nargs] = arg_len;
-                    nargs++;
-                    arg_len = 0;
+                    if (nargs >= PP_MAX_ARGS) full = 1;
+                    else {
+                        aoff[nargs] = arg_beg;
+                        arg_lens[nargs] = i - arg_beg;
+                        nargs++;
+                    }
                     i++;
+                    arg_beg = i;
                 } else {
-                    if (arg_len < PP_ARG_BUF - 1) args[nargs][arg_len++] = in[i];
                     i++;
                 }
+            }
+
+            if (!closed || full) {
+                char mn[BC_MAX_IDENT + 1];
+                uint32_t ml = m->name_len < BC_MAX_IDENT ? m->name_len
+                                                         : BC_MAX_IDENT;
+                memcpy(mn, pp->pool + m->name_off, ml);
+                mn[ml] = 0;
+                pp_error(pp, BC_E174, mn, PP_MAX_ARGS);
+                continue;
             }
 
             /* Handle zero-argument case: macro() with 0 params */
@@ -946,9 +960,10 @@ static uint32_t pp_expand_text(preproc_t *pp,
                         for (int p = a0; p < a1; p++) {
                             if (p > a0 && slen < PP_TMP_BUF) subst[slen++] = ',';
                             for (uint32_t k = 0; k < arg_lens[p] && slen < PP_TMP_BUF; k++) {
-                                if (args[p][k] == '"' || args[p][k] == '\\')
+                                char ac = in[aoff[p] + k];
+                                if (ac == '"' || ac == '\\')
                                     if (slen < PP_TMP_BUF) subst[slen++] = '\\';
-                                if (slen < PP_TMP_BUF) subst[slen++] = args[p][k];
+                                if (slen < PP_TMP_BUF) subst[slen++] = ac;
                             }
                         }
                         if (slen < PP_TMP_BUF) subst[slen++] = '"';
@@ -974,7 +989,7 @@ static uint32_t pp_expand_text(preproc_t *pp,
                         for (int p = a0; p < a1; p++) {
                             if (p > a0 && slen < PP_TMP_BUF) subst[slen++] = ',';
                             for (uint32_t k = 0; k < arg_lens[p] && slen < PP_TMP_BUF; k++)
-                                subst[slen++] = args[p][k];
+                                subst[slen++] = in[aoff[p] + k];
                         }
                     } else {
                         for (uint32_t k = ps; k < ps + plen && slen < PP_TMP_BUF; k++)
@@ -1074,6 +1089,13 @@ static void pp_dir_define(preproc_t *pp)
                     pp_advance(pp);
                 else
                     break;
+            }
+            pp_skip_hspace(pp);
+            if (num_params >= PP_MAX_PARAMS && !pp_at_end(pp)
+                && pp_cur(pp) != ')') {
+                pp_error(pp, BC_E300, name, PP_MAX_PARAMS);
+                pp_skip_to_eol(pp);
+                return;
             }
         }
         /* Anything left before the ')' is a parameter list this preprocessor
@@ -1561,6 +1583,123 @@ int pp_process(preproc_t *pp)
 
 /* ---- Public API ---- */
 
+static const struct { const char *n; const char *v; } pdlim[] = {
+    {"CHAR_BIT",      "8"},
+    {"SCHAR_MIN",     "(-128)"},
+    {"SCHAR_MAX",     "127"},
+    {"UCHAR_MAX",     "255"},
+    {"CHAR_MIN",      "(-128)"},
+    {"CHAR_MAX",      "127"},
+    {"SHRT_MIN",      "(-32768)"},
+    {"SHRT_MAX",      "32767"},
+    {"USHRT_MAX",     "65535"},
+    {"INT_MIN",       "(-2147483647-1)"},
+    {"INT_MAX",       "2147483647"},
+    {"UINT_MAX",      "4294967295U"},
+    {"LONG_MIN",      "(-9223372036854775807LL-1)"},
+    {"LONG_MAX",      "9223372036854775807LL"},
+    {"ULONG_MAX",     "18446744073709551615ULL"},
+    {"LLONG_MIN",     "(-9223372036854775807LL-1)"},
+    {"LLONG_MAX",     "9223372036854775807LL"},
+    {"ULLONG_MAX",    "18446744073709551615ULL"},
+    {"INT8_MIN",      "(-128)"},
+    {"INT8_MAX",      "127"},
+    {"UINT8_MAX",     "255"},
+    {"INT16_MIN",     "(-32768)"},
+    {"INT16_MAX",     "32767"},
+    {"UINT16_MAX",    "65535"},
+    {"INT32_MIN",     "(-2147483647-1)"},
+    {"INT32_MAX",     "2147483647"},
+    {"UINT32_MAX",    "4294967295U"},
+    {"INT64_MIN",     "(-9223372036854775807LL-1)"},
+    {"INT64_MAX",     "9223372036854775807LL"},
+    {"UINT64_MAX",    "18446744073709551615ULL"},
+    {"INTPTR_MIN",    "(-9223372036854775807LL-1)"},
+    {"INTPTR_MAX",    "9223372036854775807LL"},
+    {"UINTPTR_MAX",   "18446744073709551615ULL"},
+    {"PTRDIFF_MIN",   "(-9223372036854775807LL-1)"},
+    {"PTRDIFF_MAX",   "9223372036854775807LL"},
+    {"SIZE_MAX",      "18446744073709551615ULL"},
+    {"FLT_RADIX",     "2"},
+    {"FLT_MANT_DIG",  "24"},
+    {"FLT_DIG",       "6"},
+    {"FLT_MIN_EXP",   "(-125)"},
+    {"FLT_MAX_EXP",   "128"},
+    {"FLT_MIN_10_EXP","(-37)"},
+    {"FLT_MAX_10_EXP","38"},
+    {"FLT_MIN",       "1.17549435e-38F"},
+    {"FLT_MAX",       "3.40282347e+38F"},
+    {"FLT_EPSILON",   "1.19209290e-7F"},
+    {"FLT_TRUE_MIN",  "1.40129846e-45F"},
+    {"DBL_MANT_DIG",  "53"},
+    {"DBL_DIG",       "15"},
+    {"DBL_MIN_EXP",   "(-1021)"},
+    {"DBL_MAX_EXP",   "1024"},
+    {"DBL_MIN_10_EXP","(-307)"},
+    {"DBL_MAX_10_EXP","308"},
+    {"DBL_MIN",       "2.2250738585072014e-308"},
+    {"DBL_MAX",       "1.7976931348623157e+308"},
+    {"DBL_EPSILON",   "2.2204460492503131e-16"},
+    {"INFINITY",      "(1.0f/0.0f)"},
+    {"NAN",           "(0.0f/0.0f)"},
+    {"HUGE_VALF",     "(1.0f/0.0f)"},
+    {"HUGE_VAL",      "(1.0/0.0)"},
+    {"M_PI",          "3.14159265358979323846"},
+    {"M_PI_2",        "1.57079632679489661923"},
+    {"M_PI_4",        "0.78539816339744830962"},
+    {"M_E",           "2.7182818284590452354"},
+    {"M_LN2",         "0.69314718055994530942"},
+    {"M_LN10",        "2.30258509299404568402"},
+    {"M_LOG2E",       "1.4426950408889634074"},
+    {"M_SQRT2",       "1.41421356237309504880"}
+};
+
+static const struct { const char *n; const char *v; } pdhnd[] = {
+    {"cudaStream_t",               "void *"},
+    {"cudaEvent_t",                "void *"},
+    {"cudaGraph_t",                "void *"},
+    {"cudaGraphExec_t",            "void *"},
+    {"cudaGraphNode_t",            "void *"},
+    {"cudaGraphicsResource_t",     "void *"},
+    {"cudaArray_t",                "void *"},
+    {"cudaArray_const_t",          "const void *"},
+    {"cudaMipmappedArray_t",       "void *"},
+    {"cudaMipmappedArray_const_t", "const void *"},
+    {"cudaMemPool_t",              "void *"},
+    {"cudaFunction_t",             "void *"},
+    {"cudaExternalMemory_t",       "void *"},
+    {"cudaExternalSemaphore_t",    "void *"},
+    {"cudaUserObject_t",           "void *"},
+    {"cudaHostFn_t",               "void *"},
+    {"CUstream_st",                "void"},
+    {"CUevent_st",                 "void"}
+};
+
+static const struct { const char *sfx; const char *len; } pdiw[] = {
+    {"8",       "hh"}, {"16",      "h"}, {"32",      ""},  {"64",      "ll"},
+    {"LEAST8",  "hh"}, {"LEAST16", "h"}, {"LEAST32", ""},  {"LEAST64", "ll"},
+    {"FAST8",   "hh"}, {"FAST16",  "h"}, {"FAST32",  ""},  {"FAST64",  "ll"},
+    {"MAX",     "ll"}, {"PTR",     "ll"}
+};
+
+static void pdfmt(preproc_t *pp)
+{
+    static const char cnv[] = "diouxX";
+
+    for (size_t i = 0; i < sizeof pdiw / sizeof pdiw[0]; i++)
+        for (size_t j = 0; j < sizeof cnv - 1; j++) {
+            char nm[32], vl[12];
+
+            if (snprintf(vl, sizeof vl, "\"%s%c\"", pdiw[i].len, cnv[j]) < 0)
+                continue;
+            if (snprintf(nm, sizeof nm, "PRI%c%s", cnv[j], pdiw[i].sfx) > 0)
+                (void)pp_define(pp, nm, vl);
+            if (cnv[j] == 'X') continue;
+            if (snprintf(nm, sizeof nm, "SCN%c%s", cnv[j], pdiw[i].sfx) > 0)
+                (void)pp_define(pp, nm, vl);
+        }
+}
+
 void pp_init(preproc_t *pp, const char *src, uint32_t len,
              char *out_buf, uint32_t out_max, const char *filename)
 {
@@ -1575,10 +1714,16 @@ void pp_init(preproc_t *pp, const char *src, uint32_t len,
     if (filename)
         snprintf(pp->filename, BC_MAX_PATH, "%s", filename);
 
-    /* Predefined macros */
     pp_define(pp, "__BARRACUDA__", "1");
     pp_define(pp, "__CUDA_ARCH__", "1100");
     pp_define(pp, "__CUDACC__", "1");
+    pp_define(pp, "__cplusplus", "201703L");
+
+    for (size_t i = 0; i < sizeof pdlim / sizeof pdlim[0]; i++)
+        (void)pp_define(pp, pdlim[i].n, pdlim[i].v);
+    for (size_t i = 0; i < sizeof pdhnd / sizeof pdhnd[0]; i++)
+        (void)pp_define(pp, pdhnd[i].n, pdhnd[i].v);
+    pdfmt(pp);
 }
 
 int pp_add_include_path(preproc_t *pp, const char *path)

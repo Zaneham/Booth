@@ -321,9 +321,13 @@ static int build_dag(uint16_t n)
         }
 
         /* 64-bit scalar ops define consecutive physical SGPRs */
-        if ((op == AMD_S_MOV_B64 || op == AMD_S_LOAD_DWORDX2) &&
+        if ((op == AMD_S_MOV_B64 || op == AMD_S_LOAD_DWORDX2 ||
+             op == AMD_GADDR) &&
             mi->num_defs > 0 && mi->operands[0].kind == MOP_SGPR)
             track_def(PHYS_SGPR_KEY(mi->operands[0].reg_num + 1), i);
+
+        if (op == AMD_GADDR)
+            track_def(SPEC_KEY(AMD_SPEC_SCC), i);
         if (op == AMD_S_LOAD_DWORDX4 && mi->num_defs > 0 &&
             mi->operands[0].kind == MOP_SGPR) {
             track_def(PHYS_SGPR_KEY(mi->operands[0].reg_num + 1), i);

@@ -25,10 +25,16 @@ typedef uint64_t rt_ptr;
 /* ---- Arguments ---- */
 
 /* CUDA wants an array of pointers to the arguments, HSA wants them packed into
- * one buffer, and neither form can be built from the other without the sizes. */
+ * one buffer, and neither form can be built from the other without the sizes.
+ * klass says which register bank a by-value scalar rides on a target that
+ * calls the kernel directly (CPU); the device launchers never read it. */
+#define RT_K_INT  0u
+#define RT_K_FLT  1u
+
 typedef struct {
     const void *p;
     uint32_t    size;
+    uint8_t     klass;
 } rt_arg_t;
 
 /* A target that packs aligns each argument to min(size, 8) before writing it,

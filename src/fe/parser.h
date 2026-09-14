@@ -21,8 +21,10 @@ typedef struct parser_s {
     /* Type name registry — struct/typedef names for cast disambiguation.
      * Without this, (var) * expr parses as cast+deref instead of mul.
      * The classic C ambiguity that has ruined more weekends than ISO 8601. */
-    struct { uint32_t off; uint16_t len; } tnames[128];
+    struct { uint32_t off; uint16_t len; } tnames[BC_MAX_TNAMES];
     int             num_tnames;
+
+    uint8_t         bshad[BC_MAX_BTNAMS];
 
     /* Synthetic name buffer — anonymous struct/union variable declarations
      * need a name for sema lookup. We can't inject text into the const source
@@ -35,10 +37,19 @@ typedef struct parser_s {
     struct { uint32_t off; uint32_t len; } packs[32];
     int             npacks;
 
+    struct { uint32_t off; uint16_t len; } tmpls[BC_MAX_TMPLS];
+    int             ntmpls;
+    int             gsplit;
+    int             cpend;
+    int             targ;
+
     /* Enclosing struct name, so a constructor can be told apart from a
      * declaration that happens to start with a type name. len 0 = not in one. */
     uint32_t        cs_off;
     uint16_t        cs_len;
+
+    char            qrep[8][48];
+    int             nqrep;
 
     bc_error_t      errors[BC_MAX_ERRORS];
     int             num_errors;

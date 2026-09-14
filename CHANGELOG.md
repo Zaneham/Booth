@@ -1,6 +1,32 @@
 Booth — Changelog
 =================
 
+## Unreleased
+
+### Runtime
+
+- `kath run`, `kath build` and `kath doctor`, so one command builds a source
+  and runs it on whatever device is there (Zane Hambly, 2026-09-14)
+
+### Backends
+
+- `--nvidia-cubin` writes a cubin the card will load, with no NVCC anywhere in
+  the chain. All 67 of ggml-cuda's files now reach the IR
+  (Zane Hambly, 2026-09-09)
+
+### Frontend
+
+- `constexpr` and `const` objects fold at every use, and anything the folder
+  cannot evaluate refuses with E128 (Zane Hambly, 2026-09-03)
+
+- class templates, specialisations, default template arguments and
+  `enum class` parse, so 47 of ggml-cuda's 67 files reach the lowerer
+  (Zane Hambly, 2026-09-04)
+
+- the lowerer's tables no longer run out of room on a large translation unit,
+  taking ggml-cuda's lowering errors from 774 to 210 (Zane Hambly, 2026-09-04)
+
+
 ## Booth 0.5.3
 
 ### Runtime

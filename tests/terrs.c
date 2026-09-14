@@ -135,3 +135,25 @@ static void err07(void)
     PASS();
 }
 TH_REG("err", 7, "sema errors are fatal", err07)
+
+/* ---- errors: a backend refusal is numbered ---- */
+
+static void err08(void)
+{
+    static const char *const cmds[] = {
+        BC_BIN " --amdgpu tests/mma16.cu -o build/err08.s",
+        BC_BIN " --cpu tests/mma16.cu -o build/err08.o",
+        BC_BIN " --rv64 tests/mma16.cu -o build/err08.o",
+        BC_BIN " --nvidia-ptx tests/mfrg.cu -o build/err08.ptx",
+        NULL
+    };
+    for (int i = 0; cmds[i] != NULL; i++) {
+        CHNE(th_run(cmds[i], obuf, TH_BUFSZ), 0);
+        CHECK(strstr(obuf, "E541") != NULL);
+    }
+    remove("build/err08.s");
+    remove("build/err08.o");
+    remove("build/err08.ptx");
+    PASS();
+}
+TH_REG("err", 8, "every backend numbers its refusal", err08)

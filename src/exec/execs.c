@@ -4,9 +4,13 @@
 #include "exec.h"
 #include <string.h>
 
-/* No launcher has been ported to the contract yet. nv_rt.c and bc_runtime.c
- * still ship their own APIs, so rt_open finds nothing and says so. */
+/* nvptx fails open() cleanly with no driver. AMD isn't behind rt_desc_t yet. */
+extern const rt_desc_t cpu_rt_desc;
+extern const rt_desc_t nv_rt_desc;
+
 const rt_desc_t * const rt_list[] = {
+    &cpu_rt_desc,
+    &nv_rt_desc,
     NULL
 };
 

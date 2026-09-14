@@ -1,22 +1,15 @@
 /* bir_inline.c -- inline calls to user __device__ functions.
  *
- * Booth's IR references values by absolute index into one flat,
- * append-only insts[] array, and a function's blocks and instructions are
- * contiguous slices of the global arenas. That makes an in-place insert a
- * non-starter: dropping instructions into the middle would slide every
- * later index and invalidate every value reference in the module. So the
- * trick here is to never insert. Each caller that contains a device call is
- * rebuilt from scratch at the end of the arenas, with the callee bodies
- * spliced in as we go, and the function is then repointed at its fresh
- * blocks. The old blocks are left orphaned, dead but harmless.
+ * insts[] is append-only and referenced by absolute index, so nothing is
+ * inserted. A caller is rebuilt at the end of the arenas with its callees
+ * spliced in, and the old blocks are swept when the pass ends.
  *
- * The one map that keeps this honest is per-opcode operand classification,
- * which slot is a value, which is a block, which is the call's callee index.
- * It is taken from bir_insert.c, which took it from the printer. Keep the
- * three in agreement and a rewrite never corrupts a module.
+ * Operand classification comes from bir_insert.c, which took it from the
+ * printer. Keep the three in agreement.
  */
 
 #include "bir_inline.h"
+#include "backend.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +18,7 @@
 #define INL_MAX_CALLEE_INSTS    8192    /* a device helper is small */
 #define INL_MAX_CALLEE_BLOCKS   256     /* and does not sprawl into many blocks */
 #define INL_MAX_ARGS            64
+#define INL_MAX_CGRND           256     /* call graph is stripped by depth */
 
 /* spliced[] tags each newly emitted instruction so the remap passes know who
    owns it: 0 = caller-origin, remapped in the caller's deferred pass; 1 =
@@ -37,12 +31,15 @@
 typedef struct {
     bir_module_t *M;
     uint32_t val_map[BIR_MAX_INSTS];    /* old caller inst index -> new value */
-    uint32_t blk_map[BIR_MAX_BLOCKS];   /* old block index -> new block (caller and callee) */
+    uint32_t blk_map[BIR_MAX_BLOCKS];   /* old caller block index -> new block */
+    uint32_t cal_map[BIR_MAX_BLOCKS];   /* old callee block index -> clone, per splice */
+    uint32_t end_map[BIR_MAX_BLOCKS];   /* old caller block index -> the piece that branches out */
     uint8_t  spliced[BIR_MAX_INSTS];    /* INL_CALLER / INL_CLONE / INL_SYNTH */
     uint32_t local[INL_MAX_CALLEE_INSTS]; /* callee inst index -> new value, per splice */
     uint32_t ret_pred[INL_MAX_CALLEE_BLOCKS]; /* block each callee return sat in */
     uint32_t ret_val[INL_MAX_CALLEE_BLOCKS];  /* value each callee return yielded */
     uint8_t  warned[BIR_MAX_FUNCS];     /* callee already warned about */
+    uint8_t  cyc[BIR_MAX_FUNCS];        /* function sits on, or reaches, a call cycle */
 } inl_t;
 
 /* ---- Value / block mapping ---- */
@@ -56,14 +53,12 @@ static uint32_t map_val(const uint32_t *vmap, uint32_t base, uint32_t v)
     return vmap[BIR_VAL_INDEX(v) - base];
 }
 
-/* Remap the operands of one already-copied instruction. Value slots go
- * through vmap (based at vbase), block slots through bmap (based at bbase);
- * a null bmap leaves block indices alone, which is the single-block callee
- * case where the only block reference would be a terminator we don't copy.
- * The call's callee index is a function index, not a value, and stays put. */
+/* Remap one copied instruction. A splice cuts a block in two, so a branch
+ * wants the first half and a phi predecessor the second. */
 static void remap_ops(bir_module_t *M, uint32_t ni,
                       const uint32_t *vmap, uint32_t vbase,
-                      const uint32_t *bmap, uint32_t bbase)
+                      const uint32_t *bmap, const uint32_t *pmap,
+                      uint32_t bbase)
 {
     bir_inst_t *I = &M->insts[ni];
     int      ovf   = (I->num_operands == BIR_OPERANDS_OVERFLOW);
@@ -75,6 +70,7 @@ static void remap_ops(bir_module_t *M, uint32_t ni,
 
 #define MV(x) map_val(vmap, vbase, (x))
 #define MB(x) (bmap ? bmap[(x) - bbase] : (x))
+#define MP(x) (pmap ? pmap[(x) - bbase] : (x))
 
     switch (I->op) {
 
@@ -104,17 +100,19 @@ static void remap_ops(bir_module_t *M, uint32_t ni,
     case BIR_PHI:                      /* (block, value) pairs */
         if (ovf) {
             for (i = 0; i + 1 < count; i += 2) {
-                xo[start + i]     = MB(xo[start + i]);
+                xo[start + i]     = MP(xo[start + i]);
                 xo[start + i + 1] = MV(xo[start + i + 1]);
             }
         } else {
             for (k = 0; (uint32_t)k + 1 < I->num_operands; k += 2) {
-                I->operands[k]     = MB(I->operands[k]);
+                I->operands[k]     = MP(I->operands[k]);
                 I->operands[k + 1] = MV(I->operands[k + 1]);
             }
         }
         break;
 
+    case BIR_GLOBAL_REF:
+    case BIR_FNREF:
     case BIR_CALL:                     /* ops[0]=func index (leave), rest=args */
         if (ovf) {
             for (i = 1; i < count; i++)
@@ -140,6 +138,7 @@ static void remap_ops(bir_module_t *M, uint32_t ni,
 
 #undef MV
 #undef MB
+#undef MP
 }
 
 /* ---- Copying ---- */
@@ -152,8 +151,10 @@ static uint32_t copy_inst(bir_module_t *M, const bir_inst_t *I, uint32_t line)
 {
     uint32_t ni;
 
-    if (M->num_insts >= BIR_MAX_INSTS)
+    if (M->num_insts >= BIR_MAX_INSTS) {
+        bir_pfull(M, BIR_P_INSTS);
         return BIR_VAL_NONE;
+    }
 
     ni = M->num_insts;
     M->insts[ni]      = *I;
@@ -161,8 +162,10 @@ static uint32_t copy_inst(bir_module_t *M, const bir_inst_t *I, uint32_t line)
 
     if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
         uint32_t src = I->operands[0], count = I->operands[1], nstart, k;
-        if (M->num_extra_ops + count > BIR_MAX_EXTRA_OPS)
+        if (M->num_extra_ops + count > BIR_MAX_EXTRA_OPS) {
+            bir_pfull(M, BIR_P_EXTRAOPS);
             return BIR_VAL_NONE;
+        }
         nstart = M->num_extra_ops;
         for (k = 0; k < count; k++)
             M->extra_operands[nstart + k] = M->extra_operands[src + k];
@@ -190,11 +193,13 @@ static int read_call_args(const bir_module_t *M, const bir_inst_t *I,
     int n = 0;
     if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
         uint32_t start = I->operands[0], count = I->operands[1], k;
-        for (k = 1; k < count && n < max; k++)
+        if (count > (uint32_t)max + 1u) return -1;
+        for (k = 1; k < count; k++)
             out[n++] = M->extra_operands[start + k];
     } else {
         uint8_t k;
-        for (k = 1; k < I->num_operands && n < max; k++)
+        if ((int)I->num_operands > max + 1) return -1;
+        for (k = 1; k < I->num_operands; k++)
             out[n++] = I->operands[k];
     }
     return n;
@@ -211,12 +216,63 @@ static int is_device(const bir_module_t *M, uint32_t fi)
     return fi < M->num_funcs && (M->funcs[fi].cuda_flags & CUDA_DEVICE);
 }
 
+static void cgcyc(inl_t *X)
+{
+    bir_module_t *M = X->M;
+    uint32_t f, b, k, it;
+
+    for (f = 0; f < M->num_funcs; f++)
+        X->cyc[f] = 1;
+
+    for (it = 0; it < INL_MAX_CGRND; it++) {
+        int moved = 0;
+        for (f = 0; f < M->num_funcs; f++) {
+            const bir_func_t *F = &M->funcs[f];
+            int leaf = 1;
+
+            if (!X->cyc[f]) continue;
+            for (b = 0; b < F->num_blocks && leaf; b++) {
+                const bir_block_t *B = &M->blocks[F->first_block + b];
+                for (k = 0; k < B->num_insts; k++) {
+                    const bir_inst_t *I = &M->insts[B->first_inst + k];
+                    uint32_t g;
+                    if (I->op != BIR_CALL) continue;
+                    g = call_func_index(M, I);
+                    if (g < M->num_funcs && M->funcs[g].num_blocks != 0
+                     && X->cyc[g]) { leaf = 0; break; }
+                }
+            }
+            if (leaf) { X->cyc[f] = 0; moved = 1; }
+        }
+        if (!moved) break;
+    }
+}
+
+static int sb_ok(const bir_module_t *M, uint32_t fi)
+{
+    const bir_block_t *B = &M->blocks[M->funcs[fi].first_block];
+    uint32_t j, n = B->num_insts;
+
+    if (B->first_inst >= M->num_insts) return 0;
+    if (n > M->num_insts - B->first_inst) n = M->num_insts - B->first_inst;
+    for (j = 0; j < n; j++) {
+        uint16_t op = M->insts[B->first_inst + j].op;
+        if (op == BIR_BR || op == BIR_BR_COND
+         || op == BIR_SWITCH || op == BIR_PHI)
+            return 0;
+    }
+    return 1;
+}
+
 /* A device callee we can inline: any that fits our bounded working set.
    Single-block ones splice straight in; multi-block ones get the full
-   block-cloning splice. Anything larger falls through to a warning. */
-static int is_inlinable(const bir_module_t *M, uint32_t fi)
+   block-cloning splice. A cycle or a size overrun falls through to a call. */
+static int is_inlinable(const inl_t *X, uint32_t fi)
 {
-    return is_device(M, fi)
+    const bir_module_t *M = X->M;
+    return fi < M->num_funcs
+        && !X->cyc[fi]
+        && is_device(M, fi)
         && M->funcs[fi].num_blocks  >= 1
         && M->funcs[fi].num_blocks  <= INL_MAX_CALLEE_BLOCKS
         && M->funcs[fi].total_insts <= INL_MAX_CALLEE_INSTS;
@@ -228,7 +284,10 @@ static uint32_t open_block(inl_t *X, uint32_t name)
 {
     bir_module_t *M = X->M;
     uint32_t bn;
-    if (M->num_blocks >= BIR_MAX_BLOCKS) return BIR_VAL_NONE;
+    if (M->num_blocks >= BIR_MAX_BLOCKS) {
+        bir_pfull(M, BIR_P_BLOCKS);
+        return BIR_VAL_NONE;
+    }
     bn = M->num_blocks++;
     M->blocks[bn].name       = name;
     M->blocks[bn].first_inst = M->num_insts;
@@ -247,7 +306,10 @@ static uint32_t append_br(inl_t *X, uint32_t target)
     bir_module_t *M = X->M;
     bir_inst_t *I;
     uint32_t ni;
-    if (M->num_insts >= BIR_MAX_INSTS) return BIR_VAL_NONE;
+    if (M->num_insts >= BIR_MAX_INSTS) {
+        bir_pfull(M, BIR_P_INSTS);
+        return BIR_VAL_NONE;
+    }
     ni = M->num_insts++;
     I = &M->insts[ni];
     I->op           = BIR_BR;
@@ -269,7 +331,10 @@ static uint32_t emit_phi(inl_t *X, uint32_t type, const uint32_t *preds,
     bir_inst_t *I;
     uint32_t ni, nops = n * 2, i;
 
-    if (M->num_insts >= BIR_MAX_INSTS) return BIR_VAL_NONE;
+    if (M->num_insts >= BIR_MAX_INSTS) {
+        bir_pfull(M, BIR_P_INSTS);
+        return BIR_VAL_NONE;
+    }
     ni = M->num_insts++;
     I = &M->insts[ni];
     I->op    = BIR_PHI;
@@ -284,7 +349,10 @@ static uint32_t emit_phi(inl_t *X, uint32_t type, const uint32_t *preds,
         }
     } else {
         uint32_t start = M->num_extra_ops;
-        if (start + nops > BIR_MAX_EXTRA_OPS) return BIR_VAL_NONE;
+        if (start + nops > BIR_MAX_EXTRA_OPS) {
+            bir_pfull(M, BIR_P_EXTRAOPS);
+            return BIR_VAL_NONE;
+        }
         for (i = 0; i < n; i++) {
             M->extra_operands[start + 2 * i]     = preds[i];
             M->extra_operands[start + 2 * i + 1] = vals[i];
@@ -318,6 +386,10 @@ static int splice_sb(inl_t *X, uint32_t call_oi, uint32_t cfi)
     int nargs, a;
 
     nargs = read_call_args(M, &M->insts[call_oi], arg_raw, INL_MAX_ARGS);
+    if (nargs < 0) {
+        (void)be_fail(BC_E781, func_name(M, cfi), INL_MAX_ARGS);
+        return BC_ERR_OVERFLOW;
+    }
     for (a = 0; a < nargs; a++)
         arg_new[a] = map_val(X->val_map, 0, arg_raw[a]);
 
@@ -340,7 +412,7 @@ static int splice_sb(inl_t *X, uint32_t call_oi, uint32_t cfi)
 
         ni = copy_inst(M, CI, M->inst_lines[ci]);
         if (ni == BIR_VAL_NONE) return BC_ERR_OVERFLOW;
-        remap_ops(M, ni, local, cb_first, NULL, 0);
+        remap_ops(M, ni, local, cb_first, NULL, NULL, 0);
         local[j] = ni;
         X->spliced[ni] = INL_CLONE;
     }
@@ -368,19 +440,26 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
     int nargs, a;
 
     nargs = read_call_args(M, &M->insts[call_oi], arg_raw, INL_MAX_ARGS);
+    if (nargs < 0) {
+        (void)be_fail(BC_E781, func_name(M, cfi), INL_MAX_ARGS);
+        return BC_ERR_OVERFLOW;
+    }
     for (a = 0; a < nargs; a++)
         arg_new[a] = map_val(X->val_map, 0, arg_raw[a]);
 
     /* Reserve the callee blocks and one continuation, contiguously after the
        current block, so the whole function stays one contiguous slice. */
-    if (M->num_blocks + cnb + 1 > BIR_MAX_BLOCKS) return BC_ERR_OVERFLOW;
+    if (M->num_blocks + cnb + 1 > BIR_MAX_BLOCKS) {
+        bir_pfull(M, BIR_P_BLOCKS);
+        return BC_ERR_OVERFLOW;
+    }
     for (c = 0; c < cnb; c++)
-        X->blk_map[cb0 + c] = M->num_blocks + c;
+        X->cal_map[cb0 + c] = M->num_blocks + c;
     cont = M->num_blocks + cnb;
     M->num_blocks += cnb + 1;
 
     /* Cap the current block with the jump into the callee entry. */
-    if (append_br(X, X->blk_map[cb0]) == BIR_VAL_NONE) return BC_ERR_OVERFLOW;
+    if (append_br(X, X->cal_map[cb0]) == BIR_VAL_NONE) return BC_ERR_OVERFLOW;
     close_block(M, *cur);
 
     /* Clone every callee block. Params bind to arguments, returns turn into
@@ -388,17 +467,25 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
     cstart = M->num_insts;
     for (c = 0; c < cnb; c++) {
         bir_block_t *OCB = &M->blocks[cb0 + c];
-        uint32_t ncb = X->blk_map[cb0 + c], j;
+        uint32_t ncb = X->cal_map[cb0 + c], j;
         M->blocks[ncb].name       = OCB->name;
         M->blocks[ncb].first_inst = M->num_insts;
 
         for (j = 0; j < OCB->num_insts; j++) {
             uint32_t ci = OCB->first_inst + j;
             bir_inst_t *CI = &M->insts[ci];
+            uint32_t li;
+
+            if (ci < cbase || ci - cbase >= INL_MAX_CALLEE_INSTS) {
+                (void)be_fail(BC_E782, func_name(M, cfi),
+                              INL_MAX_CALLEE_INSTS);
+                return BC_ERR_OVERFLOW;
+            }
+            li = ci - cbase;
 
             if (CI->op == BIR_PARAM) {
-                local[ci - cbase] = (CI->subop < nargs)
-                                  ? arg_new[CI->subop] : BIR_VAL_NONE;
+                local[li] = (CI->subop < nargs)
+                          ? arg_new[CI->subop] : BIR_VAL_NONE;
                 continue;
             }
             if (CI->op == BIR_RET) {
@@ -414,7 +501,7 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
 
             ni = copy_inst(M, CI, M->inst_lines[ci]);
             if (ni == BIR_VAL_NONE) return BC_ERR_OVERFLOW;
-            local[ci - cbase] = ni;
+            local[li] = ni;
             X->spliced[ni] = INL_CLONE;
         }
         close_block(M, ncb);
@@ -422,16 +509,16 @@ static int splice_mb(inl_t *X, uint32_t call_oi, uint32_t cfi, uint32_t *cur)
     cend = M->num_insts;
 
     /* Now that local is complete, remap the callee clones. Values go through
-       local, block targets through blk_map; the synthetic branches skip. */
+       local, block targets through cal_map; the synthetic branches skip. */
     for (ni = cstart; ni < cend; ni++)
         if (X->spliced[ni] == INL_CLONE)
-            remap_ops(M, ni, local, cbase, X->blk_map, 0);
+            remap_ops(M, ni, local, cbase, X->cal_map, X->cal_map, 0);
 
     /* Open the continuation and settle the call's result. */
     M->blocks[cont].name       = M->blocks[cb0].name;
     M->blocks[cont].first_inst = M->num_insts;
 
-    if (nret == 0) {
+    if (nret == 0 || M->types[M->types[C->type].inner].kind == BIR_TYPE_VOID) {
         result = BIR_VAL_NONE;
     } else if (nret == 1) {
         result = map_val(local, cbase, X->ret_val[0]);
@@ -480,8 +567,9 @@ static int rebuild_func(inl_t *X, uint32_t fidx)
 
             if (I->op == BIR_CALL) {
                 uint32_t cfi = call_func_index(M, I);
-                if (is_inlinable(M, cfi)) {
-                    int rc = (M->funcs[cfi].num_blocks == 1)
+                if (is_inlinable(X, cfi)) {
+                    int rc = (M->funcs[cfi].num_blocks == 1
+                              && sb_ok(M, cfi))
                            ? splice_sb(X, oi, cfi)
                            : splice_mb(X, oi, cfi, &cur);
                     if (rc != BC_OK) return rc;
@@ -496,6 +584,7 @@ static int rebuild_func(inl_t *X, uint32_t fidx)
             X->spliced[ni]  = INL_CALLER;
         }
 
+        X->end_map[ob0 + i] = cur;
         close_block(M, cur);
     }
 
@@ -504,9 +593,14 @@ static int rebuild_func(inl_t *X, uint32_t fidx)
      * Remap them now; clones and synthetic instructions are already final. */
     for (ni = new_inst_start; ni < M->num_insts; ni++) {
         if (X->spliced[ni] != INL_CALLER) continue;
-        remap_ops(M, ni, X->val_map, 0, X->blk_map, 0);
+        remap_ops(M, ni, X->val_map, 0, X->blk_map, X->end_map, 0);
     }
 
+    if (M->num_blocks - nb_start > BIR_FUNC_MAX_BLOCKS) {
+        (void)be_fail(BC_E780, func_name(M, fidx),
+                      M->num_blocks - nb_start, BIR_FUNC_MAX_BLOCKS);
+        return BC_ERR_OVERFLOW;
+    }
     F->first_block = nb_start;
     F->num_blocks  = (uint16_t)(M->num_blocks - nb_start);
     tot = 0;
@@ -519,8 +613,79 @@ static int rebuild_func(inl_t *X, uint32_t fidx)
 
 /* ---- Driver ---- */
 
-static int func_has_inlinable_call(const bir_module_t *M, uint32_t fidx)
+static int blkcpy(inl_t *X, uint32_t ob, uint32_t ib0, uint32_t bb0)
 {
+    bir_module_t *M = X->M;
+    const bir_block_t *B = &M->blocks[ob];
+    uint32_t n = B->num_insts, nb, j;
+
+    if (B->first_inst >= ib0) n = 0;
+    else if (n > ib0 - B->first_inst) n = ib0 - B->first_inst;
+
+    if (M->num_blocks >= BIR_MAX_BLOCKS) {
+        bir_pfull(M, BIR_P_BLOCKS);
+        return BC_ERR_OVERFLOW;
+    }
+    if (n > BIR_MAX_INSTS - M->num_insts) {
+        bir_pfull(M, BIR_P_INSTS);
+        return BC_ERR_OVERFLOW;
+    }
+
+    nb = M->num_blocks++;
+    X->blk_map[ob]            = nb - bb0;
+    M->blocks[nb].name        = B->name;
+    M->blocks[nb].first_inst  = M->num_insts - ib0;
+    M->blocks[nb].num_insts   = n;
+    for (j = 0; j < n; j++) {
+        uint32_t src = B->first_inst + j, dst = M->num_insts;
+        X->val_map[src]    = dst - ib0;
+        M->insts[dst]      = M->insts[src];
+        M->inst_lines[dst] = M->inst_lines[src];
+        M->num_insts++;
+    }
+    return BC_OK;
+}
+
+static int cmpct(inl_t *X)
+{
+    bir_module_t *M = X->M;
+    uint32_t ib0 = M->num_insts, bb0 = M->num_blocks;
+    uint32_t f, b, nb, ni;
+
+    for (f = 0; f < M->num_funcs; f++) {
+        bir_func_t *F = &M->funcs[f];
+        uint32_t ob0 = F->first_block, cnt = 0, tot = 0;
+
+        for (b = 0; b < F->num_blocks && ob0 + b < bb0; b++) {
+            uint32_t was = M->num_insts;
+            int rc = blkcpy(X, ob0 + b, ib0, bb0);
+            if (rc != BC_OK) return rc;
+            cnt++;
+            tot += M->num_insts - was;
+        }
+        if (cnt != 0) F->first_block = X->blk_map[ob0];
+        F->num_blocks  = (uint16_t)cnt;
+        F->total_insts = tot;
+    }
+
+    nb = M->num_blocks - bb0;
+    ni = M->num_insts - ib0;
+    memmove(M->blocks, &M->blocks[bb0], (size_t)nb * sizeof M->blocks[0]);
+    memmove(M->insts, &M->insts[ib0], (size_t)ni * sizeof M->insts[0]);
+    memmove(M->inst_lines, &M->inst_lines[ib0],
+            (size_t)ni * sizeof M->inst_lines[0]);
+    M->num_blocks = nb;
+    M->num_insts  = ni;
+
+    for (f = 0; f < ni; f++)
+        remap_ops(M, f, X->val_map, 0, X->blk_map, X->blk_map, 0);
+
+    return BC_OK;
+}
+
+static int func_has_inlinable_call(const inl_t *X, uint32_t fidx)
+{
+    const bir_module_t *M = X->M;
     const bir_func_t *F = &M->funcs[fidx];
     uint32_t b;
     for (b = 0; b < F->num_blocks; b++) {
@@ -528,7 +693,7 @@ static int func_has_inlinable_call(const bir_module_t *M, uint32_t fidx)
         uint32_t k;
         for (k = 0; k < B->num_insts; k++) {
             const bir_inst_t *I = &M->insts[B->first_inst + k];
-            if (I->op == BIR_CALL && is_inlinable(M, call_func_index(M, I)))
+            if (I->op == BIR_CALL && is_inlinable(X, call_func_index(M, I)))
                 return 1;
         }
     }
@@ -536,9 +701,9 @@ static int func_has_inlinable_call(const bir_module_t *M, uint32_t fidx)
 }
 
 /* Warn once for each device callee still called after inlining. With the
-   splice handling both straight-line and control-flow bodies, the only thing
-   left here is a callee too large for the bounded working set. It falls
-   through as a plain call the GPU backends can't emit, so say so plainly. */
+   splice handling both straight-line and control-flow bodies, what is left
+   is a callee too large for the working set, or one on a call cycle. Both
+   fall through as a plain call, which PTX emits and the others refuse. */
 static void warn_uninlined(inl_t *X)
 {
     bir_module_t *M = X->M;
@@ -555,9 +720,11 @@ static void warn_uninlined(inl_t *X)
                 if (is_device(M, cfi) && !X->warned[cfi]) {
                     X->warned[cfi] = 1;
                     fprintf(stderr, "kath: warning: __device__ function "
-                        "'%s' has control flow and is not inlined yet; calls "
-                        "to it will not run correctly on this backend. Inline "
-                        "it by hand for now. (issue #101)\n", func_name(M, cfi));
+                        "'%s' %s and stays a call; PTX emits one, the other "
+                        "GPU backends refuse. (issue #101)\n",
+                        func_name(M, cfi),
+                        X->cyc[cfi] ? "reaches a call cycle"
+                                    : "outgrew the inliner's working set");
                 }
             }
         }
@@ -572,6 +739,8 @@ static int inline_run(inl_t *X)
     bir_module_t *M = X->M;
     int round;
 
+    cgcyc(X);
+
     /* Each round inlines every inlinable device call it finds, straight-line
      * and control-flow bodies alike. A callee that itself rings up another
      * device function leaves that inner call behind as a copy, so the loop
@@ -583,7 +752,7 @@ static int inline_run(inl_t *X)
         int changed = 0;
         uint32_t nf = M->num_funcs, f;
         for (f = 0; f < nf; f++) {
-            if (func_has_inlinable_call(M, f)) {
+            if (func_has_inlinable_call(X, f)) {
                 int rc = rebuild_func(X, f);
                 if (rc != BC_OK) return rc;
                 changed = 1;
@@ -595,7 +764,7 @@ static int inline_run(inl_t *X)
     {
         uint32_t f;
         for (f = 0; f < M->num_funcs; f++) {
-            if (func_has_inlinable_call(M, f)) {
+            if (func_has_inlinable_call(X, f)) {
                 fprintf(stderr, "kath: device call inlining did not "
                         "converge after %d rounds (recursive __device__ "
                         "function '%s'?)\n", INL_MAX_ROUNDS, func_name(M, f));
@@ -622,7 +791,9 @@ int bir_inline_device(bir_module_t *M)
     memset(X->warned, 0, sizeof(X->warned));
 
     rc = inline_run(X);
+    if (rc == BC_OK) rc = cmpct(X);
 
     free(X);
+    if (rc == BC_OK) rc = bir_vchk(M);
     return rc;
 }

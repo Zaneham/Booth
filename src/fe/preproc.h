@@ -13,7 +13,8 @@
 
 
 #define PP_MAX_MACROS       2048
-#define PP_MAX_PARAMS       16
+#define PP_MAX_PARAMS       32
+#define PP_MAX_ARGS         128
 #define PP_MAX_INCLUDE_PATHS 32
 #define PP_MAX_COND_DEPTH   64
 #define PP_MAX_FILE_DEPTH   16

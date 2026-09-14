@@ -1,5 +1,6 @@
 #include "metal.h"
 #include "barracuda.h"
+#include "bc_err.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -105,6 +106,46 @@ static const char *mt_addr(uint8_t as)
     }
 }
 
+static int mtqui;
+
+static int mtno(int eid, ...)
+{
+    va_list ap;
+    if (mtqui) return 0;
+    fprintf(stderr, "kath: E%03d: ", eid);
+    va_start(ap, eid);
+    vfprintf(stderr, bc_efmt((bc_eid_t)eid), ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    return 0;
+}
+
+static void mtset(metal_module_t *mm, uint32_t ti)
+{
+    if (ti < BIR_MAX_TYPES) mm->tdcl[ti >> 3] |= (uint8_t)(1u << (ti & 7u));
+}
+
+static void mtclr(metal_module_t *mm, uint32_t ti)
+{
+    if (ti < BIR_MAX_TYPES) mm->tdcl[ti >> 3] &= (uint8_t)~(1u << (ti & 7u));
+}
+
+static int mtget(const metal_module_t *mm, uint32_t ti)
+{
+    if (ti >= BIR_MAX_TYPES) return 0;
+    return (mm->tdcl[ti >> 3] >> (ti & 7u)) & 1u;
+}
+
+static uint32_t mtbase(const bir_module_t *M, uint32_t ti)
+{
+    uint32_t k;
+    for (k = 0; k < 16; k++) {
+        if (ti >= M->num_types || M->types[ti].kind != BIR_TYPE_ARRAY) break;
+        ti = M->types[ti].inner;
+    }
+    return ti;
+}
+
 /* ---- Type Emission ----
  * Translate a BIR type into the closest MSL type name. The MSL primitive
  * set is small enough that this is mostly a switch statement, plus the
@@ -113,9 +154,88 @@ static const char *mt_addr(uint8_t as)
 
 static int mt_etype(metal_module_t *mm, uint32_t ti);
 
+static int mtdims(metal_module_t *mm, uint32_t ti)
+{
+    const bir_module_t *M = mm->bir;
+    uint32_t k;
+    for (k = 0; k < 16; k++) {
+        if (ti >= M->num_types || M->types[ti].kind != BIR_TYPE_ARRAY) break;
+        if (!mt_wfmt(mm, "[%u]", (unsigned)M->types[ti].count)) return 0;
+        ti = M->types[ti].inner;
+    }
+    return 1;
+}
+
+static int mtdecl(metal_module_t *mm, uint32_t ti, const char *pfx, uint32_t id)
+{
+    const bir_module_t *M = mm->bir;
+    if (!mt_etype(mm, mtbase(M, ti))) return 0;
+    if (!mt_wfmt(mm, " %s%u", pfx, (unsigned)id)) return 0;
+    return mtdims(mm, ti);
+}
+
+static int mttyps(metal_module_t *mm)
+{
+    const bir_module_t *M = mm->bir;
+    uint32_t ti, f, mark;
+    int any = 0;
+
+    mtqui = 1;
+    for (ti = 0; ti < M->num_types && ti < BIR_MAX_TYPES; ti++) {
+        if (M->types[ti].kind != BIR_TYPE_STRUCT) continue;
+        if (!mt_wfmt(mm, "%s s%u;\n",
+                     M->types[ti].uni ? "union" : "struct",
+                     (unsigned)ti)) { mtqui = 0; return 0; }
+        any = 1;
+    }
+
+    for (ti = 0; ti < M->num_types && ti < BIR_MAX_TYPES; ti++) {
+        const bir_type_t *T = &M->types[ti];
+        mark = mm->out_len;
+
+        if (T->kind == BIR_TYPE_ARRAY) {
+            if (T->count == 0) continue;
+            if (!mt_wstr(mm, "typedef ")) { mtqui = 0; return 0; }
+            if (mtdecl(mm, ti, "a", ti) && mt_wstr(mm, ";\n")) {
+                mtset(mm, ti);
+                any = 1;
+            } else {
+                mm->out_len = mark;
+            }
+            continue;
+        }
+        if (T->kind != BIR_TYPE_STRUCT) continue;
+
+        mtset(mm, ti);
+        if (!mt_wfmt(mm, "%s s%u {\n", T->uni ? "union" : "struct",
+                     (unsigned)ti)) { mtqui = 0; return 0; }
+        for (f = 0; f < T->num_fields; f++) {
+            uint32_t ft;
+            if (T->count + f >= M->num_type_fields) break;
+            ft = M->type_fields[T->count + f];
+            if (!mt_wstr(mm, "    ")) { mtqui = 0; return 0; }
+            if (!mtdecl(mm, ft, "f", f)) break;
+            if (!mt_wstr(mm, ";\n")) { mtqui = 0; return 0; }
+        }
+        if (f == T->num_fields && mt_wstr(mm, "};\n")) {
+            any = 1;
+        } else {
+            mtclr(mm, ti);
+            mm->out_len = mark;
+        }
+    }
+    mtqui = 0;
+
+    if (any && !mt_wstr(mm, "\n")) return 0;
+    return 1;
+}
+
 static int mt_etype(metal_module_t *mm, uint32_t ti)
 {
-    const bir_type_t *T = &mm->bir->types[ti];
+    const bir_type_t *T;
+    if (ti >= mm->bir->num_types)
+        return mtno(BC_E501, "a type Booth did not record");
+    T = &mm->bir->types[ti];
     switch (T->kind) {
     case BIR_TYPE_VOID:
         return mt_wstr(mm, "void");
@@ -164,14 +284,17 @@ static int mt_etype(metal_module_t *mm, uint32_t ti)
         return mt_wfmt(mm, "%s%u", base, (unsigned)T->width);
     }
     case BIR_TYPE_STRUCT:
+        if (!mtget(mm, ti)) return mtno(BC_E501, "this struct");
+        return mt_wfmt(mm, "s%u", (unsigned)ti);
     case BIR_TYPE_ARRAY:
+        if (T->count == 0) return mtno(BC_E501, "an array with no size");
+        if (!mtget(mm, ti)) return mtno(BC_E501, "this array");
+        return mt_wfmt(mm, "a%u", (unsigned)ti);
     case BIR_TYPE_FUNC:
+        return mtno(BC_E501, "a function type");
     case BIR_TYPE_KIND_COUNT:
     default:
-        /* Aggregate types and anything we have not yet taught MSL about
-         * fall back to a placeholder so the output stays parseable while
-         * the proper translation waits its turn in a later sitting. */
-        return mt_wstr(mm, "/* TODO: aggregate type */ int");
+        return mtno(BC_E501, "a type Booth left unnamed");
     }
 }
 
@@ -239,6 +362,13 @@ static int mt_ksig(metal_module_t *mm, const mtl_kern_t *K)
      * attribute, which means we are at liberty to add as many of them
      * as the kernel will actually reference. */
     if (K->is_kern) {
+        if (K->builtins & MTL_BI_DSH) {
+            if (!first && !mt_wstr(mm, ",\n    ")) return 0;
+            if (first && !mt_wstr(mm, "\n    ")) return 0;
+            first = 0;
+            if (!mt_wstr(mm, "threadgroup uchar * dsh [[threadgroup(0)]]"))
+                return 0;
+        }
         if (K->builtins & MTL_BI_TID) {
             if (!first && !mt_wstr(mm, ",\n    ")) return 0;
             first = 0;
@@ -316,7 +446,8 @@ static int mt_val(metal_module_t *mm, uint32_t v)
 
     if (BIR_VAL_IS_CONST(v)) {
         uint32_t ci = BIR_VAL_INDEX(v);
-        if (ci >= M->num_consts) return mt_wstr(mm, "0");
+        if (ci >= M->num_consts)
+            return mtno(BC_E502, "a constant Booth did not record");
         const bir_const_t *C = &M->consts[ci];
         switch (C->kind) {
         case BIR_CONST_INT:
@@ -333,7 +464,9 @@ static int mt_val(metal_module_t *mm, uint32_t v)
         case BIR_CONST_ZERO:  return mt_wstr(mm, "0");
         case BIR_CONST_UNDEF: return mt_wstr(mm, "0");
         case BIR_CONST_BYTES:
-        default:              return mt_wstr(mm, "0 /* TODO: const */");
+            return mtno(BC_E502, "a string or byte literal");
+        default:
+            return mtno(BC_E502, "a constant of a kind it has no word for");
         }
     }
 
@@ -347,6 +480,20 @@ static int mt_val(metal_module_t *mm, uint32_t v)
 /* Lay down the current indent, four spaces a rung. Structured output earns
  * its keep by looking structured, and nothing says "a machine gave up here"
  * quite like a wall of statements all jammed against the left margin. */
+
+static int mtarr(const bir_module_t *M, uint32_t v)
+{
+    uint32_t idx, pt, po;
+
+    if (v == BIR_VAL_NONE || BIR_VAL_IS_CONST(v)) return 0;
+    idx = BIR_VAL_INDEX(v);
+    if (idx >= M->num_insts) return 0;
+    pt = M->insts[idx].type;
+    if (pt >= M->num_types || M->types[pt].kind != BIR_TYPE_PTR) return 0;
+    po = M->types[pt].inner;
+    if (po >= M->num_types || M->types[po].kind != BIR_TYPE_ARRAY) return 0;
+    return M->types[po].count != 0;
+}
 
 static int mt_ind(metal_module_t *mm)
 {
@@ -364,6 +511,25 @@ static int mt_lhs(metal_module_t *mm, uint32_t gi)
 {
     if (!mt_ind(mm)) return 0;
     return mt_wfmt(mm, "v%u = ", (unsigned)gi);
+}
+
+static int mtufn(metal_module_t *mm, uint32_t gi, const char *fn, uint32_t a)
+{
+    if (!mt_lhs(mm, gi)) return 0;
+    if (!mt_wfmt(mm, "%s(", fn)) return 0;
+    if (!mt_val(mm, a)) return 0;
+    return mt_wstr(mm, ");\n");
+}
+
+static int mtbfn(metal_module_t *mm, uint32_t gi, const char *fn,
+                 uint32_t a, uint32_t b)
+{
+    if (!mt_lhs(mm, gi)) return 0;
+    if (!mt_wfmt(mm, "%s(", fn)) return 0;
+    if (!mt_val(mm, a)) return 0;
+    if (!mt_wstr(mm, ", ")) return 0;
+    if (!mt_val(mm, b)) return 0;
+    return mt_wstr(mm, ");\n");
 }
 
 /* ---- One Statement ----
@@ -412,6 +578,13 @@ static int mt_stmt(metal_module_t *mm, uint32_t gi)
         if (!mt_wfmt(mm, " %s ", mt_cmpop(I->subop))) return 0;
         if (!mt_val(mm, I->operands[1])) return 0;
         return mt_wstr(mm, ";\n");
+
+    case BIR_POPCOUNT: return mtufn(mm, gi, "popcount", I->operands[0]);
+    case BIR_CTZ:      return mtufn(mm, gi, "ctz", I->operands[0]);
+    case BIR_CLZ:      return mtufn(mm, gi, "clz", I->operands[0]);
+    case BIR_BREV:     return mtufn(mm, gi, "reverse_bits", I->operands[0]);
+    case BIR_UMULHI:   return mtbfn(mm, gi, "mulhi",
+                                    I->operands[0], I->operands[1]);
 
     /* unary math intrinsics */
     case BIR_SQRT:   mfn = "sqrt";  goto unfn;
@@ -470,15 +643,31 @@ static int mt_stmt(metal_module_t *mm, uint32_t gi)
         return mt_wstr(mm, ");\n");
 
     /* memory */
-    case BIR_GEP:
+    case BIR_GEP: {
+        uint32_t fo = 0;
         if (!mt_lhs(mm, gi)) return 0;
-        if (!mt_val(mm, I->operands[0])) return 0;
+        if (bir_fgep(M, I, 8, &fo)) {
+            if (!mt_wput(mm, '(')) return 0;
+            if (!mt_etype(mm, I->type)) return 0;
+            if (!mt_wfmt(mm, ")((%s char *)",
+                         mt_addr(M->types[I->type].addrspace))) return 0;
+            if (!mt_val(mm, I->operands[0])) return 0;
+            return mt_wfmt(mm, " + %u);\n", (unsigned)fo);
+        }
+        if (mtarr(M, I->operands[0])) {
+            if (!mt_wstr(mm, "*(")) return 0;
+            if (!mt_val(mm, I->operands[0])) return 0;
+            if (!mt_wstr(mm, ")")) return 0;
+        } else if (!mt_val(mm, I->operands[0])) {
+            return 0;
+        }
         if (I->num_operands >= 2) {
             if (!mt_wstr(mm, " + (")) return 0;
             if (!mt_val(mm, I->operands[1])) return 0;
             if (!mt_wstr(mm, ")")) return 0;
         }
         return mt_wstr(mm, ";\n");
+    }
     case BIR_LOAD:
         if (!mt_lhs(mm, gi)) return 0;
         if (!mt_wstr(mm, "*(")) return 0;
@@ -507,6 +696,26 @@ static int mt_stmt(metal_module_t *mm, uint32_t gi)
         if (!mt_lhs(mm, gi)) return 0;
         return mt_wfmt(mm, "gdim.%c;\n", mt_dim(I->subop));
 
+    case BIR_TRAP:
+        fprintf(stderr, "kath: __trap has no Metal Shading Language "
+                        "equivalent\n");
+        return 0;
+
+    case BIR_INLINE_ASM:
+        fprintf(stderr, "kath: inline asm is bound for PTX only and has no "
+                        "Metal Shading Language equivalent\n");
+        return 0;
+
+    case BIR_FNREF:
+        fprintf(stderr, "kath: the address of a device function is not "
+                        "supported on the Metal backend\n");
+        return 0;
+
+    case BIR_PRINTF:
+        fprintf(stderr, "kath: device printf has no Metal Shading Language "
+                        "equivalent\n");
+        return 0;
+
     case BIR_MMA: case BIR_MFRG:
         fprintf(stderr, "kath: warp-collective mma not supported on the "
                         "Metal backend\n");
@@ -527,15 +736,52 @@ static int mt_stmt(metal_module_t *mm, uint32_t gi)
         return mt_wstr(mm,
             "threadgroup_barrier(mem_flags::mem_threadgroup);\n");
 
-    /* not yet lowered: keep the output compilable by zero-init'ing any
-     * result and leaving a marker for the next sitting. */
-    default:
-        if (M->types[I->type].kind != BIR_TYPE_VOID) {
-            if (!mt_lhs(mm, gi)) return 0;
-            return mt_wfmt(mm, "{}; /* TODO: %s */\n", bir_op_name(I->op));
+    case BIR_SHARED_ALLOC:
+    case BIR_ALLOCA: {
+        uint32_t po;
+        if (I->type >= M->num_types
+            || M->types[I->type].kind != BIR_TYPE_PTR)
+            return mtno(BC_E500, bir_op_name(I->op));
+        po = M->types[I->type].inner;
+        if (po >= M->num_types) return mtno(BC_E500, bir_op_name(I->op));
+        if (!mt_lhs(mm, gi)) return 0;
+        if (I->op == BIR_SHARED_ALLOC
+            && M->types[po].kind == BIR_TYPE_ARRAY
+            && M->types[po].count == 0) {
+            if (!mt_wstr(mm, "(threadgroup ")) return 0;
+            if (!mt_etype(mm, M->types[po].inner)) return 0;
+            if (!mt_wstr(mm, " *)dsh")) return 0;
+        } else if (!mt_wfmt(mm, "&g%u", (unsigned)gi)) {
+            return 0;
         }
-        if (!mt_ind(mm)) return 0;
-        return mt_wfmt(mm, "/* TODO: %s */\n", bir_op_name(I->op));
+        return mt_wstr(mm, ";\n");
+    }
+
+    case BIR_CALL: {
+        uint32_t n = (I->num_operands == BIR_OPERANDS_OVERFLOW)
+                   ? I->operands[1] : I->num_operands;
+        uint32_t ce = bir_oper(M, I, 0), a;
+        if (n < 1 || ce >= M->num_funcs)
+            return mtno(BC_E500, "a call whose callee went missing");
+        if (!(M->funcs[ce].cuda_flags & (CUDA_GLOBAL | CUDA_DEVICE)))
+            return mtno(BC_E500, "a call to a function that is not device code");
+        if (I->type < M->num_types
+            && M->types[I->type].kind == BIR_TYPE_VOID) {
+            if (!mt_ind(mm)) return 0;
+        } else {
+            if (!mt_lhs(mm, gi)) return 0;
+        }
+        if (!mt_wfmt(mm, "%s(", mt_name(M, M->funcs[ce].name, "unnamed")))
+            return 0;
+        for (a = 1; a < n; a++) {
+            if (a > 1 && !mt_wstr(mm, ", ")) return 0;
+            if (!mt_val(mm, bir_oper(M, I, a))) return 0;
+        }
+        return mt_wstr(mm, ");\n");
+    }
+
+    default:
+        return mtno(BC_E500, bir_op_name(I->op));
     }
 }
 
@@ -659,6 +905,41 @@ static int mt_walk(metal_module_t *mm, uint32_t node_id)
  * rather than smuggled out wrong: the roadmap's switch dispatcher is the
  * answer, the day a real one turns up to demand it. */
 
+static int mtstor(metal_module_t *mm, const mtl_kern_t *K, uint32_t gi,
+                  const bir_inst_t *I)
+{
+    const bir_module_t *M = mm->bir;
+    int shr = (I->op == BIR_SHARED_ALLOC);
+    const char *as = shr ? "threadgroup" : "thread";
+    unsigned al = (I->subop > 0 && I->subop < 16) ? (1u << I->subop) : 0u;
+    uint32_t po;
+
+    if (I->type >= M->num_types || M->types[I->type].kind != BIR_TYPE_PTR)
+        return mtno(BC_E500, bir_op_name(I->op));
+    po = M->types[I->type].inner;
+    if (po >= M->num_types) return mtno(BC_E500, bir_op_name(I->op));
+
+    if (shr && !K->is_kern)
+        return mtno(BC_E503, mt_name(M, K->name, "unnamed"));
+
+    if (shr && M->types[po].kind == BIR_TYPE_ARRAY
+            && M->types[po].count == 0) {
+        if (!mt_wstr(mm, "    threadgroup ")) return 0;
+        if (!mt_etype(mm, M->types[po].inner)) return 0;
+        return mt_wfmt(mm, " * v%u;\n", (unsigned)gi);
+    }
+
+    if (!mt_wstr(mm, "    ")) return 0;
+    if (al > 1 && !mt_wfmt(mm, "alignas(%u) ", al)) return 0;
+    if (!mt_wfmt(mm, "%s ", as)) return 0;
+    if (!mtdecl(mm, po, "g", gi)) return 0;
+    if (!mt_wstr(mm, ";\n")) return 0;
+
+    if (!mt_wstr(mm, "    ")) return 0;
+    if (!mtdecl(mm, I->type, "v", gi)) return 0;
+    return mt_wstr(mm, ";\n");
+}
+
 static int mt_kbody(metal_module_t *mm, const mtl_kern_t *K)
 {
     const bir_module_t *M = mm->bir;
@@ -676,10 +957,14 @@ static int mt_kbody(metal_module_t *mm, const mtl_kern_t *K)
             if (gi >= M->num_insts) break;
             const bir_inst_t *I = &M->insts[gi];
             if (I->op == BIR_PARAM) continue;
+            if (I->op == BIR_SHARED_ALLOC || I->op == BIR_ALLOCA) {
+                if (!mtstor(mm, K, gi, I)) return 0;
+                continue;
+            }
             if (M->types[I->type].kind == BIR_TYPE_VOID) continue;
             if (!mt_wstr(mm, "    ")) return 0;
-            if (!mt_etype(mm, I->type)) return 0;
-            if (!mt_wfmt(mm, " v%u;\n", (unsigned)gi)) return 0;
+            if (!mtdecl(mm, I->type, "v", gi)) return 0;
+            if (!mt_wstr(mm, ";\n")) return 0;
         }
     }
 
@@ -725,6 +1010,17 @@ static void mt_scan(metal_module_t *mm, mtl_kern_t *K)
             case BIR_BLOCK_ID:   K->builtins |= MTL_BI_BID;  break;
             case BIR_BLOCK_DIM:  K->builtins |= MTL_BI_BDIM; break;
             case BIR_GRID_DIM:   K->builtins |= MTL_BI_GDIM; break;
+            case BIR_SHARED_ALLOC: {
+                uint32_t po;
+                if (I->type >= M->num_types) break;
+                if (M->types[I->type].kind != BIR_TYPE_PTR) break;
+                po = M->types[I->type].inner;
+                if (po >= M->num_types) break;
+                if (M->types[po].kind == BIR_TYPE_ARRAY
+                    && M->types[po].count == 0)
+                    K->builtins |= MTL_BI_DSH;
+                break;
+            }
             default: break;
             }
         }
@@ -818,6 +1114,20 @@ int metal_emit_msl(metal_module_t *mm, const char *path)
         " */\n\n"
         "#include <metal_stdlib>\n"
         "using namespace metal;\n\n")) return BC_ERR_METAL;
+
+    if (!mttyps(mm)) return BC_ERR_METAL;
+
+    {
+        int proto = 0;
+        for (uint32_t ki = 0; ki < mm->num_kerns; ki++) {
+            const mtl_kern_t *K = &mm->kerns[ki];
+            if (K->is_kern) continue;
+            if (!mt_ksig(mm, K)) return BC_ERR_METAL;
+            if (!mt_wstr(mm, ";\n")) return BC_ERR_METAL;
+            proto = 1;
+        }
+        if (proto && !mt_wstr(mm, "\n")) return BC_ERR_METAL;
+    }
 
     for (uint32_t ki = 0; ki < mm->num_kerns; ki++) {
         const mtl_kern_t *K = &mm->kerns[ki];

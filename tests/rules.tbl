@@ -1,0 +1,9 @@
+# tests/rules.sh fails when one of these rises. Lower one, commit it.
+#
+# name   count  label
+goto     63     goto, setjmp or longjmp
+alloc    99     allocation calls
+fnptr    25     function pointers
+long     148    functions over 60 lines
+comment  6510   comment lines
+snprintf 83     snprintf calls whose return is discarded

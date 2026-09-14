@@ -82,6 +82,11 @@ typedef struct {
                          void **, void **);
     CUresult (*cuGetErr)(CUresult, const char **);
 
+    CUresult (*cuLaunchCo)(CUfunc,
+                           unsigned, unsigned, unsigned,
+                           unsigned, unsigned, unsigned,
+                           unsigned, CUstream, void **);
+
     /* Mapped host memory — for ABEND breadcrumbs that survive crashes.
      * Optional: loaded but non-fatal if missing (old drivers). */
     CUresult (*cuMemHostAlloc)(void **, size_t, unsigned);
@@ -114,6 +119,11 @@ int  nv_rt_launch(nv_dev_t *dev, nv_kern_t *kern,
                   uint32_t gx, uint32_t gy, uint32_t gz,
                   uint32_t bx, uint32_t by, uint32_t bz,
                   uint32_t shmem, void **args);
+
+int  nv_rt_colaunch(nv_dev_t *dev, nv_kern_t *kern,
+                    uint32_t gx, uint32_t gy, uint32_t gz,
+                    uint32_t bx, uint32_t by, uint32_t bz,
+                    uint32_t shmem, void **args);
 
 /* Synchronize (wait for all pending work) */
 int  nv_rt_sync(nv_dev_t *dev);

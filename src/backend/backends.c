@@ -4,8 +4,21 @@
 
 #include "backend.h"
 #include "backend_cfg.h"
+#include "barracuda.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+int be_fail(int eid, ...)
+{
+    va_list ap;
+    fprintf(stderr, "error[E%03u]: ", (unsigned)eid);
+    va_start(ap, eid);
+    vfprintf(stderr, bc_efmt((bc_eid_t)eid), ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    return BE_UNSUP;
+}
 
 /* Bounded so a stray zero terminator can't wander off the list. */
 #define BE_MAX  64
@@ -38,10 +51,14 @@ const be_desc_t * const be_list[] = {
     NULL
 };
 
-/* One slot per registered backend, indexed the same as be_list. Static
- * because a compiler run has exactly one of each and JPL style keeps
- * malloc out of the driver. */
+/* One slot per registered backend, indexed the same as be_list. Static,
+ * so there is no malloc in the driver. */
 static be_opts_t be_opts_store[BE_MAX];
+
+void be_reset(void)
+{
+    memset(be_opts_store, 0, sizeof be_opts_store);
+}
 
 int be_parse_flag(const char *arg, const char *next, int *used_next)
 {
@@ -58,8 +75,8 @@ int be_parse_flag(const char *arg, const char *next, int *used_next)
             /* A descriptor wanting more room than the slot holds would
              * scribble over its neighbour, so refuse rather than trust it. */
             if (b->opts_size > BE_OPTS_MAX) {
-                fprintf(stderr, "backend %s: opts_size %u exceeds %u\n",
-                        b->name, b->opts_size, (uint32_t)BE_OPTS_MAX);
+                (void)be_fail(BC_E545, b->name, "the option block",
+                              (unsigned)BE_OPTS_MAX);
                 return -1;
             }
 

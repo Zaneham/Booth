@@ -24,6 +24,7 @@
 #define MTL_BI_BID      0x02    /* blockIdx,   threadgroup_position_in_grid */
 #define MTL_BI_BDIM     0x04    /* blockDim,   threads_per_threadgroup */
 #define MTL_BI_GDIM     0x08    /* gridDim,    threadgroups_per_grid */
+#define MTL_BI_DSH      0x10    /* extern __shared__, [[threadgroup(0)]] block */
 
 /* ---- Parameter descriptor ----
  * One per kernel argument, in declaration order. For pointer parameters the
@@ -73,6 +74,8 @@ typedef struct metal_module_t {
      * meaningful only mid-emit. */
     bst_tree_t  tree;
     uint32_t    indent;
+
+    uint8_t     tdcl[BIR_MAX_TYPES / 8];
 } metal_module_t;
 
 /* ---- Public API ---- */

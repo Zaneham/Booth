@@ -60,6 +60,7 @@ typedef enum {
  * before isel. The vector targets want this; CPU, RV64 and Metal emit
  * calls and are left alone. */
 #define BE_F_NOCALL     (1u << 14)
+#define BE_F_BYTES      (1u << 15)  /* materialises byte-initialised globals */
 
 /* ---- Options storage ----
  * Each backend gets one fixed slot for whatever its flags set. Sized at
@@ -121,6 +122,10 @@ typedef struct be_desc {
 extern const be_desc_t * const be_list[];   /* NULL-terminated */
 
 const be_desc_t *be_find(const char *name);
+
+void be_reset(void);
+
+int be_fail(int eid, ...);
 
 /* Offer one argv entry to the registry. Returns 1 if a backend took it,
  * 0 if no backend owns it, negative on a bad value. On 1, *used_next says

@@ -152,6 +152,8 @@ typedef enum {
     TOK_CU_RESTRICT,        /* __restrict__ */
     TOK_CU_FORCEINLINE,     /* __forceinline__ */
     TOK_CU_NOINLINE,        /* __noinline__ */
+    TOK_CU_ALIGN,           /* __align__ */
+    TOK_ASM,                /* asm, __asm, __asm__ */
 
     TOK_NORETURN,           /* _Noreturn */
 

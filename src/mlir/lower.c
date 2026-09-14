@@ -417,6 +417,31 @@ lw_op(MLIR_OpHandle op)
 
 /* ---- Functions ---- */
 
+static uint32_t
+lw_rety(const bir_module_t *M, const bir_func_t *F, uint32_t dflt)
+{
+    uint32_t b, j;
+
+    for (b = 0; b < F->num_blocks && F->first_block + b < M->num_blocks; b++) {
+        const bir_block_t *B = &M->blocks[F->first_block + b];
+
+        for (j = 0; j < B->num_insts && B->first_inst + j < M->num_insts; j++) {
+            const bir_inst_t *I = &M->insts[B->first_inst + j];
+            uint32_t v;
+
+            if (I->op != BIR_RET || I->num_operands < 1) continue;
+            v = I->operands[0];
+            if (v == BIR_VAL_NONE) continue;
+            if (BIR_VAL_IS_CONST(v))
+                return BIR_VAL_INDEX(v) < M->num_consts
+                     ? M->consts[BIR_VAL_INDEX(v)].type : dflt;
+            return BIR_VAL_INDEX(v) < M->num_insts
+                 ? M->insts[BIR_VAL_INDEX(v)].type : dflt;
+        }
+    }
+    return dflt;
+}
+
 static void
 lw_func(MLIR_OpHandle op)
 {
@@ -510,6 +535,7 @@ lw_func(MLIR_OpHandle op)
             M->insts[B->first_inst + B->num_insts - 1].op != BIR_RET)
             (void)lw_emit(BIR_RET, bir_type_void(M), 0);
     }
+    F->type = bir_type_func(M, lw_rety(M, F, ret), ptypes, (int)np);
 
     for (j = 0; j < F->num_blocks; j++)
         F->total_insts += M->blocks[F->first_block + j].num_insts;

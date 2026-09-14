@@ -119,7 +119,7 @@ static int cmp_ra(const char *cu, const char *extra)
 
 RA_TEST(ral01, 1, "colouring beats scan: vector add", "tests/vector_add.cu", "")
 RA_TEST(ral02, 2, "colouring beats scan: canonical",  "tests/canonical.cu",  "")
-RA_TEST(ral03, 3, "colouring beats scan: notgpt",     "tests/notgpt.cu",     "")
+RA_TEST(ral03, 3, "colouring beats scan: maths",      "tests/mymathhomework.cu", "")
 RA_TEST(ral04, 4, "colouring beats scan: stress",     "tests/stress.cu",     "")
 
 /* ---- Spill path: force low VGPR cap to exercise spill code ---- */

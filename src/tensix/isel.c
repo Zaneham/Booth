@@ -114,7 +114,11 @@ static uint32_t emit(uint16_t op, uint8_t fmt,
                      uint8_t num_defs, uint8_t num_uses,
                      const tt_operand_t *ops, uint16_t flags)
 {
-    if (S.tt->num_minsts >= TT_MAX_MINSTS) return 0;
+    if (S.tt->num_minsts >= TT_MAX_MINSTS) {
+        if (!S.had_error) tterr(BC_E537, (unsigned)TT_MAX_MINSTS);
+        S.had_error = 1;
+        return 0;
+    }
     uint32_t idx = S.tt->num_minsts++;
     tt_minst_t *I = &S.tt->minsts[idx];
     I->op = op;
@@ -194,20 +198,18 @@ static tt_operand_t materialise_const(uint32_t const_idx)
     uint32_t vr = new_vreg();
     tt_operand_t dst = mop_vreg(vr);
 
+    uint32_t val;
     if (C->kind == BIR_CONST_FLOAT) {
         union { float f; uint32_t u; } pun;
         pun.f = (float)C->d.fval;
-        emit_fmtE(TT_SFPLOADI, dst, TT_LOADI_MOD0_FLOATA,
-                  (uint16_t)(pun.u >> 16));
-        emit_fmtE(TT_SFPLOADI, dst, TT_LOADI_MOD0_FLOATB,
-                  (uint16_t)(pun.u & 0xFFFF));
+        val = pun.u;
     } else {
-        uint32_t val = (uint32_t)C->d.ival;
-        emit_fmtE(TT_SFPLOADI, dst, TT_LOADI_MOD0_INTA,
-                  (uint16_t)(val >> 16));
-        emit_fmtE(TT_SFPLOADI, dst, TT_LOADI_MOD0_INTB,
-                  (uint16_t)(val & 0xFFFF));
+        val = (uint32_t)C->d.ival;
     }
+    emit_fmtE(TT_SFPLOADI, dst, TT_LOADI_MOD0_UPPER,
+              (uint16_t)(val >> 16));
+    emit_fmtE(TT_SFPLOADI, dst, TT_LOADI_MOD0_LOWER,
+              (uint16_t)(val & 0xFFFF));
 
     return dst;
 }
@@ -243,16 +245,99 @@ static void isel_fp_arith(uint32_t idx, const bir_inst_t *I)
     case BIR_FMUL:
         emit_fmtA(TT_SFPMUL, dst, lhs, rhs, mop_lreg(TT_LREG_ZERO), 0);
         break;
-    case BIR_FDIV:
-        /* TODO: SFPLUT reciprocal + Newton-Raphson. Division is a privilege. */
-        emit_fmtA(TT_SFPMUL, dst, lhs, rhs, mop_lreg(TT_LREG_ZERO), 0);
-        break;
-    case BIR_FREM:
-        emit_fmtB(TT_SFPMOV, dst, lhs, 0, 0);
-        break;
     default:
         break;
     }
+}
+
+static int cimm(uint32_t val, int32_t *out)
+{
+    if (!BIR_VAL_IS_CONST(val)) return 0;
+
+    uint32_t ci = BIR_VAL_INDEX(val);
+    if (ci >= S.bir->num_consts) return 0;
+
+    const bir_const_t *C = &S.bir->consts[ci];
+    if (C->kind == BIR_CONST_ZERO) { *out = 0; return 1; }
+    if (C->kind == BIR_CONST_INT)  { *out = (int32_t)C->d.ival; return 1; }
+    return 0;
+}
+
+static void mulk(tt_operand_t dst, tt_operand_t x, uint32_t mag, int neg)
+{
+    int first = 1;
+
+    if (mag == 0u) {
+        emit_fmtB(TT_SFPMOV, dst, mop_lreg(TT_LREG_ZERO), 0, 0);
+        return;
+    }
+
+    for (int b = 0; b < 32; b++) {
+        if (((mag >> b) & 1u) == 0u) continue;
+
+        if (first) {
+            emit_fmtB(TT_SFPMOV, dst, x, 0, 0);
+            if (b > 0)
+                emit_fmtB(TT_SFPSHFT, dst, dst, b, TT_SHFT_MOD1_IMM);
+            first = 0;
+        } else {
+            tt_operand_t t = mop_vreg(new_vreg());
+            emit_fmtB(TT_SFPMOV, t, x, 0, 0);
+            if (b > 0)
+                emit_fmtB(TT_SFPSHFT, t, t, b, TT_SHFT_MOD1_IMM);
+            emit_fmtB(TT_SFPIADD, dst, t, 0, TT_IADD_MOD1_NOCC);
+        }
+    }
+
+    if (neg)
+        emit_fmtB(TT_SFPIADD, dst, mop_lreg(TT_LREG_ZERO), 0,
+                  TT_IADD_MOD1_SUB | TT_IADD_MOD1_NOCC);
+}
+
+static void mulrt(tt_operand_t dst, tt_operand_t a, tt_operand_t b)
+{
+    tt_operand_t aa  = mop_vreg(new_vreg());
+    tt_operand_t bb  = mop_vreg(new_vreg());
+    tt_operand_t one = mop_vreg(new_vreg());
+    tt_operand_t t   = mop_vreg(new_vreg());
+
+    emit_fmtB(TT_SFPMOV, aa, a, 0, 0);
+    emit_fmtB(TT_SFPMOV, bb, b, 0, 0);
+    emit_fmtE(TT_SFPLOADI, one, TT_LOADI_MOD0_U16, 1);
+    emit_fmtB(TT_SFPMOV, dst, mop_lreg(TT_LREG_ZERO), 0, 0);
+
+    for (int i = 0; i < 32; i++) {
+        emit_fmtB(TT_SFPMOV, t, bb, 0, 0);
+        emit_fmtB(TT_SFPAND, t, one, 0, 0);
+        emit_fmtB(TT_SFPIADD, t, mop_lreg(TT_LREG_ZERO), 0,
+                  TT_IADD_MOD1_SUB | TT_IADD_MOD1_NOCC);
+        emit_fmtB(TT_SFPAND, t, aa, 0, 0);
+        emit_fmtB(TT_SFPIADD, dst, t, 0, TT_IADD_MOD1_NOCC);
+        if (i < 31) {
+            emit_fmtB(TT_SFPSHFT, aa, aa, 1, TT_SHFT_MOD1_IMM);
+            emit_fmtB(TT_SFPSHFT, bb, bb, -1, TT_SHFT_MOD1_IMM);
+        }
+    }
+}
+
+static void isel_mul(uint32_t idx, const bir_inst_t *I)
+{
+    uint32_t vr = map_bir_val(idx);
+    tt_operand_t dst = mop_vreg(vr);
+    int32_t k;
+
+    if (cimm(I->operands[1], &k)) {
+        uint32_t mag = k < 0 ? 0u - (uint32_t)k : (uint32_t)k;
+        mulk(dst, resolve_val(I->operands[0]), mag, k < 0);
+        return;
+    }
+    if (cimm(I->operands[0], &k)) {
+        uint32_t mag = k < 0 ? 0u - (uint32_t)k : (uint32_t)k;
+        mulk(dst, resolve_val(I->operands[1]), mag, k < 0);
+        return;
+    }
+
+    mulrt(dst, resolve_val(I->operands[0]), resolve_val(I->operands[1]));
 }
 
 /* ---- Integer Arithmetic ---- */
@@ -268,15 +353,12 @@ static void isel_int_arith(uint32_t idx, const bir_inst_t *I)
     switch (I->op) {
     case BIR_ADD:
         emit_fmtB(TT_SFPMOV, dst, lhs, 0, 0);
-        emit_fmtB(TT_SFPIADD, dst, rhs, 0, 0);
+        emit_fmtB(TT_SFPIADD, dst, rhs, 0, TT_IADD_MOD1_NOCC);
         break;
     case BIR_SUB:
-        emit_fmtB(TT_SFPMOV, dst, lhs, 0, 0);
-        emit_fmtB(TT_SFPIADD, dst, rhs, 0, 1); /* subtract mode */
-        break;
-    case BIR_MUL:
-        /* No int mul on WH. SFPMUL24 is BH only. */
-        emit_fmtA(TT_SFPMUL, dst, lhs, rhs, mop_lreg(TT_LREG_ZERO), 0);
+        emit_fmtB(TT_SFPMOV, dst, rhs, 0, 0);
+        emit_fmtB(TT_SFPIADD, dst, lhs, 0,
+                  TT_IADD_MOD1_SUB | TT_IADD_MOD1_NOCC);
         break;
     case BIR_AND:
         emit_fmtB(TT_SFPMOV, dst, lhs, 0, 0);
@@ -292,15 +374,20 @@ static void isel_int_arith(uint32_t idx, const bir_inst_t *I)
         break;
     case BIR_SHL:
         emit_fmtB(TT_SFPMOV, dst, lhs, 0, 0);
-        emit_fmtB(TT_SFPSHFT, dst, rhs, 0, 0);
+        emit_fmtB(TT_SFPSHFT, dst, rhs, 0, TT_SHFT_MOD1_REG);
         break;
-    case BIR_LSHR:
+    case BIR_LSHR: {
+        tt_operand_t neg = mop_vreg(new_vreg());
+        emit_fmtB(TT_SFPMOV, neg, rhs, 0, 0);
+        emit_fmtB(TT_SFPIADD, neg, mop_lreg(TT_LREG_ZERO), 0,
+                  TT_IADD_MOD1_SUB | TT_IADD_MOD1_NOCC);
         emit_fmtB(TT_SFPMOV, dst, lhs, 0, 0);
-        emit_fmtB(TT_SFPSHFT, dst, rhs, 0, 0);
+        emit_fmtB(TT_SFPSHFT, dst, neg, 0, TT_SHFT_MOD1_REG);
         break;
+    }
     case BIR_ASHR:
-        emit_fmtB(TT_SFPMOV, dst, lhs, 0, 0);
-        emit_fmtB(TT_SFPSHFT, dst, rhs, 0, 1);
+        tterr(BC_E527);
+        S.had_error = 1;
         break;
     default:
         break;
@@ -309,39 +396,74 @@ static void isel_int_arith(uint32_t idx, const bir_inst_t *I)
 
 /* ---- Comparison ---- */
 
+static int uicmp(uint32_t sub)
+{
+    return sub == BIR_ICMP_ULT || sub == BIR_ICMP_UGE ||
+           sub == BIR_ICMP_UGT || sub == BIR_ICMP_ULE;
+}
+
+static tt_operand_t cmpv(tt_operand_t x, tt_operand_t y, int uns)
+{
+    tt_operand_t d = mop_vreg(new_vreg());
+    tt_operand_t s = mop_vreg(new_vreg());
+    tt_operand_t n = mop_vreg(new_vreg());
+    tt_operand_t m = mop_vreg(new_vreg());
+
+    emit_fmtB(TT_SFPMOV, d, y, 0, 0);
+    emit_fmtB(TT_SFPIADD, d, x, 0, TT_IADD_MOD1_SUB | TT_IADD_MOD1_NOCC);
+
+    emit_fmtB(TT_SFPMOV, s, x, 0, 0);
+    emit_fmtB(TT_SFPXOR, s, y, 0, 0);
+
+    emit_fmtB(TT_SFPNOT, n, s, 0, 0);
+    emit_fmtB(TT_SFPAND, n, d, 0, 0);
+
+    if (uns) {
+        emit_fmtB(TT_SFPNOT, m, x, 0, 0);
+        emit_fmtB(TT_SFPAND, m, y, 0, 0);
+    } else {
+        emit_fmtB(TT_SFPNOT, m, y, 0, 0);
+        emit_fmtB(TT_SFPAND, m, x, 0, 0);
+    }
+    emit_fmtB(TT_SFPOR, m, n, 0, 0);
+
+    return m;
+}
+
+static tt_operand_t xorv(tt_operand_t x, tt_operand_t y)
+{
+    tt_operand_t t = mop_vreg(new_vreg());
+    emit_fmtB(TT_SFPMOV, t, x, 0, 0);
+    emit_fmtB(TT_SFPXOR, t, y, 0, 0);
+    return t;
+}
+
 static void isel_icmp(uint32_t idx, const bir_inst_t *I)
 {
     uint32_t vr = map_bir_val(idx);
     tt_operand_t dst = mop_vreg(vr);
     tt_operand_t lhs = resolve_val(I->operands[0]);
     tt_operand_t rhs = resolve_val(I->operands[1]);
-
-    uint32_t tmp_vr = new_vreg();
-    tt_operand_t tmp = mop_vreg(tmp_vr);
-    emit_fmtB(TT_SFPMOV, tmp, lhs, 0, 0);
-    emit_fmtB(TT_SFPIADD, tmp, rhs, 0, 1);  /* tmp = lhs - rhs */
+    int uns = uicmp(I->subop);
+    tt_operand_t t;
     uint16_t cc;
+
     switch (I->subop) {
-    case BIR_ICMP_EQ:                           cc = TT_CC_EQ; break;
-    case BIR_ICMP_NE:                           cc = TT_CC_NE; break;
-    case BIR_ICMP_SLT: case BIR_ICMP_ULT:      cc = TT_CC_LT; break;
-    case BIR_ICMP_SGE: case BIR_ICMP_UGE:      cc = TT_CC_GE; break;
+    case BIR_ICMP_EQ:
+        t = xorv(lhs, rhs); cc = TT_CC_EQ; break;
+    case BIR_ICMP_SLT: case BIR_ICMP_ULT:
+        t = cmpv(lhs, rhs, uns); cc = TT_CC_LT; break;
+    case BIR_ICMP_SGE: case BIR_ICMP_UGE:
+        t = cmpv(lhs, rhs, uns); cc = TT_CC_GE; break;
     case BIR_ICMP_SGT: case BIR_ICMP_UGT:
-        /* GT(a,b) = LT(b,a). Swap and use LT. */
-        emit_fmtB(TT_SFPMOV, tmp, rhs, 0, 0);
-        emit_fmtB(TT_SFPIADD, tmp, lhs, 0, 1);
-        cc = TT_CC_LT;
-        break;
+        t = cmpv(rhs, lhs, uns); cc = TT_CC_LT; break;
     case BIR_ICMP_SLE: case BIR_ICMP_ULE:
-        /* LE(a,b) = GE(b,a). Swap and use GE. */
-        emit_fmtB(TT_SFPMOV, tmp, rhs, 0, 0);
-        emit_fmtB(TT_SFPIADD, tmp, lhs, 0, 1);
-        cc = TT_CC_GE;
-        break;
-    default: cc = TT_CC_NE; break;
+        t = cmpv(rhs, lhs, uns); cc = TT_CC_GE; break;
+    default:
+        t = xorv(lhs, rhs); cc = TT_CC_NE; break;
     }
 
-    emit_fmtB(TT_SFPSETCC, dst, tmp, 0, cc);
+    emit_fmtB(TT_SFPSETCC, dst, t, 0, cc);
 }
 
 static void isel_fcmp(uint32_t idx, const bir_inst_t *I)
@@ -414,31 +536,47 @@ static void isel_alloca(uint32_t idx, const bir_inst_t *I)
     (void)I;
 }
 
+static uint32_t ptras(uint32_t ptr)
+{
+    if (ptr == BIR_VAL_NONE || BIR_VAL_IS_CONST(ptr))
+        return BIR_AS_GLOBAL;
+
+    uint32_t si = BIR_VAL_INDEX(ptr);
+    if (si >= S.bir->num_insts) return BIR_AS_GLOBAL;
+
+    uint32_t pt = S.bir->insts[si].type;
+    if (pt < S.bir->num_types && S.bir->types[pt].kind == BIR_TYPE_PTR)
+        return S.bir->types[pt].addrspace;
+
+    return BIR_AS_GLOBAL;
+}
+
+static int tilas(uint32_t as, const char *what)
+{
+    if (as == BIR_AS_GLOBAL || as == BIR_AS_GENERIC ||
+        as == BIR_AS_CONSTANT)
+        return 1;
+    tterr(BC_E526, what, (unsigned)as);
+    S.had_error = 1;
+    return 0;
+}
+
 static void isel_load(uint32_t idx, const bir_inst_t *I)
 {
     uint32_t vr = map_bir_val(idx);
     tt_operand_t dst = mop_vreg(vr);
 
-    uint32_t ptr_val = I->operands[0];
-    int as = BIR_AS_GLOBAL;
-    if (ptr_val != BIR_VAL_NONE && !BIR_VAL_IS_CONST(ptr_val)) {
-        uint32_t si = BIR_VAL_INDEX(ptr_val);
-        if (si < S.bir->num_insts) {
-            uint32_t pt = S.bir->insts[si].type;
-            if (pt < S.bir->num_types &&
-                S.bir->types[pt].kind == BIR_TYPE_PTR)
-                as = S.bir->types[pt].addrspace;
-        }
-    }
+    if (!tilas(ptras(I->operands[0]), "load")) return;
 
-    /* TODO(tier4): global loads need reader kernel, not Dst row 0 */
     emit_fmtD(TT_SFPLOAD, dst, TT_LDST_MOD0_FP32, 0, 0);
-    (void)as;
 }
 
 static void isel_store(const bir_inst_t *I)
 {
     tt_operand_t val = resolve_val(I->operands[0]);
+
+    if (!tilas(ptras(I->operands[1]), "store")) return;
+
     emit_fmtD(TT_SFPSTORE, val, TT_LDST_MOD0_FP32, 0, 0);
 }
 
@@ -447,12 +585,15 @@ static void isel_gep(uint32_t idx, const bir_inst_t *I)
     uint32_t vr = map_bir_val(idx);
     tt_operand_t dst = mop_vreg(vr);
     tt_operand_t base = resolve_val(I->operands[0]);
-    tt_operand_t offset = (get_num_ops(I) > 1)
+    uint32_t foff = 0;
+    tt_operand_t offset = bir_fgep(S.bir, I, 4, &foff)
+        ? mop_imm((int32_t)foff)
+        : (get_num_ops(I) > 1)
         ? resolve_val(I->operands[1])
         : mop_lreg(TT_LREG_ZERO);
 
     emit_fmtB(TT_SFPMOV, dst, base, 0, 0);
-    emit_fmtB(TT_SFPIADD, dst, offset, 0, 0);
+    emit_fmtB(TT_SFPIADD, dst, offset, 0, TT_IADD_MOD1_NOCC);
 }
 
 /* ---- Conversion ---- */
@@ -504,7 +645,7 @@ static void isel_thread_model(uint32_t idx, const bir_inst_t *I)
         if (I->subop == 0) {
             /* L15 = lane_id (0,2,4,...,62), shift right 1 for threadIdx.x */
             emit_fmtB(TT_SFPMOV, dst, mop_lreg(TT_LREG_LANE_ID), 0, 0);
-            emit_fmtB(TT_SFPSHFT, dst, dst, -1, 0);  /* right shift 1 */
+            emit_fmtB(TT_SFPSHFT, dst, dst, -1, TT_SHFT_MOD1_IMM);
         } else {
             emit_fmtE(TT_SFPLOADI, dst, TT_LOADI_MOD0_INTA, 0);
         }
@@ -573,6 +714,23 @@ static void isel_barrier(void)
     emit_fmtC(TT_SFPNOP, 0, 0); /* single core: nop */
 }
 
+/* per TT-ISA BH/TensixCoprocessor/VectorUnit.md the SFPU computes on LReg */
+/* per TT-ISA BH/TensixCoprocessor/SFPLOAD.md a load moves Dst to LReg */
+/* per TT-ISA BH/TensixCoprocessor/SFPSTORE.md a store moves LReg to Dst */
+/* per TT-ISA BH/TensixCoprocessor/STALLWAIT.md C0 drains ThCon requests for the issuing thread only */
+static const char *fscop(uint8_t sc)
+{
+    if (sc == 0u) return "__threadfence_block";
+    if (sc == 2u) return "__threadfence_system";
+    return "__threadfence";
+}
+
+static void isel_fence(const bir_inst_t *I)
+{
+    tterr(BC_E866, fscop(I->subop));
+    S.had_error = 1;
+}
+
 /* ---- Call ---- */
 
 static void isel_call(uint32_t idx, const bir_inst_t *I)
@@ -611,44 +769,48 @@ static void isel_block(uint32_t bir_bi)
             popped = 1;
         }
     }
-
-    /* Walk instructions */
     int guard = 65536;
     for (uint32_t ii = 0; ii < B->num_insts && guard > 0; ii++, guard--) {
         uint32_t idx = B->first_inst + ii;
         const bir_inst_t *I = &S.bir->insts[idx];
 
         switch (I->op) {
-        /* ---- FP Arithmetic ---- */
         case BIR_FADD: case BIR_FSUB: case BIR_FMUL:
-        case BIR_FDIV: case BIR_FREM:
             isel_fp_arith(idx, I);
             break;
 
-        /* ---- Integer Arithmetic + Bitwise ---- */
-        case BIR_ADD: case BIR_SUB: case BIR_MUL:
+        case BIR_FDIV:
+            tterr(BC_E522, "floating-point division");
+            S.had_error = 1;
+            break;
+        case BIR_FREM:
+            tterr(BC_E522, "floating-point remainder");
+            S.had_error = 1;
+            break;
+        case BIR_ADD: case BIR_SUB:
         case BIR_AND: case BIR_OR: case BIR_XOR:
         case BIR_SHL: case BIR_LSHR: case BIR_ASHR:
             isel_int_arith(idx, I);
             break;
 
-        case BIR_SDIV: case BIR_UDIV:
-        case BIR_SREM: case BIR_UREM: {
-            uint32_t vr = map_bir_val(idx);
-            emit_fmtB(TT_SFPMOV, mop_vreg(vr),
-                      resolve_val(I->operands[0]), 0, 0);
+        case BIR_MUL:
+            isel_mul(idx, I);
             break;
-        }
 
-        /* ---- Comparison ---- */
+        case BIR_SDIV: case BIR_UDIV:
+            tterr(BC_E523, "integer division");
+            S.had_error = 1;
+            break;
+        case BIR_SREM: case BIR_UREM:
+            tterr(BC_E523, "integer remainder");
+            S.had_error = 1;
+            break;
         case BIR_ICMP:
             isel_icmp(idx, I);
             break;
         case BIR_FCMP:
             isel_fcmp(idx, I);
             break;
-
-        /* ---- Conversion ---- */
         case BIR_TRUNC: case BIR_ZEXT: case BIR_SEXT:
         case BIR_FPTRUNC: case BIR_FPEXT:
         case BIR_FPTOSI: case BIR_FPTOUI:
@@ -656,8 +818,6 @@ static void isel_block(uint32_t bir_bi)
         case BIR_PTRTOINT: case BIR_INTTOPTR: case BIR_BITCAST:
             isel_conversion(idx, I);
             break;
-
-        /* ---- Memory ---- */
         case BIR_LOAD:
             isel_load(idx, I);
             break;
@@ -671,10 +831,9 @@ static void isel_block(uint32_t bir_bi)
             isel_alloca(idx, I);
             break;
         case BIR_SHARED_ALLOC:
-            isel_alloca(idx, I);  /* same as private for now */
+            tterr(BC_E524);
+            S.had_error = 1;
             break;
-
-        /* ---- Control Flow ---- */
         case BIR_BR:
             isel_br(I);
             break;
@@ -682,71 +841,79 @@ static void isel_block(uint32_t bir_bi)
             isel_br_cond(I);
             break;
         case BIR_SWITCH:
-            break;  /* TODO(tier3): cascaded compares */
+            tterr(BC_E525);
+            S.had_error = 1;
+            break;
         case BIR_RET:
             isel_ret(I);
             break;
         case BIR_UNREACHABLE:
             break;
-
-        /* ---- SSA ---- */
         case BIR_PHI:
             isel_phi(idx, I);
             break;
         case BIR_PARAM:
             isel_param(idx, I);
             break;
-
-        /* ---- Thread Model ---- */
         case BIR_THREAD_ID:
         case BIR_BLOCK_ID:
         case BIR_BLOCK_DIM:
         case BIR_GRID_DIM:
             isel_thread_model(idx, I);
             break;
-
-        /* ---- Barriers ---- */
         case BIR_BARRIER:
         case BIR_BARRIER_GROUP:
             isel_barrier();
             break;
+        case BIR_FENCE:
+            isel_fence(I);
+            break;
 
-        /* ---- Atomics / Warp (stubs) ---- */
         case BIR_ATOMIC_ADD: case BIR_ATOMIC_SUB:
         case BIR_ATOMIC_AND: case BIR_ATOMIC_OR: case BIR_ATOMIC_XOR:
         case BIR_ATOMIC_MIN: case BIR_ATOMIC_MAX:
         case BIR_ATOMIC_XCHG: case BIR_ATOMIC_CAS:
-        case BIR_ATOMIC_LOAD: case BIR_ATOMIC_STORE: {
-            uint32_t vr = map_bir_val(idx);
-            emit_fmtB(TT_SFPMOV, mop_vreg(vr),
-                      mop_lreg(TT_LREG_ZERO), 0, 0);
+        case BIR_ATOMIC_LOAD: case BIR_ATOMIC_STORE:
+            tterr(BC_E520, "an atomic read-modify-write");
+            S.had_error = 1;
             break;
-        }
 
         case BIR_SHFL: case BIR_SHFL_UP:
         case BIR_SHFL_DOWN: case BIR_SHFL_XOR:
-        case BIR_BALLOT: case BIR_VOTE_ANY: case BIR_VOTE_ALL: {
-            uint32_t vr = map_bir_val(idx);
-            emit_fmtB(TT_SFPMOV, mop_vreg(vr),
-                      mop_lreg(TT_LREG_ZERO), 0, 0);
+            tterr(BC_E521, "a warp shuffle");
+            S.had_error = 1;
             break;
-        }
 
-        /* No integer bit-counting on the SFPU; --rv-elf is where these go */
+        case BIR_BALLOT: case BIR_VOTE_ANY: case BIR_VOTE_ALL:
+            tterr(BC_E521, "a warp vote");
+            S.had_error = 1;
+            break;
+
         case BIR_POPCOUNT: case BIR_CTZ:
         case BIR_CLZ: case BIR_BREV:
-            fprintf(stderr, "kath: bit counting not supported on the Tensix "
-                            "SFPU path; use --rv-elf for the baby cores\n");
+            tterr(BC_E528);
+            S.had_error = 1;
+            break;
+
+        case BIR_TRAP:
+            tterr(BC_E529);
+            S.had_error = 1;
+            break;
+
+        case BIR_FNREF:
+            tterr(BC_E530);
+            S.had_error = 1;
+            break;
+
+        case BIR_PRINTF:
+            tterr(BC_E531);
             S.had_error = 1;
             break;
 
         case BIR_MMA: case BIR_MFRG:
-            fprintf(stderr, "kath: warp-collective mma not supported on the "
-                            "Tensix backend\n");
+            tterr(BC_E532);
             S.had_error = 1;
             break;
-
-        /* ---- Misc ---- */
         case BIR_SELECT:
             isel_select(idx, I);
             break;
@@ -754,9 +921,13 @@ static void isel_block(uint32_t bir_bi)
             isel_call(idx, I);
             break;
         case BIR_INLINE_ASM:
+            tterr(BC_E533);
+            S.had_error = 1;
             break;
 
         default:
+            tterr(BC_E867, bir_op_name((int)I->op));
+            S.had_error = 1;
             break;
         }
     }
@@ -767,8 +938,6 @@ static void isel_block(uint32_t bir_bi)
 static int isel_function(uint32_t func_idx)
 {
     const bir_func_t *F = &S.bir->funcs[func_idx];
-
-    /* Skip host-only functions */
     if (!(F->cuda_flags & (CUDA_GLOBAL | CUDA_DEVICE))) return BC_OK;
 
     if (S.tt->num_mfuncs >= TT_MAX_MFUNCS) return BC_ERR_TENSIX;

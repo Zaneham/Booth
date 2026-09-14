@@ -23,6 +23,9 @@
 #define BC_MAX_TOKENS       (1 << 20)
 #define BC_MAX_IDENT        256
 #define BC_MAX_ERRORS       64
+#define BC_MAX_TMPLS        256
+#define BC_MAX_TNAMES       1024
+#define BC_MAX_BTNAMS       96
 /* Arguments in one call. Real ocean kernels pass 23, so 16 was not enough. */
 #define BC_MAX_ARGS         64
 #define BC_MAX_PATH         512

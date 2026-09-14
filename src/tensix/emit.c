@@ -340,10 +340,14 @@ static void ra_allocate_function(tt_module_t *tt, tt_mfunc_t *MF)
                 tt_operand_t *op = &inst.operands[k];
                 if (op->kind != TT_MOP_VREG) continue;
                 uint16_t vr = op->reg_num;
+                int held = -1;
+                if (ra_info[vr].phys_reg > 0 && !ra_info[vr].spilled &&
+                    ra_lreg[ra_info[vr].phys_reg - 1].vreg == vr)
+                    held = ra_info[vr].phys_reg - 1;
 
                 /* Reuse LReg of a dying source */
                 int shared = -1;
-                for (int u = inst.num_defs; u < total; u++) {
+                for (int u = inst.num_defs; u < total && held < 0; u++) {
                     if (inst.operands[u].kind != TT_MOP_LREG) continue;
                     uint32_t occ = ra_lreg[inst.operands[u].reg_num].vreg;
                     if (occ > 0 && occ < TT_MAX_VREGS &&
@@ -354,7 +358,9 @@ static void ra_allocate_function(tt_module_t *tt, tt_mfunc_t *MF)
                 }
 
                 int lreg;
-                if (shared >= 0) {
+                if (held >= 0) {
+                    lreg = held;
+                } else if (shared >= 0) {
                     uint32_t old_vr = ra_lreg[shared].vreg;
                     if (old_vr > 0 && old_vr < TT_MAX_VREGS)
                         ra_info[old_vr].phys_reg = 0;

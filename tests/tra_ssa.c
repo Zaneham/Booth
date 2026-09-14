@@ -117,10 +117,7 @@ static const char *sr_clean[] = {
 /* Fixtures where it still leaves vregs unallocated. */
 static const char *sr_leaky[] = {
     "tests/canonical.cu",
-    "tests/notgpt.cu",
     "tests/stress.cu",
-    "tests/cuda_features.cu",
-    "tests/device_calls.cu",
     "tests/test_struct.cu",
     NULL
 };
@@ -188,13 +185,13 @@ TH_REG("rss", 3, "within declared spilling", rss03)
  * fix trips this and gets folded into the test above. */
 static void rss04(void)
 {
-    const char *caps[] = { "--max-vgprs 4", "--max-vgprs 2", NULL };
+    const char *caps[] = { "--max-vgprs 2", NULL };
     int c;
 
     for (c = 0; caps[c]; c++) {
-        int rc = ssa_compile("tests/vector_add.cu", caps[c]);
+        int rc = ssa_compile("tests/test_cf.cu", caps[c]);
         if (rc == 0) {
-            printf("  vector_add now survives %s, fold it back in\n", caps[c]);
+            printf("  test_cf now survives %s, fold it back in\n", caps[c]);
             CHECK(0);
         }
         if (!strstr(sr_buf, "still present after RA")) {

@@ -69,6 +69,8 @@ static void remap_inst(bir_module_t *M, bir_inst_t *I, uint32_t at, uint32_t n)
         }
         break;
 
+    case BIR_GLOBAL_REF:
+    case BIR_FNREF:
     case BIR_CALL:                     /* callee func index first, then args */
         if (ovf) {                     /* extra[start]=func, rest=args */
             for (i = 1; i < count; i++)
