@@ -1,7 +1,4 @@
-/* booth_run.c -- stage a compiled kernel's arguments and run it on whatever
- * hardware is here. The arg grammar (in:/out:/io:/u32:/i32:/f32:) and the
- * upload-run-download dance live here; kath's run verb fills the slots and
- * calls brun_launch. Nothing below names a vendor. */
+/* booth_run.c -- stage a kernel's arguments and run it on whatever is plugged in */
 
 #include <stdio.h>
 #include <stdlib.h>

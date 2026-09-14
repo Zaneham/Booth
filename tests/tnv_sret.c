@@ -1,11 +1,4 @@
-/* tnv_sret.c -- does a struct returned by value carry the right numbers
- *
- * The IR is where the lie lived: a __device__ function returning a struct
- * declared one type on the call and handed back a pointer to a private slot,
- * and the caller stored eight bytes of pointer into a struct-sized hole. That
- * assembles and runs, so only the numbers off a card settle it.
- *
- * Wants a real card. Not a trunner test.
+/* tnv_sret.c -- a struct returned by value, checked on a real card
  *
  *   ./kath --nvidia-ptx tests/sret.cu -o sret.ptx
  *   ./tnv_sret sret.ptx */

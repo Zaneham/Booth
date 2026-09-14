@@ -1,10 +1,5 @@
-/* tcpp.c -- the host C++ a .cu file drags in, and where Booth draws the line
- *
- * Every shape here came out of the ggml-cuda tree, where a single unparsed
- * construct produced a page of E020/E022/E024 and the first line of it named
- * a token rather than the thing that was actually wrong. The point of these
- * is that the first diagnostic is the true one, and that a file whose host
- * half Booth skips still hands over its kernels. */
+/* tcpp.c -- the host C++ a .cu file drags in.
+ * The more I write a C++ compiler, the more I hate C++. */
 
 #include "tharns.h"
 #include "preproc.h"
@@ -241,8 +236,7 @@ static void cpp36(void)
 }
 TH_REG("cpp", 36, "a typed parameter beside an auto one", cpp36)
 
-/* A call wider than the argument cap used to expand as the first sixteen, with
-   the rest left in the output as though the call had closed early. */
+/* A call wider than the argument cap must not expand as the first sixteen */
 static void mkvar(char *dst, size_t cap, int n)
 {
     size_t w = 0;
@@ -535,11 +529,7 @@ static void cpp41(void)
 }
 TH_REG("cpp", 41, "a class template parameter is deduced", cpp41)
 
-/* arg_type has to unwrap the forwarding call before it resolves a subscript
- * or a member, or a forwarded a[i] types as the wrapper. Deduction is where it
- * shows: sema cannot name a member of a class-template instantiation, so with
- * the unwrap last, T comes back as the wrapper and the reference will not bind.
- * Each pick body carries its own constant, so the .entry says which was run. */
+/* A forwarded a[i] types as the element, not the wrapper */
 static void cpp42(void)
 {
     CHEQ(cpptx("namespace std {\n"
@@ -562,9 +552,7 @@ static void cpp42(void)
 }
 TH_REG("cpp", 42, "a forwarded member types as what it wraps", cpp42)
 
-/* Scan-time parameter typing must not reach a parameter pack: the ordinary
- * parameters of the enclosing function are typed, the pack is left to the
- * expansion, and the kernel comes out with one parameter per element. */
+/* A parameter pack is typed at expansion, one parameter per element */
 static void cpp43(void)
 {
     CHEQ(cpptx("template <typename... E>\n"

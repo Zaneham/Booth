@@ -1,10 +1,4 @@
-/* tvec.c -- CUDA vector types and the device intrinsics over them
- *
- * The old behaviour is the point of vec01 and vec21 to vec26. A translation
- * unit with more than 64 structs stopped recording them and every later
- * field lookup missed, and an arithmetic operator on a pair of aggregates
- * added the two scratch addresses and read the sum as if it were the
- * result, whether or not an operator was there to call. */
+/* tvec.c -- CUDA vector types and the device intrinsics over them */
 
 #include "tharns.h"
 

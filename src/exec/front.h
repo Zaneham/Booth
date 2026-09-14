@@ -1,5 +1,4 @@
-/* front.h -- the verbs a user drives kath through, and the hook the run
- * verb uses to learn the kernel name out of a module it just built. */
+/* front.h -- kath's verbs */
 
 #ifndef BOOTH_FRONT_H
 #define BOOTH_FRONT_H
@@ -11,8 +10,7 @@ typedef struct kath_out {
     int  have;
 } kath_out_t;
 
-/* The old main. A flag argv in, an artefact out, and the __global__ name
- * written into out when one is asked for. */
+/* The old main, writing the __global__ name into out when asked */
 int kath_compile(int argc, char *argv[], kath_out_t *out);
 
 int booth_is_verb(const char *s);

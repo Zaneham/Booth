@@ -1,10 +1,4 @@
-/* tcxp.c -- constexpr objects
- *
- * The old behaviour is what these are really about. A namespace-scope
- * constexpr was collected by nobody, so the declaration went nowhere and
- * the use came back as an undefined variable; an array bound naming one
- * fell through to the scalar path and the bracket became an initialiser,
- * which is a wrong answer rather than a refusal. Both shapes are below. */
+/* tcxp.c -- constexpr objects */
 
 #include "tharns.h"
 
@@ -130,12 +124,7 @@ static void cxp09(void)
 }
 TH_REG("cxp", 9, "a const with a constant initialiser folds too", cxp09)
 
-/* ---- Array bounds ----
- *
- * float a[N] used to leave is_array unset and hand the bound to the
- * scalar path as an initialiser, so a became a float holding N and a[0]
- * indexed off that value as though it were an address. The alloca type
- * is what says it is fixed. */
+/* ---- Array bounds ---- */
 
 static void cxp10(void)
 {
@@ -207,10 +196,7 @@ static void cxp15(void)
 }
 TH_REG("cxp", 15, "if constexpr keeps one arm and drops the other", cxp15)
 
-/* ---- Layout ----
- *
- * A static member counted as a field, so every field after it sat one
- * slot too far along and read back whatever the neighbour held. */
+/* ---- Layout: a static member is not a field ---- */
 
 static void cxp16(void)
 {
@@ -317,11 +303,7 @@ static void cxp24(void)
 }
 TH_REG("cxp", 24, "a local of that name still wins", cxp24)
 
-/* ---- Discarded statements ----
- *
- * An untaken arm is not code Booth folds away later, it is code Booth never
- * reads. cxp26 is the one that matters: the arm that is not chosen would not
- * compile for the type it was not chosen for. */
+/* ---- Discarded statements, which Booth never reads ---- */
 
 static const char *ptxof(const char *src)
 {
@@ -417,8 +399,7 @@ static void cxp28(void)
 }
 TH_REG("cxp", 28, "sizeof... of a pack decides a condition", cxp28)
 
-/* Two aggregates with identical layout are still two types, so the false
- * arm is the answer and the true arm must not be reached. */
+/* Same layout, still two types */
 static void cxp29(void)
 {
     char src[1024];
@@ -453,8 +434,7 @@ TH_REG("cxp", 30, "sizeof reads the type, not a guess of four", cxp30)
 
 /* ---- Static data members ---- */
 
-/* Every spelling of a read has to reach the same constant, and the proof is
- * the immediate in the .entry rather than anything the IR printer says. */
+/* Every spelling of a read reaches the same constant in the .entry */
 static void cxp31(void)
 {
     const char *p = ptxof(
@@ -538,8 +518,7 @@ static void cxp35(void)
 }
 TH_REG("cxp", 35, "a static member decides if constexpr", cxp35)
 
-/* The NVIDIA backend drops switch dispatch whatever the label is, literal
- * included, so the constant is only visible in the IR here. */
+/* NVIDIA drops switch dispatch, so the constant only shows in the IR */
 static void cxp36(void)
 {
     CHEQ(cxrun("struct sc { static constexpr int n = 9; };\n"
@@ -551,8 +530,7 @@ static void cxp36(void)
 }
 TH_REG("cxp", 36, "a static member is a case label", cxp36)
 
-/* A declaration without an initialiser has no value at compile time, and a
- * mutable one has no constant value at all. Both say so by name. */
+/* No initialiser, or mutable, so no constant */
 static void cxp37(void)
 {
     CHNE(cxrun("struct sc { static const int v; };\n"
@@ -604,9 +582,7 @@ static void cxp41(void)
     PASS();
 }
 TH_REG("cxp", 41, "decltype names a static member's type", cxp41)
-/* Only a body of one return statement folded, so a constexpr member function
- * that answers with an if-chain was not a constant expression and the arm was
- * never chosen. Each struct must read its own I, not the last one collected. */
+/* A constexpr member function with an if-chain folds, per struct */
 static void cxp42(void)
 {
     CHEQ(cxrun("struct s8 { static constexpr int I = 8;\n"
@@ -627,8 +603,7 @@ static void cxp42(void)
 }
 TH_REG("cxp", 42, "a member function with an if-chain folds", cxp42)
 
-/* A loop is past what the evaluator walks, and a guessed answer would pick an
- * arm at random. The refusal names the condition it could not fold. */
+/* A loop is past the evaluator, so refuse rather than guess */
 static void cxp43(void)
 {
     CHNE(cxrun("__device__ int loopy(int a){"

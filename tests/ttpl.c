@@ -1,9 +1,4 @@
-/* ttpl.c -- class templates, template-ids and the C++ around them
- *
- * The old behaviour is the point of tpl01. An explicit template argument
- * list in a call parsed as a chain of comparisons, so f<32>(a) came back
- * as (f < 32) > (a) and lowered to a boolean nobody asked for. Nothing
- * complained, which is the worst way for a parser to be wrong. */
+/* ttpl.c -- class templates, template-ids and the C++ around them */
 
 #include "tharns.h"
 
@@ -115,10 +110,7 @@ static void tpl08(void)
 TH_REG("tpl", 8, "enum class takes a base and a trailing comma", tpl08)
 
 /* ---- Refusals ----
- *
- * Everything the parser now accepts and the lowerer cannot finish has to
- * say so by name. A dropped construct is a wrong answer wearing a green
- * tick, which is how the constexpr work before this one went wrong. */
+ * A dropped construct is a wrong answer wearing a green tick. */
 
 static void tpl09(void)
 {
@@ -141,9 +133,7 @@ static void tpl10(void)
 }
 TH_REG("tpl", 10, "a class template instance takes its argument", tpl10)
 
-/* A partial specialisation chosen on an enum has to reach different code.
- * Two launches collapsing onto one kernel is the failure this guards: both
- * arms compile, the wrong one runs, and nothing says so. */
+/* A partial specialisation on an enum reaches its own kernel */
 
 static void tpl28(void)
 {
@@ -162,8 +152,7 @@ static void tpl28(void)
 }
 TH_REG("tpl", 28, "two specialisations reach two kernels", tpl28)
 
-/* Neither an ambiguous pair nor a primary that was only declared can be
- * chosen, and both say so rather than picking one. */
+/* Ambiguous pairs and declared-only primaries refuse */
 
 static void tpl29(void)
 {
@@ -179,8 +168,7 @@ static void tpl29(void)
 }
 TH_REG("tpl", 29, "an ambiguous specialisation refuses by name", tpl29)
 
-/* Static data members and static member functions belong to the instance
- * that declared them, not to whichever one was built last. */
+/* Static members belong to the instance that declared them */
 
 static void tpl30(void)
 {
@@ -212,8 +200,7 @@ static void tpl31(void)
 }
 TH_REG("tpl", 31, "a declared-only class template refuses", tpl31)
 
-/* The more specialised of two overlapping partials wins, and a default
- * template argument is filled in before any of them is matched. */
+/* The more specialised partial wins, after defaults are filled in */
 
 static void tpl32(void)
 {

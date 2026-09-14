@@ -81,60 +81,62 @@ lt_nvwhy(uint32_t w, lt_res_t r, const char *s, uint32_t l,
 }
 
 static const char *const saopn[NV_OP_COUNT] = {
-
     "NV_ADD_U32", "NV_ADD_U64", "NV_ADD_S32", "NV_SUB_U32", "NV_SUB_S32",
-    "NV_SUB_S64", "NV_MUL_LO_U32", "NV_MUL_LO_S32", "NV_MUL_LO_U64",
-    "NV_MUL_HI_U32", "NV_MUL_HI_S32", "NV_MUL_HI_U64", "NV_MAD_LO_U64",
-    "NV_DIV_U32", "NV_DIV_S32", "NV_REM_U32", "NV_REM_S32", "NV_NEG_S32",
-    "NV_ADD_F32", "NV_ADD_F64", "NV_SUB_F32", "NV_SUB_F64", "NV_MUL_F32",
-    "NV_MUL_F64", "NV_DIV_F32", "NV_DIV_F64", "NV_FMA_F32", "NV_FMA_F64",
-    "NV_NEG_F32", "NV_NEG_F64", "NV_ABS_F32", "NV_ABS_F64", "NV_AND_B32",
-    "NV_AND_B64", "NV_OR_B32", "NV_OR_B64", "NV_XOR_B32", "NV_XOR_B64",
-    "NV_NOT_B32", "NV_NOT_B64", "NV_SHL_B32", "NV_SHL_B64", "NV_SHR_U32",
-    "NV_SHR_S32", "NV_SHR_U64", "NV_POPC_B32", "NV_POPC_B64", "NV_CLZ_B32",
-    "NV_CLZ_B64", "NV_BREV_B32", "NV_BREV_B64", "NV_SETP_EQ_U32",
-    "NV_SETP_NE_U32", "NV_SETP_LT_U32", "NV_SETP_LE_U32", "NV_SETP_GT_U32",
-    "NV_SETP_GE_U32", "NV_SETP_LT_S32", "NV_SETP_LE_S32", "NV_SETP_GT_S32",
-    "NV_SETP_GE_S32", "NV_SETP_EQ_F32", "NV_SETP_NE_F32", "NV_SETP_LT_F32",
-    "NV_SETP_LE_F32", "NV_SETP_GT_F32", "NV_SETP_GE_F32", "NV_SETP_EQ_F64",
-    "NV_SETP_NE_F64", "NV_SETP_LT_F64", "NV_SETP_LE_F64", "NV_SETP_GT_F64",
-    "NV_SETP_GE_F64", "NV_SETP_EQ_U64", "NV_SETP_NE_U64", "NV_SELP_U32",
-    "NV_SELP_U64", "NV_SELP_F32", "NV_SELP_F64", "NV_MOV_U32", "NV_MOV_U64",
-    "NV_MOV_F32", "NV_MOV_F64", "NV_MOV_PRED", "NV_CVT_U32_F32",
-    "NV_CVT_S32_F32", "NV_CVT_U32_F64", "NV_CVT_S32_F64", "NV_CVT_F32_U32",
-    "NV_CVT_F32_S32", "NV_CVT_F32_F64", "NV_CVT_F64_F32", "NV_CVT_U64_U32",
-    "NV_CVT_S64_S32", "NV_CVT_U32_U64", "NV_CVT_U64_F64", "NV_CVT_S64_F64",
-    "NV_CVT_F64_U64", "NV_CVT_F64_S64", "NV_CVT_F64_U32", "NV_CVT_F64_S32",
-    "NV_CVT_F32_F16", "NV_CVT_F16_F32", "NV_LD_GLB_U32", "NV_LD_GLB_U64",
-    "NV_LD_GLB_F32", "NV_LD_GLB_F64", "NV_LD_GLB_U8", "NV_LD_GLB_U16",
-    "NV_LD_GLB_B16", "NV_ST_GLB_U32", "NV_ST_GLB_U64", "NV_ST_GLB_F32",
-    "NV_ST_GLB_F64", "NV_ST_GLB_U8", "NV_ST_GLB_U16", "NV_ST_GLB_B16",
-    "NV_LD_SHR_U32", "NV_LD_SHR_F32", "NV_LD_SHR_U8", "NV_LD_SHR_U16",
-    "NV_LD_SHR_B16", "NV_ST_SHR_U32", "NV_ST_SHR_F32", "NV_ST_SHR_U8",
-    "NV_ST_SHR_U16", "NV_ST_SHR_B16", "NV_LD_LOC_U32", "NV_LD_LOC_U64",
-    "NV_LD_LOC_F32", "NV_LD_LOC_F64", "NV_LD_LOC_U8", "NV_LD_LOC_U16",
-    "NV_LD_LOC_B16", "NV_ST_LOC_U32", "NV_ST_LOC_U64", "NV_ST_LOC_F32",
-    "NV_ST_LOC_F64", "NV_ST_LOC_U8", "NV_ST_LOC_U16", "NV_ST_LOC_B16",
-    "NV_LD_PARAM_U32", "NV_LD_PARAM_U64", "NV_LD_PARAM_F32",
-    "NV_LD_PARAM_F64", "NV_ATOM_ADD_U32", "NV_ATOM_ADD_F32",
-    "NV_ATOM_MIN_U32", "NV_ATOM_MAX_U32", "NV_ATOM_AND_B32",
-    "NV_ATOM_OR_B32", "NV_ATOM_XOR_B32", "NV_ATOM_XCHG_B32",
-    "NV_ATOM_CAS_B32", "NV_ATOM_ADD_U64", "NV_ATOM_ADD_F64",
-    "NV_ATOM_AND_B64", "NV_ATOM_OR_B64", "NV_ATOM_XOR_B64",
-    "NV_ATOM_XCHG_B64", "NV_ATOM_CAS_B64", "NV_BRA", "NV_BRA_PRED",
-    "NV_BAR_SYNC", "NV_SHFL_IDX", "NV_SHFL_UP", "NV_SHFL_DOWN",
-    "NV_SHFL_XOR", "NV_VOTE_BALLOT", "NV_VOTE_ANY", "NV_VOTE_ALL",
-    "NV_SQRT_F32", "NV_SQRT_F64", "NV_RSQ_F32", "NV_RCP_F32", "NV_SIN_F32",
-    "NV_COS_F32", "NV_EX2_F32", "NV_LG2_F32", "NV_FLOOR_F32", "NV_CEIL_F32",
-    "NV_TRUNC_F32", "NV_ROUND_F32", "NV_MIN_F32", "NV_MAX_F32",
+    "NV_SUB_S64", "NV_MUL_LO_U32", "NV_MUL_LO_S32", "NV_MUL_LO_U64", "NV_MUL_HI_U32",
+    "NV_MUL_HI_S32", "NV_MUL_HI_U64", "NV_MAD_LO_U64", "NV_DIV_U32", "NV_DIV_S32",
+    "NV_REM_U32", "NV_REM_S32", "NV_NEG_S32", "NV_ADD_F32", "NV_ADD_F64",
+    "NV_SUB_F32", "NV_SUB_F64", "NV_MUL_F32", "NV_MUL_F64", "NV_DIV_F32",
+    "NV_DIV_F64", "NV_FMA_F32", "NV_FMA_F64", "NV_NEG_F32", "NV_NEG_F64",
+    "NV_ABS_F32", "NV_ABS_F64", "NV_AND_B32", "NV_AND_B64", "NV_OR_B32",
+    "NV_OR_B64", "NV_XOR_B32", "NV_XOR_B64", "NV_NOT_B32", "NV_NOT_B64",
+    "NV_SHL_B32", "NV_SHL_B64", "NV_SHR_U32", "NV_SHR_S32", "NV_SHR_U64",
+    "NV_POPC_B32", "NV_POPC_B64", "NV_CLZ_B32", "NV_CLZ_B64", "NV_BREV_B32",
+    "NV_BREV_B64", "NV_SETP_EQ_U32", "NV_SETP_NE_U32", "NV_SETP_LT_U32", "NV_SETP_LE_U32",
+    "NV_SETP_GT_U32", "NV_SETP_GE_U32", "NV_SETP_LT_S32", "NV_SETP_LE_S32", "NV_SETP_GT_S32",
+    "NV_SETP_GE_S32", "NV_SETP_EQ_F32", "NV_SETP_NE_F32", "NV_SETP_LT_F32", "NV_SETP_LE_F32",
+    "NV_SETP_GT_F32", "NV_SETP_GE_F32", "NV_SETP_EQ_F64", "NV_SETP_NE_F64", "NV_SETP_LT_F64",
+    "NV_SETP_LE_F64", "NV_SETP_GT_F64", "NV_SETP_GE_F64", "NV_SETP_EQ_U64", "NV_SETP_NE_U64",
+    "NV_SELP_U32", "NV_SELP_U64", "NV_SELP_F32", "NV_SELP_F64", "NV_MOV_U32",
+    "NV_MOV_U64", "NV_MOV_F32", "NV_MOV_F64", "NV_MOV_PRED", "NV_CVT_U32_F32",
+    "NV_CVT_S32_F32", "NV_CVT_U32_F64", "NV_CVT_S32_F64", "NV_CVT_F32_U32", "NV_CVT_F32_S32",
+    "NV_CVT_F32_F64", "NV_CVT_F64_F32", "NV_CVT_U64_U32", "NV_CVT_S64_S32", "NV_CVT_U32_U64",
+    "NV_CVT_U64_F64", "NV_CVT_S64_F64", "NV_CVT_F64_U64", "NV_CVT_F64_S64", "NV_CVT_F64_U32",
+    "NV_CVT_F64_S32", "NV_CVT_F32_F16", "NV_CVT_F16_F32", "NV_LD_GLB_U32", "NV_LD_GLB_U64",
+    "NV_LD_GLB_F32", "NV_LD_GLB_F64", "NV_LD_GLB_U8", "NV_LD_GLB_U16", "NV_LD_GLB_B16",
+    "NV_ST_GLB_U32", "NV_ST_GLB_U64", "NV_ST_GLB_F32", "NV_ST_GLB_F64", "NV_ST_GLB_U8",
+    "NV_ST_GLB_U16", "NV_ST_GLB_B16", "NV_LD_SHR_U32", "NV_LD_SHR_F32", "NV_LD_SHR_U8",
+    "NV_LD_SHR_U16", "NV_LD_SHR_B16", "NV_ST_SHR_U32", "NV_ST_SHR_F32", "NV_ST_SHR_U8",
+    "NV_ST_SHR_U16", "NV_ST_SHR_B16", "NV_LD_LOC_U32", "NV_LD_LOC_U64", "NV_LD_LOC_F32",
+    "NV_LD_LOC_F64", "NV_LD_LOC_U8", "NV_LD_LOC_U16", "NV_LD_LOC_B16", "NV_ST_LOC_U32",
+    "NV_ST_LOC_U64", "NV_ST_LOC_F32", "NV_ST_LOC_F64", "NV_ST_LOC_U8", "NV_ST_LOC_U16",
+    "NV_ST_LOC_B16", "NV_LD_PARAM_U32", "NV_LD_PARAM_U64", "NV_LD_PARAM_F32", "NV_LD_PARAM_F64",
+    "NV_ATOM_ADD_U32", "NV_ATOM_ADD_F32", "NV_ATOM_MIN_U32", "NV_ATOM_MAX_U32", "NV_ATOM_AND_B32",
+    "NV_ATOM_OR_B32", "NV_ATOM_XOR_B32", "NV_ATOM_XCHG_B32", "NV_ATOM_CAS_B32", "NV_ATOM_ADD_U64",
+    "NV_ATOM_ADD_F64", "NV_ATOM_AND_B64", "NV_ATOM_OR_B64", "NV_ATOM_XOR_B64", "NV_ATOM_XCHG_B64",
+    "NV_ATOM_CAS_B64", "NV_BRA", "NV_BRA_PRED", "NV_BAR_SYNC", "NV_MEMBAR",
+    "NV_NANOSLP", "NV_BARRED_OR", "NV_BARRED_AND", "NV_BARRED_POPC", "NV_SHFL_IDX",
+    "NV_SHFL_UP", "NV_SHFL_DOWN", "NV_SHFL_XOR", "NV_VOTE_BALLOT", "NV_VOTE_ANY",
+    "NV_VOTE_ALL", "NV_SQRT_F32", "NV_SQRT_F64", "NV_RSQ_F32", "NV_RCP_F32",
+    "NV_SIN_F32", "NV_COS_F32", "NV_EX2_F32", "NV_LG2_F32", "NV_FLOOR_F32",
+    "NV_CEIL_F32", "NV_TRUNC_F32", "NV_ROUND_F32", "NV_MIN_F32", "NV_MAX_F32",
     "NV_MIN_U32", "NV_MAX_U32", "NV_MIN_S32", "NV_MAX_S32", "NV_RET",
     "NV_EXIT", "NV_MOV_F64_LIT", "NV_LEA_LOCAL", "NV_LEA_GLB", "NV_LEA_DSH",
-    "NV_MOV_PK16", "NV_MMA", "NV_ASM", "NV_BARWARP", "NV_TRAP",
+    "NV_MOV_PK16", "NV_MMA", "NV_WLD", "NV_WST", "NV_WMMA",
+    "NV_ASM", "NV_BARWARP", "NV_TRAP", "NV_CVTA_GLB", "NV_CVTA_LOC",
+    "NV_CALL", "NV_ST_RETP", "NV_CVT_U32_U16", "NV_SETP_LT_S64", "NV_SETP_LE_S64",
+    "NV_SETP_GT_S64", "NV_SETP_GE_S64", "NV_SETP_LT_U64", "NV_SETP_LE_U64", "NV_SETP_GT_U64",
+    "NV_SETP_GE_U64", "NV_DIV_U64", "NV_DIV_S64", "NV_REM_U64", "NV_REM_S64",
+    "NV_NEG_S64", "NV_SHR_S64", "NV_MOV_B16", "NV_MOV_B32", "NV_MOV_B64",
+    "NV_CVT_S32_S16", "NV_CVT_U16_U32", "NV_CVT_F32_U64", "NV_CVT_F32_S64", "NV_CVT_U64_F32",
+    "NV_CVT_S64_F32", "NV_CVT_F16_F64", "NV_CVT_F64_F16", "NV_CVT_F32_BF16", "NV_CVT_BF16_F32",
+    "NV_LD_PARAM_B16", "NV_LD_SHR_U64", "NV_LD_SHR_F64", "NV_ST_SHR_U64", "NV_ST_SHR_F64",
+    "NV_MIN_U64", "NV_MAX_U64", "NV_MIN_S64", "NV_MAX_S64", "NV_GBAR",
 };
 
 static const char *saonm(uint16_t op)
 {
-    if (op >= (uint16_t)NV_OP_COUNT) return "an unknown machine op";
+    if (op >= (uint16_t)NV_OP_COUNT || saopn[op] == NULL)
+        return "an unknown machine op";
     return saopn[op];
 }
 
@@ -1090,11 +1092,14 @@ static uint32_t sacc(uint16_t op)
     case NV_SETP_NE_U32: case NV_SETP_NE_F32:
     case NV_SETP_NE_F64: case NV_SETP_NE_U64: return 5u;
     case NV_SETP_LT_U32: case NV_SETP_LT_S32:
-    case NV_SETP_LT_F32: case NV_SETP_LT_F64: return 1u;
+    case NV_SETP_LT_F32: case NV_SETP_LT_F64:
+    case NV_SETP_LT_S64: case NV_SETP_LT_U64: return 1u;
     case NV_SETP_LE_U32: case NV_SETP_LE_S32:
-    case NV_SETP_LE_F32: case NV_SETP_LE_F64: return 3u;
+    case NV_SETP_LE_F32: case NV_SETP_LE_F64:
+    case NV_SETP_LE_S64: case NV_SETP_LE_U64: return 3u;
     case NV_SETP_GT_U32: case NV_SETP_GT_S32:
-    case NV_SETP_GT_F32: case NV_SETP_GT_F64: return 4u;
+    case NV_SETP_GT_F32: case NV_SETP_GT_F64:
+    case NV_SETP_GT_S64: case NV_SETP_GT_U64: return 4u;
     default: return 6u;
     }
 }
@@ -1124,26 +1129,530 @@ static void satp32(const nv_minst_t *I, int flt)
     safire(w, &x, 0u);
 }
 
+static uint32_t sats64(uint16_t op)
+{
+    switch (op) {
+    case NV_SETP_LT_S64: case NV_SETP_LE_S64:
+    case NV_SETP_GT_S64: case NV_SETP_GE_S64: return 1u;
+    default: return 0u;
+    }
+}
+
 static void satp64(const nv_minst_t *I)
 {
     lt_nrw_t x;
     uint64_t w[2];
-    uint32_t p, a, b;
+    uint32_t p, a, b, cmp = sacc(I->op), sg = sats64(I->op);
 
     memset(&x, 0, sizeof x);
     if (sawchk(I, 2u) != 0) { sabad(I->op, BC_E611); return; }
     p = sapd(I);
     a = sasrc(I->op, &I->ops[1], SA_IMM0, 2u, &x);
     b = sasrc(I->op, &I->ops[2], SA_IMM1, 2u, &x);
-    samsr(&x.wr, SA_TMP0, 2u);
-    samsr(&x.rd, SA_TMP0, 2u);
-    lt_nvlop(w, SA_TMP0, a, b, LT_NV_RZ, 0x3Cu);
+    lt_nvstp(w, p, a, b, cmp, 0u);
     safire(w, &x, 0u);
-    lt_nvlop(w, SA_TMP1, a + 1u, b + 1u, LT_NV_RZ, 0x3Cu);
+    lt_nvstx(w, p, a + 1u, b + 1u, cmp, sg, p);
     safire(w, &x, 0u);
-    lt_nvlop(w, SA_TMP0, SA_TMP0, SA_TMP1, LT_NV_RZ, 0xFCu);
+}
+
+static int sacvk(uint16_t op, uint32_t *sgn, uint32_t *dsz, uint32_t *ssz)
+{
+    switch (op) {
+    case NV_CVT_F32_S32: *sgn = 1u; *dsz = 2u; *ssz = 2u; return 0;
+    case NV_CVT_F32_U32: *sgn = 0u; *dsz = 2u; *ssz = 2u; return 0;
+    case NV_CVT_F64_S32: *sgn = 1u; *dsz = 3u; *ssz = 2u; return 0;
+    case NV_CVT_F64_U32: *sgn = 0u; *dsz = 3u; *ssz = 2u; return 0;
+    case NV_CVT_F32_S64: *sgn = 1u; *dsz = 2u; *ssz = 3u; return 0;
+    case NV_CVT_F32_U64: *sgn = 0u; *dsz = 2u; *ssz = 3u; return 0;
+    case NV_CVT_F64_S64: *sgn = 1u; *dsz = 3u; *ssz = 3u; return 0;
+    case NV_CVT_F64_U64: *sgn = 0u; *dsz = 3u; *ssz = 3u; return 0;
+    case NV_CVT_S32_F32: *sgn = 1u; *dsz = 2u; *ssz = 2u; return 1;
+    case NV_CVT_U32_F32: *sgn = 0u; *dsz = 2u; *ssz = 2u; return 1;
+    case NV_CVT_S32_F64: *sgn = 1u; *dsz = 2u; *ssz = 3u; return 1;
+    case NV_CVT_U32_F64: *sgn = 0u; *dsz = 2u; *ssz = 3u; return 1;
+    case NV_CVT_S64_F32: *sgn = 1u; *dsz = 3u; *ssz = 2u; return 1;
+    case NV_CVT_U64_F32: *sgn = 0u; *dsz = 3u; *ssz = 2u; return 1;
+    case NV_CVT_S64_F64: *sgn = 1u; *dsz = 3u; *ssz = 3u; return 1;
+    case NV_CVT_U64_F64: *sgn = 0u; *dsz = 3u; *ssz = 3u; return 1;
+    case NV_CVT_F32_F64: *sgn = 0u; *dsz = 2u; *ssz = 3u; return 2;
+    case NV_CVT_F64_F32: *sgn = 0u; *dsz = 3u; *ssz = 2u; return 2;
+    default:             *sgn = 0u; *dsz = 0u; *ssz = 0u; return -1;
+    }
+}
+
+static void sacvtf(const nv_minst_t *I)
+{
+    lt_nrw_t x;
+    uint64_t w[2];
+    uint32_t d, a, sgn, dsz, ssz, dw, aw;
+    int kind = sacvk(I->op, &sgn, &dsz, &ssz);
+
+    memset(&x, 0, sizeof x);
+    dw = (dsz >= 3u) ? 2u : 1u;
+    aw = (ssz >= 3u) ? 2u : 1u;
+    if (kind < 0 || I->ops[1].kind != (uint8_t)NV_MOP_REG
+        || sadw(I) != dw || savw(I->ops[1].rfile) != aw) {
+        sabad(I->op, BC_E611);
+        return;
+    }
+    d = sadef(I, &x);
+    a = sasrc(I->op, &I->ops[1], SA_IMM0, aw, &x);
+    if (kind == 0)      lt_nvi2f(w, d, a, sgn, dsz, ssz);
+    else if (kind == 1) lt_nvf2i(w, d, a, sgn, dsz, ssz);
+    else                lt_nvf2f(w, d, a, dsz, ssz, 0u);
+    safire(w, &x, 1u);
+}
+
+static uint32_t samfu(uint16_t op)
+{
+    switch (op) {
+    case NV_COS_F32:  return 0u;
+    case NV_SIN_F32:  return 1u;
+    case NV_EX2_F32:  return 2u;
+    case NV_LG2_F32:  return 3u;
+    case NV_RCP_F32:  return 4u;
+    case NV_RSQ_F32:  return 5u;
+    case NV_SQRT_F32: return 8u;
+    default:          return 64u;
+    }
+}
+
+static void samuf(const nv_minst_t *I)
+{
+    lt_nrw_t x;
+    uint64_t w[2];
+    uint32_t d, a, f = samfu(I->op);
+
+    memset(&x, 0, sizeof x);
+    if (f >= 64u || sawchk(I, 1u) != 0) { sabad(I->op, BC_E611); return; }
+    d = sadef(I, &x);
+    a = sasrc(I->op, &I->ops[1], SA_IMM0, 1u, &x);
+    lt_nvmuf(w, d, a, f);
+    safire(w, &x, 1u);
+}
+
+#define SA_DW  1u
+#define SCT(k) ((uint32_t)(k))
+#define SCD(k) ((uint32_t)(LT_NV_D0 + 2u * (k)))
+
+static void sadcon(const lt_nrw_t *x, uint32_t d, uint32_t hi)
+{
+    uint64_t w[2];
+
+    lt_nvmovi(w, d, 0u);
+    safire(w, x, 0u);
+    lt_nvmovi(w, d + 1u, hi);
+    safire(w, x, 0u);
+}
+
+static void sadnewt(const lt_nrw_t *x)
+{
+    uint64_t w[2];
+
+    sadcon(x, SCD(2u), 0x3FE80000u);
+    sadcon(x, SCD(4u), 0x3FF00000u);
+    for (uint32_t k = 0; k < 6u; k++) {
+        lt_nvdfm(w, SCD(3u), SCD(1u), SCD(2u), SCD(4u), 1u);
+        safire(w, x, SA_DW);
+        lt_nvdfm(w, SCD(2u), SCD(2u), SCD(3u), SCD(2u), 0u);
+        safire(w, x, SA_DW);
+    }
+}
+
+static void sadquo(const lt_nrw_t *x)
+{
+    uint64_t w[2];
+
+    lt_nvshi(w, SCT(0u), LT_NV_RZ, 20u, SCD(1u) + 1u, 3u, 1u, 1u);
+    safire(w, x, 0u);
+    lt_nvlpi(w, SCT(0u), SCT(0u), 0x7FFu, 0xC0u);
+    safire(w, x, 0u);
+    lt_nvlpi(w, SCD(1u) + 1u, SCD(1u) + 1u, 0x000FFFFFu, 0xC0u);
+    safire(w, x, 0u);
+    lt_nvlpi(w, SCD(1u) + 1u, SCD(1u) + 1u, 0x3FF00000u, 0xFCu);
+    safire(w, x, 0u);
+    sadnewt(x);
+    lt_nvdmu(w, SCD(0u), SCD(0u), SCD(2u));
+    safire(w, x, SA_DW);
+    lt_nvadi(w, SCT(0u), SCT(0u), 2046u, 1u);
+    safire(w, x, 0u);
+    lt_nvshi(w, SCT(0u), SCT(0u), 20u, LT_NV_RZ, 3u, 0u, 0u);
+    safire(w, x, 0u);
+    lt_nvmovi(w, SCD(3u), 0u);
+    safire(w, x, 0u);
+    lt_nvmov(w, SCD(3u) + 1u, SCT(0u));
+    safire(w, x, 0u);
+    lt_nvdmu(w, SCD(0u), SCD(0u), SCD(3u));
+    safire(w, x, SA_DW);
+}
+
+static void safdivs(const lt_nrw_t *x, uint32_t d, uint32_t aa, uint32_t bb)
+{
+    uint64_t w[2];
+
+    lt_nvlpi(w, SCT(2u), aa, 0x7FFFFFFFu, 0xC0u);
+    safire(w, x, 0u);
+    lt_nvlpi(w, SCT(3u), bb, 0x7FFFFFFFu, 0xC0u);
+    safire(w, x, 0u);
+    lt_nvsti(w, LT_NV_P0, SCT(3u), 0x7F800000u, 2u, 0u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCT(0u), aa, bb, LT_NV_RZ, 0x3Cu);
+    safire(w, x, 0u);
+    lt_nvlpi(w, SCT(0u), SCT(0u), 0x80000000u, 0xC0u);
+    safire(w, x, 0u);
+    lt_nvsel(w, d, SCT(0u), d, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P1, SCT(2u), SCT(3u), 2u, 0u);
+    safire(w, x, 0u);
+    lt_nvstc(w, LT_NV_P0, SCT(2u), LT_NV_RZ, 2u, LT_NV_P1, 0u);
+    safire(w, x, 0u);
+    lt_nvsei(w, d, d, 0x7FC00000u, LT_NV_P0, 1u);
+    safire(w, x, 0u);
+    lt_nvmovi(w, SCT(0u), 0x7F800000u);
+    safire(w, x, 0u);
+    lt_nvstc(w, LT_NV_P0, SCT(2u), SCT(0u), 2u, LT_NV_P1, 0u);
+    safire(w, x, 0u);
+    lt_nvsei(w, d, d, 0x7FC00000u, LT_NV_P0, 1u);
+    safire(w, x, 0u);
+    lt_nvftp(w, LT_NV_P0, aa, bb, 8u);
+    safire(w, x, 0u);
+    lt_nvsei(w, d, d, 0x7FC00000u, LT_NV_P0, 1u);
+    safire(w, x, 0u);
+}
+
+static void safdiv32(const lt_nrw_t *x, uint32_t d, uint32_t a, uint32_t b)
+{
+    uint32_t aa = SCD(5u), bb = SCD(5u) + 1u;
+    uint64_t w[2];
+
+    lt_nvmov(w, aa, a);
+    safire(w, x, 0u);
+    lt_nvmov(w, bb, b);
+    safire(w, x, 0u);
+    lt_nvf2f(w, SCD(0u), aa, 3u, 2u, 0u);
+    safire(w, x, SA_DW);
+    lt_nvf2f(w, SCD(1u), bb, 3u, 2u, 0u);
+    safire(w, x, SA_DW);
+    sadquo(x);
+    lt_nvlpi(w, SCT(1u), bb, 0x80000000u, 0xC0u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCD(0u) + 1u, SCD(0u) + 1u, SCT(1u), LT_NV_RZ, 0x3Cu);
+    safire(w, x, 0u);
+    lt_nvf2f(w, SCT(1u), SCD(0u), 2u, 3u, 0u);
+    safire(w, x, SA_DW);
+    safdivs(x, SCT(1u), aa, bb);
+    lt_nvmov(w, d, SCT(1u));
+    safire(w, x, 0u);
+}
+
+static void saudivc(const lt_nrw_t *x, uint32_t xr, uint32_t yr)
+{
+    uint64_t w[2];
+
+    lt_nvmad(w, SCT(2u), SCT(1u), yr, LT_NV_RZ, 0u, 0u);
+    safire(w, x, 0u);
+    lt_nvmad(w, SCT(3u), SCT(1u), yr, LT_NV_RZ, 1u, 0u);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P1, SCT(2u), xr, 4u, 0u);
+    safire(w, x, 0u);
+    lt_nvstx(w, LT_NV_P0, SCT(3u), LT_NV_RZ, 4u, 0u, LT_NV_P1);
+    safire(w, x, 0u);
+    lt_nvsei(w, SCT(0u), LT_NV_RZ, 1u, LT_NV_P0, 1u);
+    safire(w, x, 0u);
+    lt_nvadd(w, SCT(1u), SCT(1u), SCT(0u), 1u);
+    safire(w, x, 0u);
+    lt_nvmad(w, SCT(2u), SCT(1u), yr, LT_NV_RZ, 0u, 0u);
+    safire(w, x, 0u);
+    lt_nvadd(w, SCT(2u), xr, SCT(2u), 1u);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P0, SCT(2u), yr, 6u, 0u);
+    safire(w, x, 0u);
+    lt_nvsei(w, SCT(0u), LT_NV_RZ, 1u, LT_NV_P0, 1u);
+    safire(w, x, 0u);
+    lt_nvadd(w, SCT(1u), SCT(1u), SCT(0u), 0u);
+    safire(w, x, 0u);
+    lt_nvsel(w, SCT(0u), yr, LT_NV_RZ, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+    lt_nvadd(w, SCT(2u), SCT(2u), SCT(0u), 1u);
+    safire(w, x, 0u);
+}
+
+static void saudiv32(const lt_nrw_t *x, uint32_t xr, uint32_t yr)
+{
+    uint64_t w[2];
+
+    lt_nvi2f(w, SCD(0u), xr, 0u, 3u, 2u);
+    safire(w, x, SA_DW);
+    lt_nvi2f(w, SCD(1u), yr, 0u, 3u, 2u);
+    safire(w, x, SA_DW);
+    sadquo(x);
+    lt_nvf2i(w, SCT(1u), SCD(0u), 0u, 2u, 3u);
+    safire(w, x, SA_DW);
+    saudivc(x, xr, yr);
+}
+
+static void sasgnf(const lt_nrw_t *x, uint32_t d, uint32_t r, uint32_t sx,
+                   uint32_t sy)
+{
+    uint64_t w[2];
+
+    lt_nvshi(w, SCT(0u), LT_NV_RZ, 31u, sx, 2u, 1u, 1u);
+    safire(w, x, 0u);
+    if (sy != LT_NV_RZ) {
+        lt_nvshi(w, SCD(0u), LT_NV_RZ, 31u, sy, 2u, 1u, 1u);
+        safire(w, x, 0u);
+        lt_nvlop(w, SCT(0u), SCT(0u), SCD(0u), LT_NV_RZ, 0x3Cu);
+        safire(w, x, 0u);
+    }
+    lt_nvlop(w, d, r, SCT(0u), LT_NV_RZ, 0x3Cu);
+    safire(w, x, 0u);
+    lt_nvadd(w, d, d, SCT(0u), 1u);
+    safire(w, x, 0u);
+}
+
+static void sadiv32(const nv_minst_t *I, int sg, int rem)
+{
+    lt_nrw_t y;
+    uint64_t w[2];
+    uint32_t d, sx, sy, xr = SCD(5u), yr = SCD(5u) + 1u;
+
+    if (I->ops[1].kind != (uint8_t)NV_MOP_REG
+        || I->ops[2].kind != (uint8_t)NV_MOP_REG) {
+        sabad(I->op, BC_E609);
+        return;
+    }
+    d  = sarg(&I->ops[0]);
+    sx = sarg(&I->ops[1]);
+    sy = sarg(&I->ops[2]);
+    memset(&y, 0, sizeof y);
+    samsr(&y.rd, 0u, LT_NV_NSCR);
+    samsr(&y.wr, 0u, LT_NV_NSCR);
+    samsr(&y.rd, sx, 1u);
+    samsr(&y.rd, sy, 1u);
+    samsr(&y.wr, d, 1u);
+    if (sg != 0) {
+        sasgnf(&y, xr, sx, sx, LT_NV_RZ);
+        sasgnf(&y, yr, sy, sy, LT_NV_RZ);
+    } else {
+        lt_nvmov(w, xr, sx);
+        safire(w, &y, 0u);
+        lt_nvmov(w, yr, sy);
+        safire(w, &y, 0u);
+    }
+    saudiv32(&y, xr, yr);
+    lt_nvmov(w, SCT(3u), rem ? SCT(2u) : SCT(1u));
+    safire(w, &y, 0u);
+    if (sg != 0)
+        sasgnf(&y, SCT(3u), SCT(3u), sx, rem ? LT_NV_RZ : sy);
+    lt_nvstp(w, LT_NV_P0, sy, LT_NV_RZ, 2u, 0u);
+    safire(w, &y, 0u);
+    lt_nvsei(w, d, SCT(3u), 0u, LT_NV_P0, 1u);
+    safire(w, &y, 0u);
+}
+
+static void safdiv(const nv_minst_t *I)
+{
+    lt_nrw_t y;
+    uint32_t d, a, b;
+
+    if (I->ops[1].kind != (uint8_t)NV_MOP_REG
+        || I->ops[2].kind != (uint8_t)NV_MOP_REG) {
+        sabad(I->op, BC_E609);
+        return;
+    }
+    d = sarg(&I->ops[0]);
+    a = sarg(&I->ops[1]);
+    b = sarg(&I->ops[2]);
+    memset(&y, 0, sizeof y);
+    samsr(&y.rd, 0u, LT_NV_NSCR);
+    samsr(&y.wr, 0u, LT_NV_NSCR);
+    samsr(&y.rd, a, 1u);
+    samsr(&y.rd, b, 1u);
+    samsr(&y.wr, d, 1u);
+    safdiv32(&y, d, a, b);
+}
+
+static void sadpick(const lt_nrw_t *x, uint32_t d, uint32_t a, uint32_t b,
+                    uint32_t p, uint32_t nt)
+{
+    uint32_t ah = (a == LT_NV_RZ) ? LT_NV_RZ : a + 1u;
+    uint32_t bh = (b == LT_NV_RZ) ? LT_NV_RZ : b + 1u;
+    uint64_t w[2];
+
+    lt_nvsel(w, d, a, b, p, nt);
+    safire(w, x, 0u);
+    lt_nvsel(w, d + 1u, ah, bh, p, nt);
+    safire(w, x, 0u);
+}
+
+static void saq64abs(const lt_nrw_t *x, uint32_t d, uint32_t s, uint32_t sh)
+{
+    uint64_t w[2];
+
+    lt_nvadc(w, SCT(0u), LT_NV_RZ, s, 1u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCT(1u), sh, LT_NV_RZ, LT_NV_RZ, 0x0Fu);
+    safire(w, x, 0u);
+    lt_nvadx(w, SCT(1u), LT_NV_RZ, SCT(1u), 0u);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P0, sh, LT_NV_RZ, 1u, 1u);
+    safire(w, x, 0u);
+    lt_nvsel(w, d, SCT(0u), s, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+    lt_nvsel(w, d + 1u, SCT(1u), sh, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+}
+
+static void saq64stp(const lt_nrw_t *x)
+{
+    uint64_t w[2];
+
+    lt_nvshi(w, SCT(0u), LT_NV_RZ, 31u, SCD(0u) + 1u, 3u, 1u, 1u);
+    safire(w, x, 0u);
+    lt_nvshi(w, SCD(0u) + 1u, SCD(0u), 1u, SCD(0u) + 1u, 1u, 0u, 1u);
+    safire(w, x, 0u);
+    lt_nvshi(w, SCD(0u), SCD(1u) + 1u, 1u, SCD(0u), 1u, 0u, 1u);
+    safire(w, x, 0u);
+    lt_nvshi(w, SCD(1u) + 1u, SCD(1u), 1u, SCD(1u) + 1u, 1u, 0u, 1u);
+    safire(w, x, 0u);
+    lt_nvshi(w, SCD(1u), SCD(1u), 1u, LT_NV_RZ, 3u, 0u, 0u);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P1, SCD(0u), SCD(5u), 6u, 0u);
+    safire(w, x, 0u);
+    lt_nvstx(w, LT_NV_P0, SCD(0u) + 1u, SCD(5u) + 1u, 6u, 0u, LT_NV_P1);
+    safire(w, x, 0u);
+    lt_nvsei(w, SCT(1u), LT_NV_RZ, 1u, LT_NV_P0, 1u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCT(1u), SCT(1u), SCT(0u), LT_NV_RZ, 0xFCu);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P0, SCT(1u), LT_NV_RZ, 5u, 0u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCD(1u), SCD(1u), SCT(1u), LT_NV_RZ, 0xFCu);
+    safire(w, x, 0u);
+    lt_nvsel(w, SCT(0u), SCD(5u), LT_NV_RZ, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+    lt_nvsel(w, SCT(1u), SCD(5u) + 1u, LT_NV_RZ, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCT(1u), SCT(1u), LT_NV_RZ, LT_NV_RZ, 0x0Fu);
+    safire(w, x, 0u);
+    lt_nvadc(w, SCD(0u), SCD(0u), SCT(0u), 1u);
+    safire(w, x, 0u);
+    lt_nvadx(w, SCD(0u) + 1u, SCD(0u) + 1u, SCT(1u), 0u);
+    safire(w, x, 0u);
+}
+
+static void saq64lop(const lt_nrw_t *x)
+{
+    uint8_t  g = sast.gate;
+    uint32_t hd;
+    uint64_t w[2];
+
+    lt_nvmovi(w, SCT(3u), 64u);
+    safire(w, x, 0u);
+    sadrn();
+    hd = sast.clen;
+    saq64stp(x);
+    sast.gate = (uint8_t)LT_NV_PT;
+    lt_nvadi(w, SCT(3u), SCT(3u), 0xFFFFFFFFu, 0u);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P1, SCT(3u), LT_NV_RZ, 5u, 0u);
+    safire(w, x, 0u);
+    sadrn();
+    lt_nvbrp(w, ((int32_t)hd - (int32_t)sast.clen - 16) / 4, LT_NV_P1, 0u);
+    safire(w, x, 0u);
+    sast.gate = g;
+}
+
+static void saq64sgn(const lt_nrw_t *x, uint32_t d, uint32_t s, uint32_t sa,
+                     uint32_t sb)
+{
+    uint64_t w[2];
+
+    lt_nvadc(w, SCT(0u), LT_NV_RZ, s, 1u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCT(1u), s + 1u, LT_NV_RZ, LT_NV_RZ, 0x0Fu);
+    safire(w, x, 0u);
+    lt_nvadx(w, SCT(1u), LT_NV_RZ, SCT(1u), 0u);
+    safire(w, x, 0u);
+    lt_nvlop(w, SCT(2u), sa, sb, LT_NV_RZ, 0x3Cu);
+    safire(w, x, 0u);
+    lt_nvstp(w, LT_NV_P0, SCT(2u), LT_NV_RZ, 1u, 1u);
+    safire(w, x, 0u);
+    lt_nvsel(w, d, SCT(0u), s, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+    lt_nvsel(w, d + 1u, SCT(1u), s + 1u, LT_NV_P0, 0u);
+    safire(w, x, 0u);
+}
+
+static void sadiv64(const nv_minst_t *I, int sg, int rem)
+{
+    lt_nrw_t y;
+    uint64_t w[2];
+    uint32_t d, a0, a1, b0, b1;
+
+    if (I->ops[1].kind != (uint8_t)NV_MOP_REG
+        || I->ops[2].kind != (uint8_t)NV_MOP_REG) {
+        sabad(I->op, BC_E609);
+        return;
+    }
+    d  = sarg(&I->ops[0]);
+    a0 = sarg(&I->ops[1]); a1 = a0 + 1u;
+    b0 = sarg(&I->ops[2]); b1 = b0 + 1u;
+    memset(&y, 0, sizeof y);
+    samsr(&y.rd, 0u, LT_NV_NSCR);
+    samsr(&y.wr, 0u, LT_NV_NSCR);
+    samsr(&y.rd, a0, 2u);
+    samsr(&y.rd, b0, 2u);
+    samsr(&y.wr, d, 2u);
+    if (sg != 0) {
+        saq64abs(&y, SCD(1u), a0, a1);
+        saq64abs(&y, SCD(5u), b0, b1);
+    } else {
+        lt_nvmov(w, SCD(1u), a0);
+        safire(w, &y, 0u);
+        lt_nvmov(w, SCD(1u) + 1u, a1);
+        safire(w, &y, 0u);
+        lt_nvmov(w, SCD(5u), b0);
+        safire(w, &y, 0u);
+        lt_nvmov(w, SCD(5u) + 1u, b1);
+        safire(w, &y, 0u);
+    }
+    lt_nvmovi(w, SCD(0u), 0u);
+    safire(w, &y, 0u);
+    lt_nvmovi(w, SCD(0u) + 1u, 0u);
+    safire(w, &y, 0u);
+    saq64lop(&y);
+    if (sg != 0)
+        saq64sgn(&y, SCD(2u), rem ? SCD(0u) : SCD(1u), a1,
+                 rem ? LT_NV_RZ : b1);
+    else
+        sadpick(&y, SCD(2u), rem ? SCD(0u) : SCD(1u), LT_NV_RZ,
+                LT_NV_PT, 0u);
+    lt_nvlop(w, SCT(0u), b0, b1, LT_NV_RZ, 0xFCu);
+    safire(w, &y, 0u);
+    lt_nvstp(w, LT_NV_P0, SCT(0u), LT_NV_RZ, 5u, 0u);
+    safire(w, &y, 0u);
+    sadpick(&y, d, SCD(2u), LT_NV_RZ, LT_NV_P0, 0u);
+}
+
+static void samnx(const nv_minst_t *I, int mx)
+{
+    lt_nrw_t x;
+    uint64_t w[2];
+    uint32_t d, a, b;
+
+    memset(&x, 0, sizeof x);
+    if (sawchk(I, 1u) != 0) { sabad(I->op, BC_E611); return; }
+    d = sadef(I, &x);
+    a = sasrc(I->op, &I->ops[1], SA_IMM0, 1u, &x);
+    b = sasrc(I->op, &I->ops[2], SA_IMM1, 1u, &x);
+    lt_nvftp(w, LT_NV_P0, a, b, mx ? 4u : 1u);
     safire(w, &x, 0u);
-    lt_nvstp(w, p, SA_TMP0, LT_NV_RZ, sacc(I->op), 0u);
+    lt_nvsel(w, d, a, b, LT_NV_P0, 0u);
+    safire(w, &x, 0u);
+    lt_nvftp(w, LT_NV_P0, a, b, 8u);
+    safire(w, &x, 0u);
+    lt_nvsei(w, d, d, 0x7FC00000u, LT_NV_P0, 1u);
     safire(w, &x, 0u);
 }
 
@@ -1294,6 +1803,36 @@ static void samemc(const nv_minst_t *I)
     }
 }
 
+static void saext(const nv_minst_t *I)
+{
+    switch (I->op) {
+    case NV_CVT_F32_S32: case NV_CVT_F32_U32:
+    case NV_CVT_F64_S32: case NV_CVT_F64_U32:
+    case NV_CVT_F32_S64: case NV_CVT_F32_U64:
+    case NV_CVT_F64_S64: case NV_CVT_F64_U64:
+    case NV_CVT_S32_F32: case NV_CVT_U32_F32:
+    case NV_CVT_S32_F64: case NV_CVT_U32_F64:
+    case NV_CVT_S64_F32: case NV_CVT_U64_F32:
+    case NV_CVT_S64_F64: case NV_CVT_U64_F64:
+    case NV_CVT_F32_F64: case NV_CVT_F64_F32: sacvtf(I); return;
+    case NV_SQRT_F32: case NV_RSQ_F32: case NV_RCP_F32:
+    case NV_SIN_F32: case NV_COS_F32:
+    case NV_EX2_F32: case NV_LG2_F32:  samuf(I); return;
+    case NV_DIV_U32:                    sadiv32(I, 0, 0); return;
+    case NV_DIV_S32:                    sadiv32(I, 1, 0); return;
+    case NV_REM_U32:                    sadiv32(I, 0, 1); return;
+    case NV_REM_S32:                    sadiv32(I, 1, 1); return;
+    case NV_DIV_U64:                    sadiv64(I, 0, 0); return;
+    case NV_DIV_S64:                    sadiv64(I, 1, 0); return;
+    case NV_REM_U64:                    sadiv64(I, 0, 1); return;
+    case NV_REM_S64:                    sadiv64(I, 1, 1); return;
+    case NV_DIV_F32:                    safdiv(I); return;
+    case NV_MAX_F32:                    samnx(I, 1); return;
+    case NV_MIN_F32:                    samnx(I, 0); return;
+    default:                            samemc(I); return;
+    }
+}
+
 static void sastep(const nv_minst_t *I)
 {
     sast.cop = I->op;
@@ -1337,8 +1876,13 @@ static void sastep(const nv_minst_t *I)
     case NV_SETP_EQ_F32: case NV_SETP_NE_F32:
     case NV_SETP_LT_F32: case NV_SETP_LE_F32:
     case NV_SETP_GT_F32: case NV_SETP_GE_F32: satp32(I, 1); return;
-    case NV_SETP_EQ_U64: case NV_SETP_NE_U64: satp64(I); return;
-    default:                            samemc(I); return;
+    case NV_SETP_EQ_U64: case NV_SETP_NE_U64:
+    case NV_SETP_LT_S64: case NV_SETP_LE_S64:
+    case NV_SETP_GT_S64: case NV_SETP_GE_S64:
+    case NV_SETP_LT_U64: case NV_SETP_LE_U64:
+    case NV_SETP_GT_U64: case NV_SETP_GE_U64: satp64(I); return;
+    case NV_MOV_B16: case NV_MOV_B32: case NV_MOV_B64: samov(I); return;
+    default:                            saext(I); return;
     }
 }
 

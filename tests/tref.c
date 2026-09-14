@@ -1,11 +1,4 @@
-/* tref.c -- reference parameters
- *
- * A T& parameter used to be passed by value and the write never reached the
- * caller, so every accumulator written as ggml_cuda_mad(float & acc, ...)
- * silently did not accumulate. Compiling is not the property under test here.
- * The property is that the caller's variable changed, that it changed in the
- * emitted code and not only in the IR, and that a const T& did not quietly
- * become a copy. */
+/* tref.c -- reference parameters, checked in the emitted code */
 
 #include "tharns.h"
 
@@ -59,9 +52,7 @@ static void ref01(void)
 }
 TH_REG("ref", 1, "a T& parameter writes the caller's variable", ref01)
 
-/* The same kernel through the NVIDIA backend. 0f40800000 is 4.0f, which only
- * appears if the callee's store landed on the caller's object. 0f3F800000 is
- * 1.0f, the answer the old by-value lowering gave. */
+/* 0f40800000 is 4.0f. By value it was 1.0f. */
 static void ref02(void)
 {
     CHEQ(rf_emit("__device__ void bump(float& a, float v) { a += v; }\n"
@@ -92,8 +83,7 @@ TH_REG("ref", 3, "and in the AMD assembly too", ref03)
 
 /* ---- const T& is a reference, not a copy ---- */
 
-/* poke writes 9 through a, peek returns c. Both name the same object. A
- * const T& that copied would hand back the 1 it was called with. */
+/* poke and peek name the same object */
 static void ref04(void)
 {
     CHEQ(rf_emit("__device__ void poke(float& a) { a = 9.0f; }\n"
@@ -154,10 +144,7 @@ static int rf_cnt(const char *hay, const char *needle)
     return c;
 }
 
-/* mem2reg leaves array slots in memory, so the proof here is the shape of
- * the traffic: the element is written once by the caller and again by the
- * callee, at the same address, with the add in between. By value the
- * callee body folded away and only the first store survived. */
+/* Array slots stay in memory, so caller and callee store to one address */
 static void ref07(void)
 {
     CHEQ(rf_emit("__device__ void bump(float& a, float v) { a += v; }\n"
@@ -202,8 +189,7 @@ static void ref09(void)
 }
 TH_REG("ref", 9, "a reference passed on reaches the original", ref09)
 
-/* A reference to a global element must stay in global memory: no scratch
- * copy on the way in, and the read-modify-write lands back on o[3]. */
+/* A reference to a global element stays in global memory */
 static void ref10(void)
 {
     CHEQ(rf_emit("__device__ void bump(float& a, float v) { a += v; }\n"
@@ -246,8 +232,7 @@ static void ref12(void)
 }
 TH_REG("ref", 12, "a T*& parameter can move the caller's pointer", ref12)
 
-/* A literal has no address of its own, so a const T& gets one made for it,
- * and the callee must read the value that went into it. */
+/* A literal gets a temporary for the const T& to point at */
 static void ref13(void)
 {
     CHEQ(rf_run("__device__ float dbl(const float& a) { return a * 2.0f; }\n"
@@ -333,8 +318,7 @@ static void ref19(void)
 }
 TH_REG("ref", 19, "a non-const T& will not bind an rvalue", ref19)
 
-/* Binding float to double& would give the callee a four-byte object to write
- * eight bytes of, so the mismatch is named rather than converted. */
+/* float to double& is named, not converted */
 static void ref20(void)
 {
     CHECK(rf_err("__device__ void bump(double& a) { a += 1.0; }\n"
@@ -393,9 +377,7 @@ static void ref24(void)
 }
 TH_REG("ref", 24, "an array reference writes the caller array", ref24)
 
-/* The overload table matched on arity alone, so a same-arity neighbour was
- * picked on declaration order. The reference parameter is now ranked with the
- * rest, so 1.0 + 2.0 must reach the PTX as 3.0 and not as an integer add. */
+/* Overloads rank the reference parameter, so 1.0 + 2.0 is a float add */
 static void ref25(void)
 {
     CHEQ(rf_emit("__device__ void mad(int& a, int v) { a += v; }\n"
@@ -411,9 +393,7 @@ static void ref25(void)
 }
 TH_REG("ref", 25, "a reference ranks with the other arguments", ref25)
 
-/* ggml_cuda_mad, verbatim, in the loop it is always called from. Before the
- * write reached the caller the whole body folded away and the kernel stored
- * a nought. */
+/* ggml_cuda_mad, verbatim */
 static void ref26(void)
 {
     CHEQ(rf_run("static __device__ __forceinline__ void ggml_cuda_mad("
@@ -431,8 +411,7 @@ static void ref26(void)
 }
 TH_REG("ref", 26, "the ggml accumulator shape accumulates", ref26)
 
-/* An alias would otherwise smuggle the old by-value lowering back in: the
- * & is on the typedef, not on the parameter. */
+/* The & on a typedef is still a reference */
 static void ref27(void)
 {
     CHECK(rf_err("typedef float& fref;\n"
@@ -446,9 +425,7 @@ static void ref27(void)
 }
 TH_REG("ref", 27, "an alias for a reference type is refused", ref27)
 
-/* A reference parameter was bound against the first same-arity candidate, so
- * two overloads differing only in the struct behind the reference reported a
- * type mismatch instead of resolving. Each body carries its own constant. */
+/* Overloads differing only in the struct behind a reference resolve */
 static void ref30(void)
 {
     CHEQ(rf_emit("struct ta { int v; };\n"

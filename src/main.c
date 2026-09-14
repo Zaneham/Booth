@@ -37,9 +37,7 @@ static token_t    token_buf[BC_MAX_TOKENS];
 static ast_node_t node_buf[BC_MAX_NODES];
 static bir_module_t *bir_module; /* heap-allocated (~11 MB) */
 
-/* The run verb needs the kernel's name to hand the launcher, and only the
- * built module knows it. krec copies the first __global__ name out of any
- * module a frontend finishes, but only when kath_compile was asked. */
+/* kath run wants a kernel name, and only the built module knows one */
 static kath_out_t *g_kout;
 
 static void krec(const bir_module_t *M)
@@ -103,13 +101,7 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     rc = bir_vchk(bir);
     if (rc != BC_OK) return rc;
 
-    /* String literal globals (BIR_CONST_BYTES initializer) need the
-     * backend to put the bytes somewhere a pointer can reach. A backend
-     * that does says so with BE_F_BYTES; the rest refuse rather than hand
-     * out an address of nothing. NVIDIA lays them in .global and takes the
-     * address with mov.u64; AMD puts them in .rodata and takes it with
-     * s_getpc_b64; Tensix static const is #95, still open. The IR carries
-     * the bytes either way, so only a backend run has anything to refuse. */
+    /* No BE_F_BYTES, nowhere to put a string literal */
     {
         const be_desc_t *sbe = be_active();
         if (sbe != NULL && (sbe->feats & BE_F_BYTES) == 0) {

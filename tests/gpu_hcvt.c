@@ -1,11 +1,10 @@
-/* gpu_hcvt.c -- run the packed half2/bfloat162 conversions on a real GPU.
+/* gpu_hcvt.c -- packed half2/bfloat162 conversions on a real card
  *
  *   kath --nvidia-ptx tests/hcvt.cu -o hcvt.ptx
  *   gcc tests/gpu_hcvt.c runtime/host/cuda/nv_rt.c -Iruntime/include -o gpu_hcvt
  *   ./gpu_hcvt hcvt.ptx
  *
- * Every float input is an exact tie for the narrow format, so a conversion
- * that rounded anywhere but to nearest-even misses on the first value. */
+ * Every input is an exact tie, so anything but round-to-even misses. */
 #include "booth/nv_rt.h"
 
 #include <stdio.h>

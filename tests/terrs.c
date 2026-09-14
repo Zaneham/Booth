@@ -136,10 +136,7 @@ static void err07(void)
 }
 TH_REG("err", 7, "sema errors are fatal", err07)
 
-/* ---- errors: a backend refusal is numbered ----
- * The backends used to print a bare "kath: ..." line with no code, in four
- * different phrasings, so nothing downstream could tell which layer stopped
- * or why. Every backend refusal now carries an E5xx like the front end's do. */
+/* ---- errors: a backend refusal is numbered ---- */
 
 static void err08(void)
 {

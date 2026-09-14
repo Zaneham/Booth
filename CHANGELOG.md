@@ -5,38 +5,26 @@ Booth — Changelog
 
 ### Runtime
 
-- `kath run`, `kath build` and `kath doctor` are verbs in the binary: run
-  builds a source and executes it on the detected device through the revived
-  src/exec launcher (CPU in-process, NVIDIA PTX on the card), build collapses
-  the OCaml and Fortran chains to one command, and doctor self-tests a vadd
-  through each path (Zane Hambly, 2026-09-14)
+- `kath run`, `kath build` and `kath doctor`, so one command builds a source
+  and runs it on whatever device is there (Zane Hambly, 2026-09-14)
 
 ### Backends
 
-- `--nvidia-cubin` emits SASS and writes its own cubin, with no NVCC,
-  ptxas, nvdisasm or cuobjdump in the chain. All 67 of ggml-cuda's files
-  now reach the IR. Every back end refuses what it cannot express rather
-  than emitting something near it (Zane Hambly, 2026-09-09)
+- `--nvidia-cubin` writes a cubin the card will load, with no NVCC anywhere in
+  the chain. All 67 of ggml-cuda's files now reach the IR
+  (Zane Hambly, 2026-09-09)
 
 ### Frontend
 
-- `constexpr` and `const` objects bind a value at namespace, class and
-  block scope and fold at every use, including as an array bound, and an
-  initialiser the folder cannot evaluate refuses by E128 rather than
-  disappearing (Zane Hambly, 2026-09-03)
+- `constexpr` and `const` objects fold at every use, and anything the folder
+  cannot evaluate refuses with E128 (Zane Hambly, 2026-09-03)
 
-- class templates, explicit specialisations, template argument lists in
-  types and expressions, default template arguments, `enum class` and the
-  host C++ around them parse, so 47 of ggml-cuda's 67 files reach the
-  lowerer instead of stopping at `common.cuh:426`
+- class templates, specialisations, default template arguments and
+  `enum class` parse, so 47 of ggml-cuda's 67 files reach the lowerer
   (Zane Hambly, 2026-09-04)
 
-- the lowerer's struct, enum, typedef and template tables were four
-  places a large translation unit silently ran out of room, and with
-  them raised, `half2` and the rest of the packed pairs added, and
-  arithmetic on a vector refusing rather than adding two scratch
-  addresses, ggml-cuda's lowering errors fall from 774 to 210
-  (Zane Hambly, 2026-09-04)
+- the lowerer's tables no longer run out of room on a large translation unit,
+  taking ggml-cuda's lowering errors from 774 to 210 (Zane Hambly, 2026-09-04)
 
 
 ## Booth 0.5.3

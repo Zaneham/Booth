@@ -1,6 +1,4 @@
-/* nv_exec.c -- the NVIDIA launcher behind the target-agnostic rt_desc_t.
- * nv_rt.c keeps its own API; this is the thin adapter that lets kath run
- * a PTX kernel through the same rt_* calls the CPU target answers. */
+/* nv_exec.c -- nv_rt behind rt_desc_t, so kath run can drive the card */
 
 #include "exec.h"
 #include "booth/nv_rt.h"

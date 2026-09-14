@@ -1,5 +1,4 @@
-/* gpu_wmma.c -- run the WMMA kernels on a real NVIDIA GPU.
- * PTX is JITed by the driver, so no CUDA SDK is needed.
+/* gpu_wmma.c -- the WMMA kernels on a real card
  *
  *   kath --nvidia-ptx tests/wmma16.cu -o wmma16.ptx
  *   gcc tests/gpu_wmma.c runtime/host/cuda/nv_rt.c -Iruntime/include -o gpu_wmma
@@ -15,8 +14,7 @@
 #define MAXD 32
 #define LD   32
 
-/* Asymmetric in both indices: a layout that transposed a fragment, or
- * swapped two halves of a fragment, would not survive this. */
+/* Asymmetric, so a transposed or half-swapped fragment shows up */
 #define AV(i, k) ((float)((((i) * 3 + (k) * 5) % 7) - 3))
 #define BV(k, j) ((float)((((k) * 2 + (j) * 3) % 5) - 2))
 
@@ -27,8 +25,6 @@ static unsigned short f2b(float f)
     return (unsigned short)(p.u >> 16);
 }
 
-/* Only small integers go through here, so the exponent path is the whole
- * story and there is nothing to round. */
 static unsigned short f2h(float f)
 {
     union { float f; unsigned int u; } p;
@@ -123,8 +119,6 @@ static int onecase(nv_dev_t *dev, const char *ptx, const struct kcase *c)
 }
 
 
-/* Integer, tf32 and f64 want their own element types, so each gets its own
- * reference rather than bending the half-precision harness around them. */
 static signed char ia[MAXD * LD], ib[MAXD * LD];
 static int id[MAXD * LD], iref[MAXD * LD];
 

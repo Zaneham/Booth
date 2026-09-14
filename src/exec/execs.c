@@ -4,9 +4,7 @@
 #include "exec.h"
 #include <string.h>
 
-/* cpu is always here; nvptx dlopens the driver and fails open() cleanly on a
- * machine without one. bc_runtime (AMD/HSA) is still on its own API and not
- * yet behind the contract. */
+/* nvptx fails open() cleanly with no driver. AMD isn't behind rt_desc_t yet. */
 extern const rt_desc_t cpu_rt_desc;
 extern const rt_desc_t nv_rt_desc;
 

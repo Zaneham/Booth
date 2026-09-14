@@ -566,9 +566,7 @@ static void rpi15(void)
 }
 TH_REG("rpi", 15, "a template type parameter names a type", rpi15)
 
-/* A variadic callee recorded only its named parameters, so every call that
- * passed anything through the ellipsis came back as the wrong arity. Every
- * GGML_ASSERT in ggml-cuda hit it. */
+/* Arguments through the ellipsis count toward a variadic call */
 static void rpi16(void)
 {
     static const char *const src =
@@ -588,9 +586,7 @@ static void rpi16(void)
 }
 TH_REG("rpi", 16, "an ellipsis takes as many arguments as given", rpi16)
 
-/* Every ggml-cuda file died at the backend on E110 because the module carried
- * a string literal, so none of them ever reached PTX. NVIDIA lays the bytes in
- * .global now and takes the address with mov.u64 (#94). */
+/* NVIDIA lays string literals in .global (#94) */
 static int cxrn2(const char *src)
 {
     char cmd[512];
@@ -642,9 +638,7 @@ static void rpi17(void)
 }
 TH_REG("rpi", 17, "#94 a string literal reaches PTX", rpi17)
 
-/* A union was laid out as a struct, so every field got its own storage: this
- * one measured 16 where the hardware says 8, and everything after it in the
- * enclosing struct sat at the wrong offset. */
+/* A union shares its storage */
 static void rpi18(void)
 {
     static const char *const src =
@@ -666,9 +660,7 @@ static void rpi18(void)
 }
 TH_REG("rpi", 18, "a union is as big as its largest member", rpi18)
 
-/* ggml-common.h puts the scale pair in an anonymous union, and nothing nested
- * inside a struct body was collected at all, so x[i].dm came back as an unknown
- * field and __half22float2 refused behind it. */
+/* An anonymous union nested in a struct, straight out of ggml-common.h */
 static void rpi19(void)
 {
     static const char *const src =
@@ -696,9 +688,7 @@ static void rpi19(void)
 }
 TH_REG("rpi", 19, "a member of an anonymous union resolves", rpi19)
 
-/* assert in device code refused outright. It is a trap with a message and the
- * message needs a call to vprintf that no GPU backend here makes, so the
- * condition gets the trap and the text is what we give up. */
+/* assert in device code traps and loses its message */
 static void rpi20(void)
 {
     const char *p = rpi_ptx(
@@ -713,8 +703,7 @@ static void rpi20(void)
 }
 TH_REG("rpi", 20, "assert becomes a conditional trap", rpi20)
 
-/* BIR_GLOBAL_REF was a no-op on the PTX backend, so a kernel reading a
- * __device__ table indexed off whatever the register happened to hold. */
+/* BIR_GLOBAL_REF reaches a __device__ table on PTX */
 static void rpi21(void)
 {
     const char *p = rpi_ptx(
@@ -779,9 +768,7 @@ static void rpi24(void)
 }
 TH_REG("rpi", 24, "a host with no dynamic shared refuses", rpi24)
 
-/* A static member was filed under its bare name in the same table as every
- * namespace-scope constant, so a __device__ global of that name never got a
- * look in: the kernel read the struct's 7 instead of the global's 3. */
+/* A static member doesn't shadow a __device__ global of the same name */
 static void rpi25(void)
 {
     const char *p = rpi_ptx(
@@ -798,8 +785,7 @@ static void rpi25(void)
 }
 TH_REG("rpi", 25, "a member name does not leak to file scope", rpi25)
 
-/* Qualified lookup stripped one scope at a time until something matched, so
- * any class whose member name happened to exist elsewhere borrowed it. */
+/* Qualified lookup doesn't borrow a member from another scope */
 static void rpi26(void)
 {
     CHNE(cxrn2("struct a { static constexpr int v = 7; };\n"
@@ -906,12 +892,7 @@ static void rpi30(void)
 }
 TH_REG("rpi", 30, "extern __shared__ binds threadgroup(0)", rpi30)
 
-/* --tensix took the size of a __shared__ array nowhere: shared_alloc got one
- * Dst row like a private alloca and every load and store bound to Dst row 0
- * regardless of the pointer, so extern __shared__ float[] and __shared__
- * float[32] compiled to byte-identical output. Dst is a register file with an
- * immediate row address, not addressable memory, and shared memory on a Tensix
- * tile lives in L1 behind a circular buffer nothing binds. Both forms refuse. */
+/* Tensix has nowhere to put shared memory, so both forms refuse */
 static void rpi31(void)
 {
     static const char *const dyn =
@@ -938,10 +919,7 @@ static void rpi31(void)
 }
 TH_REG("rpi", 31, "__shared__ on Tensix refuses by name", rpi31)
 
-/* The SFPU isel answered division with a multiply, integer division with a
- * copy of the numerator, atomics and warp collectives with a zero, and a
- * switch with nothing at all, so every one of them compiled clean and lied.
- * Each now names itself and the code says which. */
+/* SFPU ops with no instruction refuse by name */
 static void rpi32(void)
 {
     static const struct { const char *body; const char *eid; } cases[] = {
@@ -971,8 +949,7 @@ static void rpi32(void)
 }
 TH_REG("rpi", 32, "the Tensix SFPU names what it cannot do", rpi32)
 
-/* --rv-elf already refused an unsized shared array, but with a bare stderr
- * line, so nothing downstream could say which layer had stopped. */
+/* An unsized shared array on --rv-elf refuses with a code */
 static void rpi33(void)
 {
     static const char *const src =
@@ -991,10 +968,7 @@ static void rpi33(void)
 }
 TH_REG("rpi", 33, "a baby-core refusal carries its code", rpi33)
 
-/* The emitted host program hardcoded total_elements = 1024 * 1024 and sized
- * every DRAM buffer off it, so it was a working-looking program that ignored
- * the launch it was generated for. The grid is a launch-time quantity and the
- * host program is the launch site, so it takes it as an argument. */
+/* The host program takes the grid from its launch */
 static void rpi34(void)
 {
     static const char *const src =
@@ -1027,11 +1001,7 @@ static void rpi34(void)
 }
 TH_REG("rpi", 34, "the Tensix host is told its element count", rpi34)
 
-/* The x86-64 and RV64 emitters ended their opcode switch with a default arm
- * that stored a zero into the result slot and carried on, so any BIR op they
- * did not implement compiled to "the answer is 0" with a zero exit. A plain
- * switch statement lowers to BIR_SWITCH, which neither of them handles, so
- * both used to emit an object where the switch had simply not happened. */
+/* An op x86-64 or RV64 doesn't implement refuses rather than storing zero */
 static void rpi35(void)
 {
     static const char *const src =
@@ -1054,9 +1024,7 @@ static void rpi35(void)
 }
 TH_REG("rpi", 35, "an unlowerable op is not a stored zero", rpi35)
 
-/* The PTX atomic selector had no case for BIR_ATOMIC_SUB and a default arm
- * that picked atom.add, so atomicSub added instead of subtracting and said
- * nothing. Refuse until there is a real lowering for it. */
+/* atomicSub refuses until it has a real lowering */
 static void rpi36(void)
 {
     const char *path = scratch("rpi36.cu",
@@ -1072,9 +1040,7 @@ static void rpi36(void)
 }
 TH_REG("rpi", 36, "atomicSub is not an atomic add on PTX", rpi36)
 
-/* A kernel past NV_MAX_PARAMS had its parameter list truncated at the cap
- * while ld.param kept naming the ones past it, so ggml's im2col_3d_kernel
- * (forty parameters) produced PTX referencing params it never declared. */
+/* Past NV_MAX_PARAMS refuses. im2col_3d_kernel has forty. */
 static void rpi37(void)
 {
     char src[4096], cmd[512];
@@ -1105,8 +1071,7 @@ static void rpi37(void)
 }
 TH_REG("rpi", 37, "a 40-parameter kernel declares them all", rpi37)
 
-/* PTX isel treated BIR_SWITCH as a no-op, so ggml's pool1d and pool2d emitted
- * a kernel with the switch missing entirely and a zero exit to go with it. */
+/* ggml's pool1d and pool2d, switch and all */
 static void rpi38(void)
 {
     const char *p = rpi_ptx(
@@ -1157,10 +1122,7 @@ static void rpi40(void)
 }
 TH_REG("rpi", 40, "a pack in launch arguments is expanded", rpi40)
 
-/* A cast from a pointer to a floating type has no conversion, but the cast
- * lowering only refused when one side was an aggregate and the other a scalar.
- * A pointer is neither, so (float)p fell through to the int-to-float rung and
- * emitted sitofp on an address, which assembles and means nothing. */
+/* A pointer to float cast has no conversion */
 static void rpi41(void)
 {
     const char *path = scratch("rpi41.cu",
@@ -1177,12 +1139,8 @@ static void rpi41(void)
 TH_REG("rpi", 41, "a pointer never converts to a float", rpi41)
 
 /* ---- SFPU functional model, one lane ----
- *
- * Transcribed from WormholeB0/TensixTile/TensixCoprocessor: SFPMOV, SFPLOADI,
- * SFPIADD, SFPSHFT, SFPAND, SFPOR, SFPXOR, SFPSETCC, SFPLOAD and SFPSTORE.
- * The tests below compile a kernel, read the words tensix_emit_binary wrote,
- * seed the Dst rows isel_param loads its parameters from, and run the stream.
- * A wrong Mod1 stops being an encoding nobody reads and becomes a wrong number. */
+ * Transcribed from WormholeB0/TensixTile/TensixCoprocessor, so a wrong
+ * Mod1 comes out as a wrong number. */
 
 #define SFP_ROW_P0 2u
 
@@ -1195,9 +1153,7 @@ static int32_t sfp_i12(uint32_t w)
     return (v & 0x800u) ? (int32_t)(v | 0xFFFFF000u) : (int32_t)v;
 }
 
-/* Runs until the first SFPSTORE and reports the value it would have written.
- * Returns 0 on success, -1 if the stream held an opcode this model has no
- * entry for, which is a signal to extend the model rather than to trust it. */
+/* Runs to the first SFPSTORE. -1 means extend the model, not trust it. */
 static int sfp_run(const uint32_t *w, int n, const uint32_t *dst, uint32_t ndst,
                    uint32_t *out)
 {
@@ -1316,8 +1272,7 @@ static int sfp_bld(const char *src, const char *stem)
     return n;
 }
 
-/* Two int parameters land in the Dst rows isel_param picked, one past the
- * pointer. Seed those and run. */
+/* Seed the two int parameters in the Dst rows isel_param picked */
 static int sfp_ab(int n, uint32_t a, uint32_t b, uint32_t *out)
 {
     uint32_t dst[8];
@@ -1327,12 +1282,8 @@ static int sfp_ab(int n, uint32_t a, uint32_t b, uint32_t *out)
     return sfp_run(sfp_words, n, dst, 8u, out);
 }
 
-/* SFPIADD Mod1 1 is ARG_IMM, so with an immediate of 0 it computes VD = VC:
- * one operand, copied. Every integer subtract on this backend did that, and
- * the compare paths fed the same non-difference into SFPSETCC. The mode wanted
- * is 2 (ARG_2SCOMP_LREG_DST), which is VD = VC - VD_old, so the subtrahend has
- * to be in the destination first. Get the operands the other way round and
- * a - b quietly becomes b - a. */
+/* SFPIADD mode 2 is VD = VC - VD_old, so the subtrahend goes in first
+ * or a - b quietly becomes b - a */
 static void rpi42(void)
 {
     static const char *const src =
@@ -1353,13 +1304,7 @@ static void rpi42(void)
 }
 TH_REG("rpi", 42, "an integer subtract subtracts", rpi42)
 
-/* The compare paths carried the same ARG_IMM mistake, and on top of it the
- * TT_CC_ table did not match SFPSETCC: GE was 1 and NE was 3, both of which
- * set SFPSETCC_MOD1_IMM_BIT0 and drive LaneFlags from a zero immediate, so
- * those two compares were always false. Underneath both, a compare was the
- * sign of lhs - rhs, which is only the answer while that difference fits: the
- * last six cases are the ones where it does not. SFPSETCC writes no register,
- * so what is checked here is LaneFlags, which is the whole output it has. */
+/* Compares read LaneFlags, including where lhs - rhs overflows */
 static void rpi43(void)
 {
     static const struct {
@@ -1402,9 +1347,7 @@ static void rpi43(void)
 }
 TH_REG("rpi", 43, "an integer compare compares", rpi43)
 
-/* BIR_MUL went out as SFPMUL, which is FP32, so it multiplied two integer bit
- * patterns as floats. A constant multiplier is the common case and it is a
- * short shift-and-add chain, exact at the full 32 bits. */
+/* SFPMUL is FP32, so a constant integer multiply is shift-and-add */
 static void rpi44(void)
 {
     static const struct { const char *k; uint32_t a; uint32_t want; } cases[] = {
@@ -1435,11 +1378,8 @@ static void rpi44(void)
 }
 TH_REG("rpi", 44, "a constant multiply is exact at 32 bits", rpi44)
 
-/* Runtime times runtime has no instruction on either part: Wormhole has none
- * at all and Blackhole's SFPMUL24 is 23 by 23. It goes out as a branchless
- * shift-and-add over the 32 bit positions, which is expensive and exactly
- * right modulo 2^32. The last two cases are the ones that would catch a
- * 23-bit answer wearing a 32-bit face. */
+/* No 32-bit multiply on either part, so a branchless shift-and-add. The
+ * last two catch a 23-bit answer wearing a 32-bit face. */
 static void rpi45(void)
 {
     static const struct { uint32_t a, b, want; } cases[] = {
@@ -1465,9 +1405,7 @@ static void rpi45(void)
 }
 TH_REG("rpi", 45, "a runtime multiply is exact at 32 bits", rpi45)
 
-/* A runtime multiply is 224 instructions, so a kernel that multiplies enough
- * times reaches the end of the minst arena. emit() used to answer that with a
- * bare `return 0`, which drops the rest of the kernel and says nothing. */
+/* 224 instructions a multiply, so enough of them fill the minst arena */
 static void rpi46(void)
 {
     char cmd[512];
@@ -1490,11 +1428,7 @@ static void rpi46(void)
 }
 TH_REG("rpi", 46, "a full Tensix arena refuses, not truncates", rpi46)
 
-/* A 32-bit constant went out as two SFPLOADI halves using mod 2 then mod 4,
- * but both of those write the whole register: mod 2 zero-extends a 16-bit
- * immediate and mod 4 sign-extends one, so the second load threw the first
- * away and every constant arrived as the sign-extended low half. The halves
- * are mod 8 and mod 10. */
+/* A 32-bit constant is two SFPLOADI halves, mod 8 and mod 10 */
 static void rpi47(void)
 {
     static const struct { const char *k; uint32_t a; uint32_t want; } cases[] = {
@@ -1611,11 +1545,7 @@ static void rpi53(void)
 }
 TH_REG("rpi", 53, "an atomic on a local names its refusal", rpi53)
 
-/* RV64 had no BIR_CALL arm at all, so every device function call fell to the
- * top-level default and was quietly lowered to a stored zero until that arm
- * became a refusal. These four cover the call ABI and the branch reach that
- * came with it; all of them read the emitted .text back, because the bugs are
- * in the bytes and nothing upstream of the encoder can see them. */
+/* RV64 calls. These read .text back, because the bugs live in the bytes. */
 
 static unsigned char rtx[1 << 18];
 static long rtxn;
@@ -1723,10 +1653,7 @@ static void rpi54(void)
 }
 TH_REG("rpi", 54, "a device function call reaches RV64", rpi54)
 
-/* mk_B masked the offset into the field with no range check, so a branch past
- * 4 KiB wrapped and landed somewhere else entirely, silently. The fix inverts
- * the condition and steps over a jal, which reaches 1 MiB, so the generated
- * body below has to be long enough to prove a jump really did need the room. */
+/* A branch past 4 KiB steps over a jal, so the body has to need the room */
 static void rpi55(void)
 {
     static char src[1 << 16];
@@ -1754,10 +1681,7 @@ static void rpi55(void)
 }
 TH_REG("rpi", 55, "a long branch does not wrap on RV64", rpi55)
 
-/* The frame pass reserved a slot per parameter index and a second one per
- * BIR_PARAM instruction. Those two only coincide for the first function in
- * the module, whose instruction indices start at zero; in every later one the
- * prologue stored the incoming argument where the body never looked. */
+/* Every function's parameters land where its body reads them */
 static void rpi56(void)
 {
     static const char *src =
@@ -1788,9 +1712,7 @@ static void rpi56(void)
 }
 TH_REG("rpi", 56, "an RV64 callee reads the arg it was given", rpi56)
 
-/* Arguments past the eighth go on the stack, and the psABI wants sp on a
- * 128-bit boundary for the whole of the call, so the outgoing block has to be
- * rounded rather than grown eight bytes at a time. */
+/* sp stays on a 128-bit boundary past the eighth argument */
 static void rpi57(void)
 {
     static const char *src =
@@ -1816,9 +1738,7 @@ static void rpi57(void)
 }
 TH_REG("rpi", 57, "RV64 stack arguments keep sp aligned", rpi57)
 
-/* psABI 2.1 passes an aggregate wider than two XLENs by reference, and Boo/* kept every value in one 8-byte slot, so a0 carried eight bytes off the
- * front of the struct. Aggregates now travel as a pointer, so the call lays
- * down; E582 still names the operand shapes RV64 genuinely cannot pass. */
+/* psABI 2.1 passes an aggregate wider than two XLENs by reference */
 static void rpi58(void)
 {
     static const char *src =
@@ -2187,9 +2107,7 @@ static void rpi79(void)
 }
 TH_REG("rpi", 79, "a returned struct can be read for a field", rpi79)
 
-/* Compiles src to a SASS listing the same way rpi_ptx does for PTX. The
- * listing is the only text form of the back end, so it is what a regression
- * about encoding can read. */
+/* rpi_ptx, but for SASS listings */
 static const char *rpi_sass(const char *src, const char *stem)
 {
     static char txt[1 << 16];
@@ -2258,7 +2176,7 @@ TH_REG("rpi", 81, "a divergent if gets its bssy and bsync", rpi81)
 static void rpi82(void)
 {
     const char *path = scratch("rpi82.cu",
-        "__global__ void k(const unsigned *a, unsigned *o, int n){\n"
+        "__global__ void k(const double *a, double *o, int n){\n"
         "  int i = threadIdx.x; if (i < n) o[i] = a[i] / a[0]; }\n");
     char cmd[512];
 
@@ -2267,10 +2185,10 @@ static void rpi82(void)
              BC_BIN, path);
     CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
     CHNE(strstr(obuf, "E601"), NULL);
-    CHNE(strstr(obuf, "NV_DIV_U32"), NULL);
+    CHNE(strstr(obuf, "NV_DIV_F64"), NULL);
     PASS();
 }
-TH_REG("rpi", 82, "an integer divide names its SASS refusal", rpi82)
+TH_REG("rpi", 82, "a double divide names its SASS refusal", rpi82)
 
 static void rpi83(void)
 {
@@ -2306,8 +2224,8 @@ TH_REG("rpi", 84, "a shared load reaches LDS, not global", rpi84)
 static void rpi85(void)
 {
     const char *path = scratch("rpi85.cu",
-        "__global__ void k(const float *a, float *o){\n"
-        "  o[threadIdx.x] = sinf(a[threadIdx.x]); }\n");
+        "__global__ void k(const double *a, double *o){\n"
+        "  o[threadIdx.x] = sqrt(a[threadIdx.x]); }\n");
     char cmd[512];
 
     CHNE(path, NULL);
@@ -2707,16 +2625,8 @@ static void rpi106(void)
 }
 TH_REG("rpi", 106, "a kernel symbol is LOCAL and an entry", rpi106)
 
-/* A __device__ function returning a struct declared one type at the call and
- * handed back a pointer to its own private slot, and nothing checked the two
- * agreed. The caller stored eight bytes of pointer into the struct-sized hole
- * and read fields out of it, so mk(7).b came back as the top half of an
- * address. It assembled, it ran, and the number was rubbish.
- *
- * The convention is now sret: the caller owns the slot, passes it as a trailing
- * pointer parameter, and the callee returns void. rpi107 to rpi116 walk the
- * shapes a struct can take. Each one checks the value and, because the old bug
- * was a 64-bit store into a struct slot, that no st.local.u64 survives. */
+/* Structs return by sret, with the caller owning the slot. rpi107 to
+ * rpi116 walk the shapes. */
 static void rpi107(void)
 {
     const char *p = rpi_ptx(
@@ -2864,12 +2774,8 @@ static void rpi115(void)
 }
 TH_REG("rpi", 115, "a union in a returned struct keeps bytes", rpi115)
 
-/* Overloaded function templates are matched by name alone, so a call inside a
- * class template takes the float overload and hands its f32 result back where
- * a float2 was declared. That used to be a silent four-byte store into an
- * eight-byte slot; the sret path now names it rather than lowering it. When
- * template overload resolution learns to read the argument types this becomes
- * a value test. */
+/* Template overloads match by name alone, so this refuses until they
+ * read argument types */
 static void rpi116(void)
 {
     const char *p = rpi_ptx(
@@ -4391,9 +4297,7 @@ static void rpi210(void)
 }
 TH_REG("rpi", 210, "a block sync stays one bar.sync, not a grid", rpi210)
 
-/* ---- WMMA ----
- * Register counts and legal combinations come from PTX ISA 9.2 9.7.14.4.1;
- * the numbers checked here are the ones the document tabulates. */
+/* ---- WMMA, PTX ISA 9.2, section 9.7.14.4.1 ---- */
 
 static const char *WM_HDR =
     "__global__ void k(const half *a, const half *b, float *d,\n"
@@ -4959,10 +4863,7 @@ static void rpi243(void)
 }
 TH_REG("rpi", 243, "__func__ is the source name, not the instance", rpi243)
 
-/* ---- A for-init declaration with more than one declarator ----
- * parse_declaration hangs the extra declarators off the first one's sibling
- * chain, so the for node ended up with five children and the condition slot
- * held the second declarator. */
+/* ---- A for-init declaration with more than one declarator ---- */
 
 static void rpi211(void)
 {
@@ -5034,9 +4935,7 @@ static void rpi215(void)
 }
 TH_REG("rpi", 215, "a for init declares a pointer and an int", rpi215)
 
-/* ---- Packed half2 and bfloat162 conversions ----
- * cvt.rn.f16x2.f32 rounds each lane to nearest even, per PTX ISA 9.2 9.7.9.21,
- * and Booth reaches the same numbers through two per-lane converts. */
+/* ---- Packed half2 and bfloat162 conversions, round to nearest even ---- */
 
 static void rpi216(void)
 {
@@ -5175,10 +5074,7 @@ static void rpi225(void)
 }
 TH_REG("rpi", 225, "a packed conversion refuses a scalar", rpi225)
 
-/* ---- A constexpr function template that returns a function pointer ----
- * get_dequantize_V in ggml is a constexpr template whose if-constexpr arms
- * each return a template-id. The value has to name the instantiation the
- * arguments picked, not the base name, or the call lands in the wrong body. */
+/* ---- A constexpr function template that returns a function pointer ---- */
 
 static const char *CF_HDR =
     "typedef void (*fn_t)(int *, int);\n"

@@ -1,6 +1,4 @@
-/* cpu_exec.c -- run a --cpu object in this process, no linker, no GPU.
- * The kernel's .text is mapped executable and called through a sysv_abi
- * pointer, with nthreads as the trailing hidden argument. */
+/* cpu_exec.c -- run a --cpu object in-process, no linker, no GPU */
 
 #include "exec.h"
 #include <stdio.h>

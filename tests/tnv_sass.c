@@ -1,12 +1,6 @@
-/* tnv_sass.c -- run cubins Booth built with no NVIDIA tool in the loop.
+/* tnv_sass.c -- cubins Booth built with no NVIDIA tool in the loop.
+ * Oooooh, SASS on a real card, oogle and admire!
  *
- * Three kernels, because between them they cover the parts of the SASS back
- * end that can go quietly wrong: a bounds check that leaves a warp divergent,
- * a loop whose back edge has to reconverge, shared memory across a barrier,
- * and a spread of integer work where a 64-bit value must not be shifted or
- * added as a 32-bit one.
- *
- * Usage:
  *   ./kath --nvidia-cubin examples/cmake/vadd.cu -o build/vadd.cubin
  *   ./kath --nvidia-cubin tests/sass_loop.cu    -o build/sass_loop.cubin
  *   ./kath --nvidia-cubin tests/sass_shr.cu     -o build/sass_shr.cubin
@@ -14,7 +8,7 @@
  *   gcc -O2 -Iruntime/include tests/tnv_sass.c runtime/host/cuda/nv_rt.c \
  *       -o tnv_sass && ./tnv_sass
  *
- * Exits 77 when there is no CUDA driver, the way gpu_mma does. */
+ * Exits 77 when there is no CUDA driver. */
 
 #include "booth/nv_rt.h"
 #include <stdio.h>

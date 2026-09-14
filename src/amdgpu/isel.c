@@ -16,6 +16,7 @@
 static struct {
     amd_module_t    *amd;
     const bir_module_t *bir;
+    uint8_t         reach[BIR_MAX_FUNCS]; /* device fn reachable from a kernel */
 
     int             had_error;   /* an op we refuse to fake; fail the compile */
     int             capr;        /* a fixed capacity already reported */
@@ -2600,6 +2601,9 @@ static void isel_function(uint32_t fi)
     /* Skip host-only functions */
     if (!(F->cuda_flags & (CUDA_GLOBAL | CUDA_DEVICE))) return;
 
+    /* No kernel calls it? Chuck the code in the bin */
+    if (!(F->cuda_flags & CUDA_GLOBAL) && !S.reach[fi]) return;
+
     /* Divergence analysis for this function */
     divergence_analysis(F);
 
@@ -2926,11 +2930,47 @@ static void isel_function(uint32_t fi)
 
 /* ---- Public API ---- */
 
+static void amd_reach(const bir_module_t *bir)
+{
+    uint32_t nf = (bir->num_funcs < BIR_MAX_FUNCS) ? bir->num_funcs
+                                                   : BIR_MAX_FUNCS;
+
+    for (uint32_t pass = 0; pass < nf + 1u; pass++) {
+        int grew = 0;
+
+        for (uint32_t fi = 0; fi < nf; fi++) {
+            const bir_func_t *F = &bir->funcs[fi];
+
+            if (!(F->cuda_flags & CUDA_GLOBAL) && !S.reach[fi]) continue;
+            for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
+                uint32_t bb = F->first_block + bi;
+                const bir_block_t *B;
+
+                if (bb >= bir->num_blocks) break;
+                B = &bir->blocks[bb];
+                for (uint32_t ii = 0; ii < B->num_insts; ii++) {
+                    const bir_inst_t *I = &bir->insts[B->first_inst + ii];
+                    uint32_t cf;
+
+                    if (I->op != BIR_CALL) continue;
+                    cf = I->operands[0];
+                    if (cf >= nf || S.reach[cf]) continue;
+                    if (bir->funcs[cf].cuda_flags & CUDA_GLOBAL) continue;
+                    S.reach[cf] = 1;
+                    grew = 1;
+                }
+            }
+        }
+        if (!grew) break;
+    }
+}
+
 int amdgpu_compile(const bir_module_t *bir, amd_module_t *amd)
 {
     memset(&S, 0, sizeof(S));
     S.bir = bir;
     S.amd = amd;
+    amd_reach(bir);
 
     /* Initialize module */
     amd->bir = bir;

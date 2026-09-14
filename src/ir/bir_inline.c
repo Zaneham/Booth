@@ -1,19 +1,11 @@
 /* bir_inline.c -- inline calls to user __device__ functions.
  *
- * Booth's IR references values by absolute index into one flat,
- * append-only insts[] array, and a function's blocks and instructions are
- * contiguous slices of the global arenas. That makes an in-place insert a
- * non-starter: dropping instructions into the middle would slide every
- * later index and invalidate every value reference in the module. So the
- * trick here is to never insert. Each caller that contains a device call is
- * rebuilt from scratch at the end of the arenas, with the callee bodies
- * spliced in as we go, and the function is then repointed at its fresh
- * blocks. The old blocks are orphaned, and swept when the pass ends.
+ * insts[] is append-only and referenced by absolute index, so nothing is
+ * inserted. A caller is rebuilt at the end of the arenas with its callees
+ * spliced in, and the old blocks are swept when the pass ends.
  *
- * The one map that keeps this honest is per-opcode operand classification,
- * which slot is a value, which is a block, which is the call's callee index.
- * It is taken from bir_insert.c, which took it from the printer. Keep the
- * three in agreement and a rewrite never corrupts a module.
+ * Operand classification comes from bir_insert.c, which took it from the
+ * printer. Keep the three in agreement.
  */
 
 #include "bir_inline.h"
@@ -61,11 +53,8 @@ static uint32_t map_val(const uint32_t *vmap, uint32_t base, uint32_t v)
     return vmap[BIR_VAL_INDEX(v) - base];
 }
 
-/* Remap the operands of one already-copied instruction. Values go through
- * vmap (based at vbase), branch targets through bmap (based at bbase), phi
- * predecessors through pmap: a splice cuts a block in two, and a branch wants
- * the half it opens with where a predecessor wants the half it leaves by. A
- * null bmap leaves block indices alone, the single-block callee case. */
+/* Remap one copied instruction. A splice cuts a block in two, so a branch
+ * wants the first half and a phi predecessor the second. */
 static void remap_ops(bir_module_t *M, uint32_t ni,
                       const uint32_t *vmap, uint32_t vbase,
                       const uint32_t *bmap, const uint32_t *pmap,

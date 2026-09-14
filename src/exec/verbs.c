@@ -1,5 +1,4 @@
-/* verbs.c -- kath's front door: run, build and doctor. Each dispatches to the
- * flag machinery kath_compile already drives, and run through the rt_* launcher. */
+/* verbs.c -- kath run, build and doctor */
 
 #include "front.h"
 #include "exec.h"
