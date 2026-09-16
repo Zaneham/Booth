@@ -40,6 +40,10 @@ typedef struct {
     uint32_t ret_val[INL_MAX_CALLEE_BLOCKS];  /* value each callee return yielded */
     uint8_t  warned[BIR_MAX_FUNCS];     /* callee already warned about */
     uint8_t  cyc[BIR_MAX_FUNCS];        /* function sits on, or reaches, a call cycle */
+    uint8_t  need[BIR_MAX_FUNCS];
+    uint32_t ihwm;
+    uint32_t bhwm;
+    int      drop;
 } inl_t;
 
 /* ---- Value / block mapping ---- */
@@ -613,74 +617,143 @@ static int rebuild_func(inl_t *X, uint32_t fidx)
 
 /* ---- Driver ---- */
 
-static int blkcpy(inl_t *X, uint32_t ob, uint32_t ib0, uint32_t bb0)
+static void pinst(inl_t *X, uint32_t n)
 {
     bir_module_t *M = X->M;
-    const bir_block_t *B = &M->blocks[ob];
-    uint32_t n = B->num_insts, nb, j;
+    uint32_t i, j, g;
 
-    if (B->first_inst >= ib0) n = 0;
-    else if (n > ib0 - B->first_inst) n = ib0 - B->first_inst;
-
-    if (M->num_blocks >= BIR_MAX_BLOCKS) {
-        bir_pfull(M, BIR_P_BLOCKS);
-        return BC_ERR_OVERFLOW;
+    for (i = 0; i < n; i++) X->spliced[i] = 0;
+    for (i = 0; i < n; i++) {
+        bir_inst_t hi;
+        uint32_t   hl;
+        if (X->spliced[i]) continue;
+        hi = M->insts[i];
+        hl = M->inst_lines[i];
+        j  = X->val_map[i];
+        for (g = 0; j != i && j < n && g < n; g++) {
+            bir_inst_t ti = M->insts[j];
+            uint32_t   tl = M->inst_lines[j];
+            M->insts[j]      = hi;
+            M->inst_lines[j] = hl;
+            X->spliced[j]    = 1;
+            hi = ti;
+            hl = tl;
+            j  = X->val_map[j];
+        }
+        M->insts[i]      = hi;
+        M->inst_lines[i] = hl;
+        X->spliced[i]    = 1;
     }
-    if (n > BIR_MAX_INSTS - M->num_insts) {
-        bir_pfull(M, BIR_P_INSTS);
-        return BC_ERR_OVERFLOW;
-    }
-
-    nb = M->num_blocks++;
-    X->blk_map[ob]            = nb - bb0;
-    M->blocks[nb].name        = B->name;
-    M->blocks[nb].first_inst  = M->num_insts - ib0;
-    M->blocks[nb].num_insts   = n;
-    for (j = 0; j < n; j++) {
-        uint32_t src = B->first_inst + j, dst = M->num_insts;
-        X->val_map[src]    = dst - ib0;
-        M->insts[dst]      = M->insts[src];
-        M->inst_lines[dst] = M->inst_lines[src];
-        M->num_insts++;
-    }
-    return BC_OK;
 }
 
-static int cmpct(inl_t *X)
+static void pblk(inl_t *X, uint32_t n)
 {
     bir_module_t *M = X->M;
-    uint32_t ib0 = M->num_insts, bb0 = M->num_blocks;
-    uint32_t f, b, nb, ni;
+    uint32_t i, j, g;
+
+    for (i = 0; i < n; i++) X->cal_map[i] = 0;
+    for (i = 0; i < n; i++) {
+        bir_block_t hb;
+        if (X->cal_map[i]) continue;
+        hb = M->blocks[i];
+        j  = X->blk_map[i];
+        for (g = 0; j != i && j < n && g < n; g++) {
+            bir_block_t tb = M->blocks[j];
+            M->blocks[j]  = hb;
+            X->cal_map[j] = 1;
+            hb = tb;
+            j  = X->blk_map[j];
+        }
+        M->blocks[i]  = hb;
+        X->cal_map[i] = 1;
+    }
+}
+
+static void cmpct(inl_t *X, uint8_t lvl)
+{
+    bir_module_t *M = X->M;
+    uint32_t f, b, i, n, ni = 0, nb = 0;
+
+    for (i = 0; i < M->num_insts; i++) X->val_map[i] = BIR_VAL_NONE;
+    for (b = 0; b < M->num_blocks; b++) X->blk_map[b] = BIR_VAL_NONE;
 
     for (f = 0; f < M->num_funcs; f++) {
         bir_func_t *F = &M->funcs[f];
-        uint32_t ob0 = F->first_block, cnt = 0, tot = 0;
-
-        for (b = 0; b < F->num_blocks && ob0 + b < bb0; b++) {
-            uint32_t was = M->num_insts;
-            int rc = blkcpy(X, ob0 + b, ib0, bb0);
-            if (rc != BC_OK) return rc;
-            cnt++;
-            tot += M->num_insts - was;
+        uint32_t fb = nb;
+        if (X->need[f] < lvl) {
+            F->first_block = 0;
+            F->num_blocks  = 0;
+            F->total_insts = 0;
+            continue;
         }
-        if (cnt != 0) F->first_block = X->blk_map[ob0];
-        F->num_blocks  = (uint16_t)cnt;
-        F->total_insts = tot;
+        if (F->num_blocks == 0) continue;
+        if (F->first_block >= M->num_blocks) {
+            F->num_blocks  = 0;
+            F->total_insts = 0;
+            continue;
+        }
+        if (F->num_blocks > M->num_blocks - F->first_block)
+            F->num_blocks = (uint16_t)(M->num_blocks - F->first_block);
+        for (b = F->first_block; b < F->first_block + F->num_blocks; b++) {
+            bir_block_t *B = &M->blocks[b];
+            uint32_t fi = ni;
+            if (B->first_inst > M->num_insts
+             || B->num_insts > M->num_insts - B->first_inst)
+                B->num_insts = 0;
+            X->blk_map[b] = nb++;
+            for (i = B->first_inst; i < B->first_inst + B->num_insts; i++)
+                if (X->val_map[i] == BIR_VAL_NONE) X->val_map[i] = ni++;
+            B->first_inst = fi;
+        }
+        F->first_block = fb;
     }
 
-    nb = M->num_blocks - bb0;
-    ni = M->num_insts - ib0;
-    memmove(M->blocks, &M->blocks[bb0], (size_t)nb * sizeof M->blocks[0]);
-    memmove(M->insts, &M->insts[ib0], (size_t)ni * sizeof M->insts[0]);
-    memmove(M->inst_lines, &M->inst_lines[ib0],
-            (size_t)ni * sizeof M->inst_lines[0]);
-    M->num_blocks = nb;
+    for (i = 0, n = ni; i < M->num_insts; i++)
+        if (X->val_map[i] == BIR_VAL_NONE) X->val_map[i] = n++;
+    for (b = 0, n = nb; b < M->num_blocks; b++)
+        if (X->blk_map[b] == BIR_VAL_NONE) X->blk_map[b] = n++;
+    pinst(X, M->num_insts);
+    pblk(X, M->num_blocks);
+
     M->num_insts  = ni;
+    M->num_blocks = nb;
+    for (i = 0; i < ni; i++)
+        remap_ops(M, i, X->val_map, 0, X->blk_map, X->blk_map, 0);
+}
 
-    for (f = 0; f < ni; f++)
-        remap_ops(M, f, X->val_map, 0, X->blk_map, X->blk_map, 0);
+static void fkeep(inl_t *X)
+{
+    bir_module_t *M = X->M;
+    uint32_t f, b, k, it;
 
-    return BC_OK;
+    for (f = 0; f < M->num_funcs; f++)
+        X->need[f] = (X->drop && is_device(M, f)
+                      && !(M->funcs[f].cuda_flags & (CUDA_GLOBAL | CUDA_HOST)))
+                   ? 0 : 2;
+    if (!X->drop) return;
+
+    for (it = 0; it < INL_MAX_CGRND; it++) {
+        int grew = 0;
+        for (f = 0; f < M->num_funcs; f++) {
+            const bir_func_t *F = &M->funcs[f];
+            if (X->need[f] == 0) continue;
+            for (b = 0; b < F->num_blocks; b++) {
+                const bir_block_t *B = &M->blocks[F->first_block + b];
+                for (k = 0; k < B->num_insts; k++) {
+                    const bir_inst_t *I = &M->insts[B->first_inst + k];
+                    uint32_t g;
+                    uint8_t  w;
+                    if (I->op != BIR_CALL && I->op != BIR_FNREF) continue;
+                    g = call_func_index(M, I);
+                    if (g >= M->num_funcs) continue;
+                    w = (I->op == BIR_CALL && is_inlinable(X, g)) ? 1 : 2;
+                    if (X->need[g] < w) { X->need[g] = w; grew = 1; }
+                }
+            }
+        }
+        if (!grew) return;
+    }
+    memset(X->need, 2, sizeof(X->need));
 }
 
 static int func_has_inlinable_call(const inl_t *X, uint32_t fidx)
@@ -710,6 +783,7 @@ static void warn_uninlined(inl_t *X)
     uint32_t f, b, k;
     for (f = 0; f < M->num_funcs; f++) {
         const bir_func_t *F = &M->funcs[f];
+        if (X->need[f] != 2) continue;
         for (b = 0; b < F->num_blocks; b++) {
             const bir_block_t *B = &M->blocks[F->first_block + b];
             for (k = 0; k < B->num_insts; k++) {
@@ -740,6 +814,9 @@ static int inline_run(inl_t *X)
     int round;
 
     cgcyc(X);
+    fkeep(X);
+    X->ihwm = (uint32_t)BIR_MAX_INSTS / 2u;
+    X->bhwm = (uint32_t)BIR_MAX_BLOCKS / 2u;
 
     /* Each round inlines every inlinable device call it finds, straight-line
      * and control-flow bodies alike. A callee that itself rings up another
@@ -752,11 +829,16 @@ static int inline_run(inl_t *X)
         int changed = 0;
         uint32_t nf = M->num_funcs, f;
         for (f = 0; f < nf; f++) {
-            if (func_has_inlinable_call(X, f)) {
-                int rc = rebuild_func(X, f);
-                if (rc != BC_OK) return rc;
-                changed = 1;
+            int rc;
+            if (X->need[f] != 2 || !func_has_inlinable_call(X, f)) continue;
+            if (M->num_insts > X->ihwm || M->num_blocks > X->bhwm) {
+                cmpct(X, 1);
+                X->ihwm = M->num_insts + ((uint32_t)BIR_MAX_INSTS - M->num_insts) / 2u;
+                X->bhwm = M->num_blocks + ((uint32_t)BIR_MAX_BLOCKS - M->num_blocks) / 2u;
             }
+            rc = rebuild_func(X, f);
+            if (rc != BC_OK) return rc;
+            changed = 1;
         }
         if (!changed) break;
     }
@@ -764,7 +846,7 @@ static int inline_run(inl_t *X)
     {
         uint32_t f;
         for (f = 0; f < M->num_funcs; f++) {
-            if (func_has_inlinable_call(X, f)) {
+            if (X->need[f] == 2 && func_has_inlinable_call(X, f)) {
                 fprintf(stderr, "kath: device call inlining did not "
                         "converge after %d rounds (recursive __device__ "
                         "function '%s'?)\n", INL_MAX_ROUNDS, func_name(M, f));
@@ -777,7 +859,7 @@ static int inline_run(inl_t *X)
     return BC_OK;
 }
 
-int bir_inline_device(bir_module_t *M)
+int bir_inline_device(bir_module_t *M, int drop)
 {
     inl_t *X;
     int rc;
@@ -787,11 +869,12 @@ int bir_inline_device(bir_module_t *M)
     X = (inl_t *)malloc(sizeof(inl_t));
     if (!X) return BC_ERR_IO;
     X->M = M;
+    X->drop = drop;
     memset(X->spliced, 0, sizeof(X->spliced));
     memset(X->warned, 0, sizeof(X->warned));
 
     rc = inline_run(X);
-    if (rc == BC_OK) rc = cmpct(X);
+    if (rc == BC_OK) cmpct(X, 2);
 
     free(X);
     if (rc == BC_OK) rc = bir_vchk(M);

@@ -189,7 +189,7 @@ static void inl05(void)
     CHECK(M != NULL);
     (void)bmod(M, 0);
 
-    { int rc = bir_inline_device(M); printf("RC=%d\n", rc); }
+    { int rc = bir_inline_device(M, 0); printf("RC=%d\n", rc); }
     CHECK(bir_vchk(M) == BC_OK);
     CHECK(ncall(M, 1) == 0);
     free(M);
@@ -203,7 +203,7 @@ static void inl06(void)
     CHECK(M != NULL);
     (void)bmod(M, 0);
 
-    CHECK(bir_inline_device(M) == BC_OK);
+    CHECK(bir_inline_device(M, 0) == BC_OK);
     for (f = 0; f < M->num_funcs; f++) live += M->funcs[f].num_blocks;
     CHECK(live == M->num_blocks);
     CHECK(M->funcs[0].first_block == 0);
@@ -219,9 +219,23 @@ static void inl07(void)
     CHECK(M != NULL);
     (void)bmod(M, 1);
 
-    CHECK(bir_inline_device(M) == BC_OK);
+    CHECK(bir_inline_device(M, 0) == BC_OK);
     CHECK(bir_vchk(M) == BC_OK);
     CHECK(ncall(M, 0) == 1);
+    free(M);
+    PASS();
+}
+
+static void inl08(void)
+{
+    bir_module_t *M = malloc(sizeof(*M));
+    CHECK(M != NULL);
+    (void)bmod(M, 0);
+
+    CHECK(bir_inline_device(M, 1) == BC_OK);
+    CHECK(bir_vchk(M) == BC_OK);
+    CHECK(M->funcs[0].num_blocks == 0);
+    CHECK(ncall(M, 1) == 0);
     free(M);
     PASS();
 }
@@ -233,3 +247,4 @@ TH_REG("inl", 4, "CPU keeps its calls", inl04);
 TH_REG("inl", 5, "a phi survives a split predecessor", inl05);
 TH_REG("inl", 6, "the arenas come back packed and in order", inl06);
 TH_REG("inl", 7, "a recursive device body stays a call", inl07);
+TH_REG("inl", 8, "a helper with no callers left is dropped", inl08);

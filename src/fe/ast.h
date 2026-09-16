@@ -69,6 +69,7 @@ typedef enum {
     AST_NAMESPACE,
     AST_TEMPLATE_DECL,
     AST_TEMPLATE_PARAM,
+    AST_TEMPLATE_INST,
 
     AST_BASE,
 

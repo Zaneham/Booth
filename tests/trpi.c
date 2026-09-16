@@ -2175,36 +2175,40 @@ TH_REG("rpi", 81, "a divergent if gets its bssy and bsync", rpi81)
 
 static void rpi82(void)
 {
-    const char *path = scratch("rpi82.cu",
+    const char *p = rpi_sass(
         "__global__ void k(const double *a, double *o, int n){\n"
-        "  int i = threadIdx.x; if (i < n) o[i] = a[i] / a[0]; }\n");
-    char cmd[512];
+        "  int i = threadIdx.x; if (i < n) o[i] = a[i] / a[0]; }\n", "rpi82");
 
-    CHNE(path, NULL);
-    snprintf(cmd, sizeof cmd, "%s --nvidia-cubin %s -o build/rpi82.cubin",
-             BC_BIN, path);
-    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
-    CHNE(strstr(obuf, "E601"), NULL);
-    CHNE(strstr(obuf, "NV_DIV_F64"), NULL);
+    CHNE(p, NULL);
+    CHNE(strstr(p, "NV_DIV_F64"), NULL);
     PASS();
 }
-TH_REG("rpi", 82, "a double divide names its SASS refusal", rpi82)
+TH_REG("rpi", 82, "a double divide lowers to SASS", rpi82)
 
 static void rpi83(void)
 {
     const char *path = scratch("rpi83.cu",
         "__global__ void k1(int *o){ o[0] = 1; }\n"
         "__global__ void k2(int *o){ o[1] = 2; }\n");
+    unsigned char hdr[64];
     char cmd[512];
+    FILE *f;
 
     CHNE(path, NULL);
+    remove("build/rpi83.cubin");
     snprintf(cmd, sizeof cmd, "%s --nvidia-cubin %s -o build/rpi83.cubin",
              BC_BIN, path);
-    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
-    CHNE(strstr(obuf, "E600"), NULL);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "2 kernels"), NULL);
+    f = fopen("build/rpi83.cubin", "rb");
+    CHNE(f, NULL);
+    if (!f) return;
+    CHEQ(fread(hdr, 1, sizeof hdr, f), sizeof hdr);
+    fclose(f);
+    CHEQ(hdr[60] | (hdr[61] << 8), 14);
     PASS();
 }
-TH_REG("rpi", 83, "a cubin holds one kernel, not two", rpi83)
+TH_REG("rpi", 83, "a cubin holds every kernel in the module", rpi83)
 
 static void rpi84(void)
 {
@@ -5953,3 +5957,84 @@ static void rpi299(void)
     PASS();
 }
 TH_REG("rpi", 299, "a bfloat widen shifts, not movrelsd", rpi299)
+
+static void rpi300(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const float *a, float *o, int n){\n"
+        "  int i = threadIdx.x; float t[8];\n"
+        "  for (int j = 0; j < 8; j++) t[j] = a[i] * (float)j;\n"
+        "  if (i < n) o[i] = t[i % 8]; }\n", "rpi300");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "NV_ST_LOC_F32"), NULL);
+        CHNE(strstr(p, "7387 "), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 300, "a local array store reaches stl", rpi300)
+
+static void rpi301(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const float *a, const half *h, half *o, float *g){\n"
+        "  int i = threadIdx.x;\n"
+        "  o[i] = __float2half(a[i]); g[i] = __half2float(h[i]); }\n",
+        "rpi301");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "723e "), NULL);
+        CHNE(strstr(p, "7230 "), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 301, "half conversions take f2fp and hadd2", rpi301)
+
+static void rpi302(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const long long *a, long long *o, int n){\n"
+        "  int i = threadIdx.x; if (i < n) o[i] = a[i] / 3; }\n", "rpi302");
+
+    CHNE(p, NULL);
+    if (p) CHNE(strstr(p, "NV_DIV_S64"), NULL);
+    PASS();
+}
+TH_REG("rpi", 302, "a 64-bit divide by a constant lowers", rpi302)
+
+static void rpi303(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k1(const long long *a, long long *o, int n){\n"
+        "  int i = threadIdx.x; long long s = a[0];\n"
+        "  if (i < n && a[i] > s) o[i] = a[i] * s + (a[i] >> 3); }\n"
+        "__global__ void k2(int *o){ o[threadIdx.x] = 1; }\n", "rpi303");
+
+    CHNE(p, NULL);
+    PASS();
+}
+TH_REG("rpi", 303, "each kernel sizes its own registers", rpi303)
+
+static void rpi304(void)
+{
+    const char *p = rpi_sass(
+        "namespace cooperative_groups { }\n"
+        "namespace cg = cooperative_groups;\n"
+        "__global__ void k(int *d, int n){\n"
+        "  cg::grid_group g = cg::this_grid();\n"
+        "  int i = threadIdx.x; d[i] = i;\n"
+        "  g.sync();\n"
+        "  if (i < n) d[i] = d[0] + 1; }\n", "rpi304");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHEQ(strstr(p, "NV_GBAR"), NULL);
+        CHNE(strstr(p, "NV_ATOM_ADD_U32"), NULL);
+        CHNE(strstr(p, "NV_BAR_SYNC"), NULL);
+        CHNE(strstr(p, "NV_MEMBAR"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 304, "a grid barrier lowers to blocks, not one op", rpi304)

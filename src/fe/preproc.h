@@ -102,6 +102,8 @@ typedef struct {
      * truncated buffer is not a smaller program, it is a broken one. */
     int         ovflw;
 
+    int         keepinc;
+
     /* Errors */
     bc_error_t  errors[BC_MAX_ERRORS];
     int         num_errors;
@@ -110,6 +112,7 @@ typedef struct {
 void pp_init(preproc_t *pp, const char *src, uint32_t len,
              char *out_buf, uint32_t out_max, const char *filename);
 
+void pp_host(preproc_t *pp);
 int  pp_add_include_path(preproc_t *pp, const char *path);
 int  pp_define(preproc_t *pp, const char *name, const char *value);
 int  pp_process(preproc_t *pp);

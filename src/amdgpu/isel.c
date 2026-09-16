@@ -2081,10 +2081,10 @@ static void isel_thread_model(uint32_t idx, const bir_inst_t *I)
     }
 }
 
-static void isel_barrier(void)
+static void isel_barrier(const bir_inst_t *I)
 {
     emit_wait_all();
-    emit0_0(AMD_S_BARRIER, 0);
+    if (!I->subop) emit0_0(AMD_S_BARRIER, 0);
 }
 
 static void isel_fence(void)
@@ -2826,7 +2826,7 @@ static void isel_function(uint32_t fi)
             /* Barriers */
             case BIR_BARRIER:
             case BIR_BARRIER_GROUP:
-                isel_barrier();
+                isel_barrier(I);
                 break;
             case BIR_FENCE:
                 isel_fence();
@@ -2981,13 +2981,13 @@ int amdgpu_compile(const bir_module_t *bir, amd_module_t *amd)
     amd->code_len = 0;
     amd->asm_len = 0;
     memset(amd->divergent, 0, sizeof(amd->divergent));
-    memset(amd->val_vreg, 0xFF, sizeof(amd->val_vreg));
-    memset(amd->val_file, 0, sizeof(amd->val_file));
+    memset(amd->val_vreg, 0xFF, (size_t)bir->num_insts * sizeof(amd->val_vreg[0]));
+    memset(amd->val_file, 0, (size_t)bir->num_insts * sizeof(amd->val_file[0]));
     memset(amd->reg_map, 0, sizeof(amd->reg_map));
     memset(amd->reg_file, 0, sizeof(amd->reg_file));
     memset(amd->vr_divg, 0, sizeof(amd->vr_divg));
-    memset(amd->val_sbase, 0xFF, sizeof(amd->val_sbase));
-    memset(amd->val_scroff, 0xFF, sizeof(amd->val_scroff)); /* -1 = dynamic */
+    memset(amd->val_sbase, 0xFF, (size_t)bir->num_insts * sizeof(amd->val_sbase[0]));
+    memset(amd->val_scroff, 0xFF, (size_t)bir->num_insts * sizeof(amd->val_scroff[0])); /* -1 = dynamic */
     amd->nglit  = 0;
     amd->gdlen  = 0;
     amd->grbase = 0;

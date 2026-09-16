@@ -446,3 +446,55 @@ static void tpl27(void)
     PASS();
 }
 TH_REG("tpl", 27, "a launch names what it could not deduce", tpl27)
+
+static void tpl33(void)
+{
+    CHEQ(tpptx("template<int A, int B> struct ts {\n"
+               "    using M = int; static const int ne = 1; };\n"
+               "template<int A> struct ts<A, 8> {\n"
+               "    using M = float; static const int ne = 2; };\n"
+               "template<int DV, int nc>\n"
+               "__global__ void k(float *o){\n"
+               "    using M = typename ts<DV, nc>::M;\n"
+               "    M a = (M)3;\n"
+               "    o[0] = (float)a + (float)ts<DV, nc>::ne; }\n"
+               "void go(float *o){ k<64,8><<<1,1>>>(o);"
+               " k<64,16><<<1,1>>>(o); }\n"), 0);
+    CHNE(strstr(tpx, "0f40A00000"), NULL);
+    CHNE(strstr(tpx, "0f40800000"), NULL);
+    PASS();
+}
+TH_REG("tpl", 33, "a member type alias follows the chosen partial", tpl33)
+
+static void tpl34(void)
+{
+    CHNE(tprun("template<int A, int B> struct ts { using M = int; };\n"
+               "__global__ void k(int *o){\n"
+               "    using Q = typename ts<64, 16>::Nope;\n"
+               "    Q a = (Q)1;\n"
+               "    o[0] = (int)a; }\n", "--ir"), 0);
+    CHNE(strstr(obuf, "E155"), NULL);
+    CHNE(strstr(obuf, "Nope"), NULL);
+    PASS();
+}
+TH_REG("tpl", 34, "a missing member type refuses by name", tpl34)
+
+static void tpl35(void)
+{
+    CHEQ(tpptx("template<int I, int J> struct tile {\n"
+               "    static const int ne = I*J/32; };\n"
+               "template<int DV, int nc> struct mts {"
+               " using C = tile<32,16>; };\n"
+               "template<int DV> struct mts<DV, 8> {"
+               " using C = tile<16,16>; };\n"
+               "template<int DV, int nc>\n"
+               "__global__ void k(int *o){\n"
+               "    using C = typename mts<DV, nc>::C;\n"
+               "    o[0] = C::ne; }\n"
+               "void go(int *o){ k<64,8><<<1,1>>>(o);"
+               " k<64,16><<<1,1>>>(o); }\n"), 0);
+    CHNE(strstr(tpx, "mov.u32 %r1, 8;"), NULL);
+    CHNE(strstr(tpx, "mov.u32 %r1, 16;"), NULL);
+    PASS();
+}
+TH_REG("tpl", 35, "a local alias reaches the code under it", tpl35)

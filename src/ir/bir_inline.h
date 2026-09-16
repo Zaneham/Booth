@@ -22,6 +22,6 @@
  * Returns BC_OK on success, or BC_ERR_VERIFY (with a message on stderr) if the
  * call graph will not converge, which means a __device__ function recurses.
  */
-int bir_inline_device(bir_module_t *M);
+int bir_inline_device(bir_module_t *M, int drop);
 
 #endif /* BARRACUDA_BIR_INLINE_H */

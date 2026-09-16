@@ -14,7 +14,7 @@
 #define BIR_MAX_TYPES       (1 << 14)
 #define BIR_MAX_TYPE_FIELDS (1 << 16)
 #define BIR_MAX_CONSTS      (1 << 16)
-#define BIR_MAX_INSTS       (1 << 22)
+#define BIR_MAX_INSTS       (1 << 23)
 #define BIR_MAX_EXTRA_OPS   (1 << 19)
 #define BIR_MAX_BLOCKS      (1 << 19)
 #define BIR_MAX_FUNCS       (1 << 14)
@@ -72,7 +72,8 @@ typedef struct {
     uint32_t    inner;      /* PTR: pointee. ARRAY/VECTOR: element. FUNC: return type */
     uint32_t    count;      /* ARRAY: element count. STRUCT/FUNC: fields_start index */
     uint16_t    num_fields; /* STRUCT/FUNC: field/param count */
-    uint16_t    uni;        /* STRUCT: 1 = union, every field at offset 0 */
+    uint8_t     uni;        /* STRUCT: 1 = union, every field at offset 0 */
+    uint8_t     cst;
 } bir_type_t;   /* 16 bytes */
 
 /* ---- Comparison Predicates ---- */
@@ -402,6 +403,8 @@ uint32_t    bir_type_float(bir_module_t *M, int width_bits);
 uint32_t    bir_type_bfloat(bir_module_t *M);
 uint32_t    bir_type_ptr(bir_module_t *M, uint32_t pointee, int addrspace);
 int         bir_umrk(bir_module_t *M, uint32_t ty);
+uint32_t    bir_tcst(bir_module_t *M, uint32_t ty);
+uint32_t    bir_tunq(const bir_module_t *M, uint32_t ty);
 uint32_t    bir_type_array(bir_module_t *M, uint32_t elem, uint32_t count);
 uint32_t    bir_type_vector(bir_module_t *M, uint32_t elem, uint32_t count);
 uint32_t    bir_type_struct(bir_module_t *M, const uint32_t *fields, int nfields);

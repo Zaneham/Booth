@@ -286,14 +286,14 @@ TH_REG("cpp", 20, "a macro definition too wide to hold says so", cpp20)
 
 static void cpp15(void)
 {
-    CHNE(cprun("template<typename T> __device__ T id(T v){ return v; }\n"
+    CHEQ(cprun("template<typename T> __device__ T id(T v){ return v; }\n"
                "template __device__ float id<float>(float v);\n",
-               "--parse"), 0);
-    CHNE(strstr(obuf, "E175"), NULL);
-    CHEQ(strstr(obuf, "E020"), NULL);
+               "--ir"), 0);
+    CHNE(strstr(obuf, "@id"), NULL);
+    CHEQ(strstr(obuf, "E175"), NULL);
     PASS();
 }
-TH_REG("cpp", 15, "an explicit instantiation is refused by name", cpp15)
+TH_REG("cpp", 15, "an explicit instantiation emits the function", cpp15)
 
 static void cpp16(void)
 {

@@ -65,6 +65,7 @@ static const char *ast_names[] = {
     [AST_NAMESPACE]     = "namespace",
     [AST_TEMPLATE_DECL] = "template_decl",
     [AST_TEMPLATE_PARAM]= "template_param",
+    [AST_TEMPLATE_INST] = "template_inst",
     [AST_BASE]          = "base",
     [AST_PP_DIRECTIVE]  = "pp_directive",
     [AST_TRANSLATION_UNIT] = "translation_unit",
@@ -1397,6 +1398,8 @@ static uint32_t parse_type_spec(parser_t *P, uint16_t *quals, uint16_t *cuda)
         } else if (ct == TOK_CU_ALIGN || ct == TOK_ALIGNAS) {
             uint32_t e = algcl(P);
             if (e) alg = e;
+        } else if (ct == TOK_TYPENAME) {
+            advance(P);
         } else if (is_storage_class(ct) || ct == TOK_CONST ||
                    ct == TOK_VOLATILE || ct == TOK_CONSTEXPR) {
             *quals |= storage_flag_for(ct);
@@ -1888,6 +1891,7 @@ static int starts_declaration(parser_t *P)
     if (t == TOK_CU_ALIGN || t == TOK_ALIGNAS) return 1;
     if (t == TOK_TEMPLATE) return 1;
     if (t == TOK_TYPEDEF) return 1;
+    if (t == TOK_TYPENAME) return 1;
     if (t == TOK_NAMESPACE) return 1;
     if (t == TOK_USING) return 1;
     /* IDENT IDENT or IDENT * IDENT: probably a declaration. Probably. */
@@ -2067,9 +2071,19 @@ static uint32_t parse_declaration(parser_t *P)
             k++;
         }
         if (peek_type(P, k) == TOK_TEMPLATE && peek_type(P, k + 1) != TOK_LT) {
-            if (!ext) parse_error(P, BC_E175);
-            sync_past_semi(P);
-            return 0;
+            uint32_t ti = alloc_node(P, AST_TEMPLATE_INST);
+            uint32_t inner;
+
+            P->nodes[ti].qualifiers = (uint16_t)(ext ? QUAL_EXTERN : 0);
+            for (int j = 0; j <= k; j++) advance(P);
+            inner = parse_declaration(P);
+            if (!inner) {
+                parse_error(P, BC_E175);
+                sync_past_semi(P);
+                return 0;
+            }
+            add_child(P, ti, inner);
+            return ti;
         }
     }
 
@@ -2349,15 +2363,24 @@ static uint32_t parse_declaration(parser_t *P)
                 int n = snprintf(P->anon_buf + aoff,
                                  sizeof(P->anon_buf) - aoff,
                                  "__a%u", P->anon_cnt++);
+                uint32_t noff = BC_ANON_BASE + aoff;
+                uint16_t nlen = (uint16_t)n;
+
                 P->anon_len += (uint32_t)(n + 1);
+
+                if ((quals & QUAL_TYPEDEF) && cur_type(P) == TOK_IDENT
+                    && peek_type(P, 1) == TOK_SEMI) {
+                    noff = cur(P)->offset;
+                    nlen = (uint16_t)cur(P)->len;
+                }
 
                 /* Name the nameless struct inside def's type_node */
                 uint32_t sn = alloc_node(P, AST_IDENT);
-                P->nodes[sn].d.text.offset = BC_ANON_BASE + aoff;
-                P->nodes[sn].d.text.len = (uint16_t)n;
+                P->nodes[sn].d.text.offset = noff;
+                P->nodes[sn].d.text.len = nlen;
                 add_child(P, type_node, sn);
 
-                if (!reg_tname(P, BC_ANON_BASE + aoff, (uint16_t)n))
+                if (!reg_tname(P, noff, nlen))
                     parse_error(P, BC_E137, BC_MAX_TNAMES);
 
                 /* Fresh TYPE_STRUCT referencing the synthetic name.
@@ -2367,8 +2390,8 @@ static uint32_t parse_declaration(parser_t *P)
                 P->nodes[type_node].d.btype.kind =
                     is_union ? TYPE_UNION : TYPE_STRUCT;
                 uint32_t ref = alloc_node(P, AST_IDENT);
-                P->nodes[ref].d.text.offset = BC_ANON_BASE + aoff;
-                P->nodes[ref].d.text.len = (uint16_t)n;
+                P->nodes[ref].d.text.offset = noff;
+                P->nodes[ref].d.text.len = nlen;
                 add_child(P, type_node, ref);
 
                 /* Stash def for injection into the var_decl as
@@ -2498,19 +2521,8 @@ static uint32_t parse_declaration(parser_t *P)
             name = scope;
         }
 
-        if (cur_type(P) == TOK_LT) {
-            advance(P);
-            uint32_t targs = alloc_node(P, AST_TEMPLATE_ARGS);
-            while (cur_type(P) != TOK_GT && cur_type(P) != TOK_EOF) {
-                uint16_t q2, c2;
-                uint32_t ta = parse_type_spec(P, &q2, &c2);
-                if (!ta) ta = parse_expr(P, 21);
-                add_child(P, targs, pexp(P, ta));
-                if (!match(P, TOK_COMMA)) break;
-            }
-            expect(P, TOK_GT);
-            add_child(P, name, targs);
-        }
+        if (cur_type(P) == TOK_LT)
+            add_child(P, name, tnargs(P));
 
         if (cur_type(P) == TOK_LPAREN && isvini(P)) {
             decl_node = alloc_node(P, AST_VAR_DECL);

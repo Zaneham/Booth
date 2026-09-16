@@ -1002,7 +1002,7 @@ int tensix_compile(const bir_module_t *bir, tt_module_t *tt)
     tt->vreg_count = 1;  /* vreg 0 reserved as sentinel */
     tt->out_len = 0;
 
-    memset(tt->val_vreg, 0, sizeof(tt->val_vreg));
+    memset(tt->val_vreg, 0, (size_t)bir->num_insts * sizeof(tt->val_vreg[0]));
     memset(tt->reg_map, 0, sizeof(tt->reg_map));
 
     int guard = 8192;

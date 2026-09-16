@@ -1302,6 +1302,13 @@ static void pp_dir_include(preproc_t *pp)
     include_name[nlen] = '\0';
     pp_skip_to_eol(pp);
 
+    if (pp->keepinc && is_angle) {
+        pp_emit_str(pp, "#include <", 10u);
+        pp_emit_str(pp, include_name, nlen);
+        pp_emit_char(pp, '>');
+        return;
+    }
+
     /* Search for the file */
     char fullpath[BC_MAX_PATH];
     int found = 0;
@@ -1324,6 +1331,12 @@ static void pp_dir_include(preproc_t *pp)
     if (!found) {
         /* Not found — skip with warning (allows test files with system includes) */
         /* Don't treat as error — common for <stdio.h>, <cuda_runtime.h> etc. */
+        if (pp->keepinc) {
+            pp_emit_str(pp, "#include ", 9u);
+            pp_emit_char(pp, is_angle ? '<' : '"');
+            pp_emit_str(pp, include_name, nlen);
+            pp_emit_char(pp, is_angle ? '>' : '"');
+        }
         return;
     }
 
@@ -1715,8 +1728,6 @@ void pp_init(preproc_t *pp, const char *src, uint32_t len,
         snprintf(pp->filename, BC_MAX_PATH, "%s", filename);
 
     pp_define(pp, "__BARRACUDA__", "1");
-    pp_define(pp, "__CUDA_ARCH__", "1100");
-    pp_define(pp, "__CUDACC__", "1");
     pp_define(pp, "__cplusplus", "201703L");
 
     for (size_t i = 0; i < sizeof pdlim / sizeof pdlim[0]; i++)
@@ -1724,6 +1735,13 @@ void pp_init(preproc_t *pp, const char *src, uint32_t len,
     for (size_t i = 0; i < sizeof pdhnd / sizeof pdhnd[0]; i++)
         (void)pp_define(pp, pdhnd[i].n, pdhnd[i].v);
     pdfmt(pp);
+}
+
+void pp_host(preproc_t *pp)
+{
+    pp->keepinc = 1;
+    for (size_t i = 0; i < sizeof pdhnd / sizeof pdhnd[0]; i++)
+        pp_undef_macro(pp, pdhnd[i].n, (uint32_t)strlen(pdhnd[i].n));
 }
 
 int pp_add_include_path(preproc_t *pp, const char *path)

@@ -1,5 +1,6 @@
 #include "bir.h"
 #include "backend.h"
+#include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -294,7 +295,9 @@ int bir_pchk(const bir_module_t *M, const char *phase)
 
 void bir_module_init(bir_module_t *M)
 {
-    memset(M, 0, sizeof(*M));
+    memset(M, 0, offsetof(bir_module_t, insts));
+    memset((char *)M + offsetof(bir_module_t, inst_lines), 0,
+           sizeof(*M) - offsetof(bir_module_t, inst_lines));
     /* Reserve type 0 as void.  ptr_inner() returns types[t].inner,
        and callers treat 0 as "no element type".  If some other type
        (e.g. f32) happened to land at index 0, the sentinel check
@@ -312,7 +315,8 @@ static int type_eq_simple(const bir_type_t *a, const bir_type_t *b)
         && a->width == b->width
         && a->inner == b->inner
         && a->count == b->count
-        && a->num_fields == b->num_fields;
+        && a->num_fields == b->num_fields
+        && a->cst == b->cst;
 }
 
 static uint32_t intern_type(bir_module_t *M, const bir_type_t *t)
@@ -340,7 +344,7 @@ static uint32_t intern_compound(bir_module_t *M, uint8_t kind,
     for (uint32_t i = 0; i < M->num_types && guard > 0; i++, guard--) {
         bir_type_t *t = &M->types[i];
         if (t->kind != kind || t->inner != inner || t->uni != 0
-            || t->num_fields != (uint16_t)nfields)
+            || t->cst != 0 || t->num_fields != (uint16_t)nfields)
             continue;
         int match = 1;
         for (int j = 0; j < nfields && match; j++) {
@@ -485,6 +489,35 @@ int bir_umrk(bir_module_t *M, uint32_t ty)
     if (ty >= M->num_types || M->types[ty].kind != BIR_TYPE_STRUCT) return 0;
     M->types[ty].uni = 1;
     return 1;
+}
+
+uint32_t bir_tcst(bir_module_t *M, uint32_t ty)
+{
+    bir_type_t t;
+
+    if (ty >= M->num_types) return ty;
+    t = M->types[ty];
+    if (t.cst) return ty;
+    t.cst = 1;
+    return intern_type(M, &t);
+}
+
+uint32_t bir_tunq(const bir_module_t *M, uint32_t ty)
+{
+    const bir_type_t *q;
+    uint32_t guard = M->num_types;
+
+    if (ty >= M->num_types || !M->types[ty].cst) return ty;
+    q = &M->types[ty];
+    for (uint32_t i = 0; i < M->num_types && guard > 0; i++, guard--) {
+        const bir_type_t *c = &M->types[i];
+
+        if (c->cst == 0 && c->kind == q->kind && c->addrspace == q->addrspace
+            && c->width == q->width && c->inner == q->inner
+            && c->count == q->count && c->num_fields == q->num_fields)
+            return i;
+    }
+    return ty;
 }
 
 /* ---- Type Sizes ---- */

@@ -18,10 +18,12 @@ typedef enum {
 
 /* ---- Ceilings ---- */
 
-#define LT_MAX_NVIMG  (1024u * 1024u)
+#define LT_MAX_NVIMG  (64u * 1024u * 1024u)
+#define LT_MAX_NVKRN  4096u
+#define LT_MAX_NVSTR  (LT_MAX_NVKRN * 512u)
 #define LT_MAX_NVNAME 96u
 #define LT_NV_PBASE   0x160u
-#define LT_MAX_NVPRM  32u
+#define LT_MAX_NVPRM  64u
 #define LT_MAX_NVCODE (256u * 1024u)
 #define LT_MAX_NVREG  253u
 #define LT_MAX_NVFIX  4096u
@@ -57,6 +59,11 @@ typedef enum {
 #define LT_NV_P1      1u
 #define LT_NV_PE      6u
 #define LT_MAX_NVXD   4u
+
+#define LT_NV_R20     20u
+#define LT_NV_R21     21u
+#define LT_NV_ARG0    4u
+#define LT_NV_NARG    12u
 
 #define LT_NV_PT      7u
 #define LT_NV_URZ     63u
@@ -96,6 +103,36 @@ extern const lt_nvn_t    lt_nv_note[];
 extern const uint32_t    lt_nv_noten;
 extern const char *const lt_nv_nsrc;
 
+
+#define LT_MAX_NVGLB  1024u
+#define LT_MAX_NVGBY  (1024u * 1024u)
+#define LT_MAX_NVREL  65536u
+
+#define LT_NV_RGLB 0u
+#define LT_NV_RRET 1u
+#define LT_NV_RTGT 2u
+
+typedef struct {
+    uint32_t at;
+    uint32_t gi;
+    uint32_t add;
+    uint8_t  hi;
+    uint8_t  kind;
+} lt_nvrl_t;
+
+typedef struct {
+    const char *name;
+    uint32_t    off;
+    uint32_t    size;
+} lt_nvg_t;
+
+typedef struct {
+    const lt_nvg_t *g;
+    uint32_t        ng;
+    const uint8_t  *bytes;
+    uint32_t        gtot;
+} lt_nvgd_t;
+
 /* ---- What a kernel needs around it ---- */
 
 typedef struct {
@@ -107,6 +144,11 @@ typedef struct {
     uint32_t    np;
     uint32_t    wave;
     uint32_t    mthr;
+    const uint8_t *code;
+    uint32_t    clen;
+    const lt_nvrl_t *rel;
+    uint32_t    nrel;
+    uint8_t     isfn;
 } lt_nvk_t;
 
 /* ---- Scoreboards and branch targets ---- */
@@ -192,6 +234,8 @@ typedef struct {
     uint32_t nst;
     lt_nbs_t body;
     lt_nbs_t tmp;
+    lt_nbs_t ext[LT_MAX_NVRG];
+    lt_nbs_t sl[LT_NV_NJB];
 } lt_ncf_t;
 
 /* ---- Terminator kinds ---- */
@@ -267,6 +311,8 @@ void lt_nvsrm(uint64_t *w, uint32_t rnd);
 void lt_nvf2f(uint64_t *w, uint32_t d, uint32_t s, uint32_t dsz, uint32_t ssz,
               uint32_t rnd);
 void lt_nvhfm(uint64_t *w, uint32_t d, uint32_t a, uint32_t b, uint32_t c);
+void lt_nvh2f(uint64_t *w, uint32_t d, uint32_t s);
+void lt_nvf2h(uint64_t *w, uint32_t d, uint32_t s, uint32_t bf);
 void lt_nvi2f(uint64_t *w, uint32_t d, uint32_t s, uint32_t sgn, uint32_t dsz,
               uint32_t ssz);
 void lt_nvf2i(uint64_t *w, uint32_t d, uint32_t s, uint32_t sgn, uint32_t dsz,
@@ -294,7 +340,10 @@ void lt_nvbar(uint64_t *w, uint32_t idx);
 void lt_nvrb(uint64_t *w, uint32_t idx);
 void lt_nvwait(uint64_t *w, uint32_t mask);
 void lt_nvsyn(uint64_t *w);
+void lt_nvnsl(uint64_t *w, uint32_t s);
 void lt_nvexit(uint64_t *w);
+void lt_nvcall(uint64_t *w);
+void lt_nvret(uint64_t *w, uint32_t ra);
 void lt_nvbra(uint64_t *w, int32_t rel);
 void lt_nvbrp(uint64_t *w, int32_t rel, uint32_t p, uint32_t nt);
 void lt_nvnop(uint64_t *w);
@@ -305,6 +354,6 @@ void lt_nvbrk(uint64_t *w, uint32_t bar, uint32_t p, uint32_t nt);
 void lt_nvbrs(uint64_t *w, uint32_t rb, uint32_t cnt);
 
 lt_res_t lt_nvcub(uint8_t *out, uint32_t max, uint32_t *len,
-                  const lt_nvk_t *k, const uint8_t *code, uint32_t clen);
+                  const lt_nvk_t *k, uint32_t nk, const lt_nvgd_t *gd);
 
 #endif /* LT_NV_H */

@@ -628,6 +628,18 @@ lt_nvsyn(uint64_t *w)
 }
 
 void
+lt_nvnsl(uint64_t *w, uint32_t s)
+{
+    assert(w != NULL);
+    assert(s < 256u);
+
+    head(w, 0x15Du, 1u);
+    lt_nvput(w, 39u, 32u, s);
+    lt_nvput(w, 89u, 87u, LT_NV_PT);
+    lt_nvput(w, 109u, 109u, 1u);
+}
+
+void
 lt_nvbrs(uint64_t *w, uint32_t rb, uint32_t cnt)
 {
     assert(w != NULL);
@@ -688,6 +700,28 @@ lt_nvnop(uint64_t *w)
     assert(w != NULL);
 
     head(w, 0x918u, 0u);
+}
+
+void
+lt_nvcall(uint64_t *w)
+{
+    assert(w != NULL);
+
+    head(w, 0x143u, 4u);
+    lt_nvput(w, 86u, 86u, 1u);
+    lt_nvput(w, 89u, 87u, LT_NV_PT);
+}
+
+void
+lt_nvret(uint64_t *w, uint32_t ra)
+{
+    assert(w != NULL);
+    assert(ra < 256u);
+
+    head(w, 0x150u, 4u);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 86u, 85u, 3u);
+    lt_nvput(w, 89u, 87u, LT_NV_PT);
 }
 
 /* ---- Convergence ---- */
@@ -896,6 +930,33 @@ lt_nvf2f(uint64_t *w, uint32_t d, uint32_t s, uint32_t dsz, uint32_t ssz,
     lt_nvput(w, 76u, 75u, dsz);
     lt_nvput(w, 79u, 78u, rnd);
     lt_nvput(w, 85u, 84u, ssz);
+}
+
+void
+lt_nvh2f(uint64_t *w, uint32_t d, uint32_t s)
+{
+    assert(d < 256u && s < 256u);
+
+    head(w, 0x030u, 1u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, LT_NV_RZ);
+    lt_nvput(w, 39u, 32u, s);
+    lt_nvput(w, 61u, 60u, 2u);
+    lt_nvput(w, 72u, 72u, 1u);
+    lt_nvput(w, 78u, 78u, 1u);
+}
+
+void
+lt_nvf2h(uint64_t *w, uint32_t d, uint32_t s, uint32_t bf)
+{
+    assert(d < 256u && s < 256u && bf < 2u);
+
+    head(w, 0x03Eu, 1u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, LT_NV_RZ);
+    lt_nvput(w, 39u, 32u, s);
+    lt_nvput(w, 71u, 64u, LT_NV_RZ);
+    lt_nvput(w, 76u, 76u, bf);
 }
 
 void
