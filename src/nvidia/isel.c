@@ -1092,7 +1092,8 @@ static void is_asm(const bir_inst_t *I)
     X = &S.nv->asms[S.nv->num_asm];
     X->tmpl = A->tmpl;
     X->nops = (uint8_t)A->nops;
-    X->pad[0] = X->pad[1] = X->pad[2] = 0;
+    X->nout = (uint8_t)A->nout;
+    X->pad[0] = X->pad[1] = 0;
     if (!asmb(A, I, X, pv, pr)) return;
 
     zero[0] = mop_none();

@@ -325,6 +325,8 @@ void lt_nvldl(uint64_t *w, uint32_t dst, uint32_t ra, uint32_t off, uint32_t ty)
 void lt_nvstl(uint64_t *w, uint32_t ra, uint32_t rb, uint32_t off, uint32_t ty);
 void lt_nvlds(uint64_t *w, uint32_t dst, uint32_t ra, uint32_t off, uint32_t ty);
 void lt_nvsts(uint64_t *w, uint32_t ra, uint32_t rb, uint32_t off, uint32_t ty);
+void lt_nvldsm(uint64_t *w, uint32_t d, uint32_t ra, uint32_t off,
+               uint32_t n, uint32_t tr);
 void lt_nvvot(uint64_t *w, uint32_t d, uint32_t pd, uint32_t p, uint32_t nt,
               uint32_t vop);
 void lt_nvsfl(uint64_t *w, uint32_t d, uint32_t pd, uint32_t ra, uint32_t rb,

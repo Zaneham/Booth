@@ -16,6 +16,7 @@
 #define SA_TMP2  10u
 #define SA_NPR   6u
 #define SA_NOIX  0xFFFFu
+#define SA_MAT   12u
 #define SA_STK   0x028u
 #define SA_NVW   (SA_NV / 64u)
 #define SA_NIW   1024u
@@ -369,10 +370,18 @@ static const nv_call_t *sacof(const nv_minst_t *I)
     return &sast.M->calls[I->flags % NV_MAX_CALL];
 }
 
+static const nv_asm_t *saaof(const nv_minst_t *I)
+{
+    if (I->op != (uint16_t)NV_ASM) return NULL;
+    return &sast.M->asms[I->flags % NV_MAX_ASM];
+}
+
 static uint32_t sanop(const nv_minst_t *I)
 {
     const nv_call_t *C = sacof(I);
+    const nv_asm_t *A = saaof(I);
 
+    if (A != NULL) return (uint32_t)A->nops;
     if (C == NULL) return (uint32_t)I->num_defs + (uint32_t)I->num_uses;
     return (uint32_t)C->hasret + (uint32_t)C->nargs;
 }
@@ -380,7 +389,9 @@ static uint32_t sanop(const nv_minst_t *I)
 static uint32_t sandf(const nv_minst_t *I)
 {
     const nv_call_t *C = sacof(I);
+    const nv_asm_t *A = saaof(I);
 
+    if (A != NULL) return (uint32_t)A->nout;
     if (C == NULL) return (uint32_t)I->num_defs;
     return (uint32_t)C->hasret;
 }
@@ -388,7 +399,10 @@ static uint32_t sandf(const nv_minst_t *I)
 static const nv_opnd_t *saopd(const nv_minst_t *I, uint32_t k)
 {
     const nv_call_t *C = sacof(I);
+    const nv_asm_t *A = saaof(I);
 
+    if (A != NULL)
+        return (k < A->nops && k < NV_MAX_ASMOP) ? &A->ops[k] : NULL;
     if (C == NULL) return (k < NV_MAX_OPS) ? &I->ops[k] : NULL;
     if (C->hasret != 0u) {
         if (k == 0u) return &C->ret;
@@ -440,7 +454,8 @@ static int sascan(void)
             if (v == SA_NOIX) return 1;
             sast.vwd[v] = (uint8_t)savw(o->rfile);
             sast.vpr[v] = (o->rfile == (uint8_t)NV_RF_PRED) ? 1u : 0u;
-            if (I->op != (uint16_t)NV_CALL) m++;
+            if (I->op != (uint16_t)NV_CALL
+                && I->op != (uint16_t)NV_ASM) m++;
             if (saterm(I) != TFALL) sast.vuse[v] = 0xFFFFu;
             else if (sast.vuse[v] < 0xFFFEu) sast.vuse[v]++;
         }
@@ -2425,10 +2440,14 @@ static void sacall(const nv_minst_t *I)
     uint32_t g, ci, at;
 
     memset(&x, 0, sizeof x);
-    if (C->vprt != 0u || C->fn >= BIR_MAX_FUNCS) {
-        sabad(I->op, BC_E601);
+    if (C->vprt != 0u) {
+        (void)be_fail(BC_E541, "nvptx",
+                      "a device-side printf, whose vprintf ABI has no SASS "
+                      "form here");
+        sast.nbad++;
         return;
     }
+    if (C->fn >= BIR_MAX_FUNCS) { sabad(I->op, BC_E609); return; }
     if (sast.isfn != 0u) {
         (void)be_fail(BC_E541, "nvptx",
                       "a device function that itself calls, whose return "
@@ -2731,6 +2750,98 @@ static void sansl(const nv_minst_t *I)
     safire(w, &x, 0u);
 }
 
+static int sapfx(const char *t, const char *p)
+{
+    uint32_t i = 0u;
+
+    while (i < (uint32_t)BIR_ASM_TMPLZ && p[i] != '\0') {
+        if (t[i] != p[i]) return 0;
+        i++;
+    }
+    return 1;
+}
+
+static const char *saawhy(const char *t)
+{
+    if (sapfx(t, "mma.sync"))
+        return "a warp matrix multiply in inline asm, whose SASS shape field "
+               "no encoding source here records";
+    if (sapfx(t, "cp.async"))
+        return "an asynchronous shared copy in inline asm";
+    if (sapfx(t, "ldmatrix"))
+        return "an ldmatrix shape with no SASS form here";
+    return "an inline asm template with no SASS form here";
+}
+
+static int saaok(const nv_asm_t *A, uint32_t n)
+{
+    if (A->nops != n + 1u || (uint32_t)A->nout != n) return 0;
+    for (uint32_t k = 0; k < n; k++) {
+        if (A->ops[k].kind != (uint8_t)NV_MOP_REG) return 0;
+        if (savw(A->ops[k].rfile) != 1u) return 0;
+    }
+    return A->ops[n].kind == (uint8_t)NV_MOP_REG;
+}
+
+static void saldsm(const nv_minst_t *I, const nv_asm_t *A, uint32_t n,
+                   uint32_t tr)
+{
+    lt_nrw_t x;
+    uint64_t w[2];
+    uint32_t ra;
+
+    memset(&x, 0, sizeof x);
+    if (saaok(A, n) == 0) { sabad(I->op, BC_E609); return; }
+    ra = sarg(&A->ops[n]);
+    samsr(&x.rd, ra, savw(A->ops[n].rfile));
+    samsr(&x.wr, SA_MAT, n);
+    lt_nvldsm(w, SA_MAT, ra, 0u, n, tr);
+    safire(w, &x, 3u);
+    for (uint32_t k = 0; k < n; k++) {
+        lt_nrw_t y;
+        uint32_t d = sarg(&A->ops[k]);
+
+        memset(&y, 0, sizeof y);
+        samsr(&y.rd, SA_MAT + k, 1u);
+        samsr(&y.wr, d, 1u);
+        lt_nvmov(w, d, SA_MAT + k);
+        safire(w, &y, 0u);
+    }
+}
+
+static void saasm(const nv_minst_t *I)
+{
+    const nv_asm_t *A = saaof(I);
+    const char *t;
+
+    if (A == NULL || sast.M->bir == NULL
+        || A->tmpl >= sast.M->bir->string_len) {
+        sabad(I->op, BC_E609);
+        return;
+    }
+    t = sast.M->bir->strings + A->tmpl;
+    if (sapfx(t, "ldmatrix.sync.aligned.m8n8.x1.b16")) {
+        saldsm(I, A, 1u, 0u); return;
+    }
+    if (sapfx(t, "ldmatrix.sync.aligned.m8n8.x2.b16")) {
+        saldsm(I, A, 2u, 0u); return;
+    }
+    if (sapfx(t, "ldmatrix.sync.aligned.m8n8.x4.b16")) {
+        saldsm(I, A, 4u, 0u); return;
+    }
+    if (sapfx(t, "ldmatrix.sync.aligned.m8n8.x1.trans.b16")) {
+        saldsm(I, A, 1u, 1u); return;
+    }
+    if (sapfx(t, "ldmatrix.sync.aligned.m8n8.x2.trans.b16")) {
+        saldsm(I, A, 2u, 1u); return;
+    }
+    if (sapfx(t, "ldmatrix.sync.aligned.m8n8.x4.trans.b16")) {
+        saldsm(I, A, 4u, 1u); return;
+    }
+    (void)be_fail(BC_E541, "nvptx", saawhy(t));
+    sast.nbad++;
+}
+
 static void samemc(const nv_minst_t *I)
 {
     switch (I->op) {
@@ -2766,6 +2877,7 @@ static void samemc(const nv_minst_t *I)
     case NV_NANOSLP:                    sansl(I); return;
     case NV_RET: case NV_EXIT:          saquit(); return;
     case NV_CALL:                       sacall(I); return;
+    case NV_ASM:                        saasm(I); return;
     case NV_ST_RETP:                    saretp(I); return;
     case NV_SHFL_IDX: case NV_SHFL_UP:
     case NV_SHFL_DOWN: case NV_SHFL_XOR: sashf(I); return;

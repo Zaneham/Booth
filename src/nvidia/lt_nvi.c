@@ -486,6 +486,23 @@ lt_nvsts(uint64_t *w, uint32_t ra, uint32_t rb, uint32_t off, uint32_t ty)
     lt_nvput(w, 75u, 73u, ty);
 }
 
+void
+lt_nvldsm(uint64_t *w, uint32_t d, uint32_t ra, uint32_t off,
+          uint32_t n, uint32_t tr)
+{
+    assert(w != NULL);
+    assert(d < 256u && ra < 256u && off < (1u << 24));
+    assert(n == 1u || n == 2u || n == 4u);
+    assert(tr < 2u);
+
+    head(w, 0x83Bu, 0u);   /* per nak-mesa-90320e12 sm70_encode.rs:4622 */
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 63u, 40u, off);
+    lt_nvput(w, 73u, 72u, (n == 4u) ? 2u : ((n == 2u) ? 1u : 0u));
+    lt_nvput(w, 79u, 78u, tr);
+}
+
 /* ---- Lanes ---- */
 
 void

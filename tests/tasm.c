@@ -230,3 +230,78 @@ static void asm16(void)
     PASS();
 }
 TH_REG("asm", 16, "a PTX template is refused on an AMD target", asm16)
+
+static int acub(const char *src)
+{
+    remove("build/tasm.cubin");
+    return arun(src, "--nvidia-cubin -o build/tasm.cubin");
+}
+
+static const char *const ldm2 =
+    "__global__ void k(int *o) {\n"
+    "    __shared__ int s[256];\n"
+    "    s[threadIdx.x] = (int)threadIdx.x;\n"
+    "    __syncthreads();\n"
+    "    int a = 0, b = 0;\n"
+    "    const int *p = s + (threadIdx.x & 7) * 2;\n"
+    "    asm volatile(\"ldmatrix.sync.aligned.m8n8.x2.b16 {%0, %1}, [%2];\"\n"
+    "        : \"=r\"(a), \"=r\"(b) : \"l\"(p));\n"
+    "    o[threadIdx.x] = a + b;\n"
+    "}\n";
+
+static const char *const ldm4 =
+    "__global__ void k(int *o) {\n"
+    "    __shared__ int s[256];\n"
+    "    s[threadIdx.x] = (int)threadIdx.x;\n"
+    "    __syncthreads();\n"
+    "    int a = 0, b = 0, c = 0, d = 0;\n"
+    "    const int *p = s + (threadIdx.x & 7) * 4;\n"
+    "    asm volatile(\"ldmatrix.sync.aligned.m8n8.x4.b16\"\n"
+    "        \" {%0, %1, %2, %3}, [%4];\"\n"
+    "        : \"=r\"(a), \"=r\"(b), \"=r\"(c), \"=r\"(d) : \"l\"(p));\n"
+    "    o[threadIdx.x] = a + b + c + d;\n"
+    "}\n";
+
+static void asm17(void)
+{
+    CHEQ(acub(ldm2), 0);
+    PASS();
+}
+TH_REG("asm", 17, "ldmatrix x2 reaches SASS as LDSM", asm17)
+
+static void asm18(void)
+{
+    CHEQ(acub(ldm4), 0);
+    PASS();
+}
+TH_REG("asm", 18, "ldmatrix x4 reaches SASS as LDSM", asm18)
+
+static void asm19(void)
+{
+    CHNE(acub(
+        "__global__ void k(int *o) {\n"
+        "    int d0 = 0, d1 = 0, a0 = 1, a1 = 2, a2 = 3, a3 = 4;\n"
+        "    int b0 = 5, b1 = 6;\n"
+        "    asm(\"mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16\"\n"
+        "        \" {%0, %1}, {%2, %3, %4, %5}, {%6, %7}, {%0, %1};\"\n"
+        "        : \"+r\"(d0), \"+r\"(d1)\n"
+        "        : \"r\"(a0), \"r\"(a1), \"r\"(a2), \"r\"(a3),\n"
+        "          \"r\"(b0), \"r\"(b1));\n"
+        "    o[threadIdx.x] = d0 + d1;\n"
+        "}\n"), 0);
+    CHNE(strstr(obuf, "warp matrix multiply"), NULL);
+    PASS();
+}
+TH_REG("asm", 19, "a mma.sync template refuses by name", asm19)
+
+static void asm20(void)
+{
+    CHNE(acub(
+        "__global__ void k(int *o) {\n"
+        "    printf(\"%d\", (int)threadIdx.x);\n"
+        "    o[threadIdx.x] = 1;\n"
+        "}\n"), 0);
+    CHNE(strstr(obuf, "vprintf"), NULL);
+    PASS();
+}
+TH_REG("asm", 20, "a device printf refuses by name in SASS", asm20)

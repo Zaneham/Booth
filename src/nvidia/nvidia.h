@@ -310,7 +310,8 @@ typedef struct {
 typedef struct {
     uint32_t   tmpl;     /* BIR strings offset of the template text */
     uint8_t    nops;
-    uint8_t    pad[3];
+    uint8_t    nout;
+    uint8_t    pad[2];
     nv_opnd_t  ops[NV_MAX_ASMOP];
 } nv_asm_t;
 
