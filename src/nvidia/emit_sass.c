@@ -3290,7 +3290,8 @@ static int saone(nv_module_t *nv, uint32_t fi, int text)
     sast.k.nreg = sast.nreg + 2u;
     sast.k.isfn = sast.isfn;
     if (sast.isfn == 0u && sast.k.nreg > sast.ktop) sast.ktop = sast.k.nreg;
-    sast.k.smem = sast.F->lds_bytes;
+    sast.k.smem = (sast.M->dyn_alg != 0u)
+                ? ((sast.F->lds_bytes + 15u) & ~15u) : sast.F->lds_bytes;
     sast.k.lmem = sast.F->lcl_bytes + 8u * sast.nspl;
     if (sast.clen == 0u || sast.clen > LT_MAX_NVCODE) {
         (void)be_fail(BC_E607, "nvptx", sast.name,

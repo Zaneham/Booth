@@ -266,7 +266,11 @@ static lt_res_t plkrn(lay_t *L, str_t *sst, str_t *st, const lt_nvk_t *k,
     L->iinf = sx;
     L->nsym = yx;
     for (uint32_t i = 0; i < nk; i++)
-        if (k[i].smem != 0u) L->k[i].ishr = L->iinf + 1u + lt_nv_noten + ns++;
+        if (k[i].smem != 0u) {
+            L->k[i].shr = sadd(sst, ".nv.shared.", k[i].name);
+            if (L->k[i].shr == 0u) return LT_EFULL;
+            L->k[i].ishr = L->iinf + 1u + lt_nv_noten + ns++;
+        }
     L->isym  = L->iinf + 1u + lt_nv_noten + ns;
     L->istr  = L->isym + 1u;
     L->issh  = L->istr + 1u;

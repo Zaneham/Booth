@@ -6180,3 +6180,67 @@ static void rpi310(void)
     PASS();
 }
 TH_REG("rpi", 310, "kath cuda refuses a flag it would ignore", rpi310)
+
+static uint32_t rpi_r16(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+}
+
+static uint32_t rpi_r32(const uint8_t *p)
+{
+    return rpi_r16(p) | (rpi_r16(p + 2) << 16);
+}
+
+static void rpi311(void)
+{
+    static uint8_t cub[1 << 18];
+    const char *path = scratch("rpi311.cu",
+        "__global__ void k(int *o){\n"
+        "    __shared__ int s[256];\n"
+        "    s[threadIdx.x] = (int)threadIdx.x;\n"
+        "    __syncthreads();\n"
+        "    o[threadIdx.x] = s[255 - threadIdx.x];\n"
+        "}\n");
+    char     cmd[512];
+    FILE    *f;
+    size_t   n;
+    uint32_t sho, nse, sxi, sto, got = 0u, zsh = 0u, tsh = 0u;
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-cubin -o build/rpi311.cubin %s",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+
+    f = fopen("build/rpi311.cubin", "rb");
+    CHNE(f, NULL);
+    n = fread(cub, 1u, sizeof cub, f);
+    fclose(f);
+    CHECK(n > 64u);
+
+    sho = rpi_r32(cub + 40);
+    nse = rpi_r16(cub + 60);
+    sxi = rpi_r16(cub + 62);
+    CHECK(nse != 0u && sxi < nse);
+    CHECK(sho + (size_t)nse * 64u <= n);
+
+    sto = rpi_r32(cub + sho + (size_t)sxi * 64u + 24u);
+    CHECK(sto < n);
+
+    for (uint32_t i = 0; i < nse; i++) {
+        const uint8_t *s = cub + sho + (size_t)i * 64u;
+        uint32_t       nm = sto + rpi_r32(s);
+
+        if (nm >= n) continue;
+        if (strcmp((const char *)cub + nm, ".nv.shared.k") == 0) {
+            got = 1u;
+            tsh = rpi_r32(s + 4u);
+            zsh = rpi_r32(s + 32u);
+        }
+    }
+
+    CHEQ(got, 1u);
+    CHEQ(tsh, 8u);
+    CHEQ(zsh, 1024u);
+    PASS();
+}
+TH_REG("rpi", 311, "a __shared__ kernel declares its size", rpi311)
