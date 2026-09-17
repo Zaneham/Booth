@@ -41,6 +41,7 @@ E050=#include: cannot read '%s'
 E051=unknown directive: #%s
 E052=unterminated #if/#ifdef (missing %d #endif)
 E053=preprocessor output overflow (max %d bytes)
+E054=#include: cannot find '%s' on any search path
 
 # ---- Sema (E070-E099) ----
 E070=arrow on non-pointer

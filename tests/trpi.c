@@ -6038,3 +6038,32 @@ static void rpi304(void)
     PASS();
 }
 TH_REG("rpi", 304, "a grid barrier lowers to blocks, not one op", rpi304)
+
+static long rpi_fsz(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    long n;
+
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fclose(f);
+    return n;
+}
+
+static void rpi305(void)
+{
+    const char *path = scratch("rpi305.cu",
+        "#include <no_such_header_anywhere.h>\n"
+        "__global__ void k(int *o){ o[0] = 1; }\n");
+    char cmd[512];
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s -o build/rpi305.ptx",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "E054"), NULL);
+    CHNE(strstr(obuf, "no_such_header_anywhere.h"), NULL);
+    PASS();
+}
+TH_REG("rpi", 305, "a header Booth cannot find is named", rpi305)

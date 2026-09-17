@@ -71,7 +71,11 @@ typedef struct {
     char     msg[256];
     int      code;
     uint16_t eid;      /* bc_eid_t — language-neutral error ID */
+    uint8_t  sev;
 } bc_error_t;
+
+#define BC_SEV_ERR  0u
+#define BC_SEV_WARN 1u
 
 #include "fe/bc_err.h"
 

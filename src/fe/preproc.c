@@ -18,18 +18,38 @@
 
 /* ---- Error reporting ---- */
 
-static void pp_error(preproc_t *pp, bc_eid_t eid, ...)
+static void pp_rec(preproc_t *pp, bc_eid_t eid, uint8_t sev, va_list ap)
 {
-    if (pp->num_errors >= BC_MAX_ERRORS) return;
     bc_error_t *e = &pp->errors[pp->num_errors++];
+
+    if (sev == (uint8_t)BC_SEV_ERR) pp->nhard++;
     e->loc.line = pp->line;
     e->loc.col = 1;
     e->loc.offset = pp->pos;
     e->code = BC_ERR_PREPROC;
     e->eid  = (uint16_t)eid;
+    e->sev  = sev;
+    if (vsnprintf(e->msg, sizeof(e->msg), bc_efmt(eid), ap) < 0)
+        e->msg[0] = '\0';
+}
+
+static void pp_error(preproc_t *pp, bc_eid_t eid, ...)
+{
     va_list ap;
+
+    if (pp->num_errors >= BC_MAX_ERRORS) return;
     va_start(ap, eid);
-    vsnprintf(e->msg, sizeof(e->msg), bc_efmt(eid), ap);
+    pp_rec(pp, eid, (uint8_t)BC_SEV_ERR, ap);
+    va_end(ap);
+}
+
+static void pp_warn(preproc_t *pp, bc_eid_t eid, ...)
+{
+    va_list ap;
+
+    if (pp->num_errors >= BC_MAX_ERRORS) return;
+    va_start(ap, eid);
+    pp_rec(pp, eid, (uint8_t)BC_SEV_WARN, ap);
     va_end(ap);
 }
 
@@ -1329,13 +1349,22 @@ static void pp_dir_include(preproc_t *pp)
     }
 
     if (!found) {
-        /* Not found — skip with warning (allows test files with system includes) */
-        /* Don't treat as error — common for <stdio.h>, <cuda_runtime.h> etc. */
         if (pp->keepinc) {
             pp_emit_str(pp, "#include ", 9u);
             pp_emit_char(pp, is_angle ? '<' : '"');
             pp_emit_str(pp, include_name, nlen);
             pp_emit_char(pp, is_angle ? '>' : '"');
+        } else {
+            uint32_t m;
+            for (m = 0; m < pp->nmiss; m++)
+                if (strcmp(pp->miss[m], include_name) == 0) break;
+            if (m == pp->nmiss) {
+                if (pp->nmiss < PP_MAX_MISS
+                    && snprintf(pp->miss[pp->nmiss], BC_MAX_PATH, "%s",
+                                include_name) > 0)
+                    pp->nmiss++;
+                pp_warn(pp, BC_E054, include_name);
+            }
         }
         return;
     }
@@ -1591,7 +1620,7 @@ int pp_process(preproc_t *pp)
 
     pp->out[pp->out_len < pp->out_max ? pp->out_len : pp->out_max - 1] = '\0';
 
-    return pp->num_errors > 0 ? BC_ERR_PREPROC : BC_OK;
+    return pp->nhard > 0 ? BC_ERR_PREPROC : BC_OK;
 }
 
 /* ---- Public API ---- */

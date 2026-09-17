@@ -64,6 +64,7 @@ typedef enum {
     BC_E051 = 51,  /* unknown directive: #%s */
     BC_E052 = 52,  /* unterminated #if/#ifdef (missing %d #endif) */
     BC_E053 = 53,  /* preprocessor output overflow (max %d bytes) */
+    BC_E054 = 54,  /* #include: cannot find '%s' on any search path */
 
     /* ---- Sema (E070-E099) ---- */
     BC_E070 = 70,  /* arrow on non-pointer */
