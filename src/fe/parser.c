@@ -2846,10 +2846,14 @@ static uint32_t parse_stmt(parser_t *P)
             expect(P, TOK_LPAREN);
             uint16_t q2 = 0, c2 = 0;
             uint32_t dt = parse_type_spec(P, &q2, &c2);
+            int pd = 0;
             if (dt) add_child(P, n, dt);
             while (cur_type(P) == TOK_STAR || cur_type(P) == TOK_AMP ||
-                   cur_type(P) == TOK_CONST)
+                   cur_type(P) == TOK_CONST) {
+                if (cur_type(P) == TOK_STAR) pd++;
                 advance(P);
+            }
+            P->nodes[n].d.oper.flags = pd;
             if (match(P, TOK_LBRACKET)) {
                 while (cur_type(P) != TOK_RBRACKET && cur_type(P) != TOK_EOF) {
                     if (cur_type(P) == TOK_IDENT) {

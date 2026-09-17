@@ -6244,3 +6244,68 @@ static void rpi311(void)
     PASS();
 }
 TH_REG("rpi", 311, "a __shared__ kernel declares its size", rpi311)
+
+
+static void rpi312(void)
+{
+    const char *b, *t;
+
+    CHNE(scratch("rpi312.cu",
+        "#define assert(e) ((e) ? (void)0 : __trap())\n"
+        "__global__ void k(int *o, int n) {\n"
+        "  int i = threadIdx.x; assert(i < n); o[i] = i; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi312.cu", obuf, (int)sizeof obuf), 0);
+
+    b = strstr(obuf, "br_cond");
+    t = strstr(obuf, "trap");
+    CHNE(b, NULL);
+    CHNE(t, NULL);
+    CHEQ(t > b, 1);
+    CHNE(strstr(obuf, "tern.else"), NULL);
+    PASS();
+}
+TH_REG("rpi", 312, "a void ternary keeps its test", rpi312)
+
+static void rpi313(void)
+{
+    CHNE(scratch("rpi313.cu",
+        "__device__ int f(int a) { return a + 1; }\n"
+        "__device__ int g(int a) { return a + 2; }\n"
+        "__global__ void k(int *o, int n) {\n"
+        "  int i = threadIdx.x; o[i] = (i < n) ? f(1) : g(2); }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi313.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "phi i32"), NULL);
+    CHNE(strstr(obuf, "tern.then"), NULL);
+    CHEQ(strstr(obuf, "select"), NULL);
+    PASS();
+}
+TH_REG("rpi", 313, "only one arm of a calling ternary runs", rpi313)
+
+static void rpi314(void)
+{
+    CHNE(scratch("rpi314.cu",
+        "__global__ void k(int *o, int n) {\n"
+        "  int i = threadIdx.x; ((i < n) ? (o[0] = 1) : (o[0] = 2)); }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi314.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "br_cond"), NULL);
+    CHNE(strstr(obuf, "tern.then"), NULL);
+    CHNE(strstr(obuf, "tern.else"), NULL);
+    PASS();
+}
+TH_REG("rpi", 314, "a storing ternary stores once", rpi314)
+
+static void rpi315(void)
+{
+    CHNE(scratch("rpi315.cu",
+        "__global__ void k(int *o, const int *a, int n) {\n"
+        "  int i = threadIdx.x; o[i] = (i < n) ? a[i] : 0; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi315.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "select i32"), NULL);
+    CHEQ(strstr(obuf, "tern.then"), NULL);
+    PASS();
+}
+TH_REG("rpi", 315, "a ternary that only reads stays a select", rpi315)
