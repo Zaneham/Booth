@@ -624,6 +624,33 @@ static const char *rpi_ptx(const char *src, const char *stem)
     return ptx;
 }
 
+static const char *rpi_pti(const char *src, const char *stem,
+                           const char *xtra)
+{
+    static char ptx[1 << 16];
+    char cmd[512], cu[128], out[128];
+    FILE *f, *g;
+    size_t n;
+
+    ptx[0] = '\0';
+    snprintf(cu, sizeof cu, "build/%s.cu", stem);
+    snprintf(out, sizeof out, "build/%s.ptx", stem);
+    f = fopen(cu, "w");
+    if (!f) return NULL;
+    fputs(src, f);
+    fclose(f);
+    remove(out);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s %s -o %s",
+             BC_BIN, xtra, cu, out);
+    if (th_run(cmd, obuf, (int)sizeof obuf) != 0) return NULL;
+    g = fopen(out, "rb");
+    if (!g) return NULL;
+    n = fread(ptx, 1, sizeof ptx - 1, g);
+    fclose(g);
+    ptx[n] = '\0';
+    return ptx;
+}
+
 static void rpi17(void)
 {
     const char *p = rpi_ptx(
@@ -688,12 +715,12 @@ static void rpi19(void)
 }
 TH_REG("rpi", 19, "a member of an anonymous union resolves", rpi19)
 
-/* assert in device code traps and loses its message */
 static void rpi20(void)
 {
-    const char *p = rpi_ptx(
+    const char *p = rpi_pti(
+        "#include <cassert>\n"
         "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n",
-        "rpi20");
+        "rpi20", "-Iruntime/include");
 
     CHNE(p, NULL);
     CHEQ(strstr(obuf, "E143"), NULL);
@@ -701,7 +728,7 @@ static void rpi20(void)
     CHNE(strstr(p, "trap;"), NULL);
     PASS();
 }
-TH_REG("rpi", 20, "assert becomes a conditional trap", rpi20)
+TH_REG("rpi", 20, "assert from <cassert> is a conditional trap", rpi20)
 
 /* BIR_GLOBAL_REF reaches a __device__ table on PTX */
 static void rpi21(void)
@@ -6067,3 +6094,48 @@ static void rpi305(void)
     PASS();
 }
 TH_REG("rpi", 305, "a header Booth cannot find is named", rpi305)
+
+static void rpi306(void)
+{
+    const char *path = scratch("rpi306.cu",
+        "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n");
+    char cmd[512];
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s -o build/rpi306.ptx",
+             BC_BIN, path);
+    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "E105"), NULL);
+    PASS();
+}
+TH_REG("rpi", 306, "assert with no declaration refuses by name", rpi306)
+
+static void rpi307(void)
+{
+    const char *p = rpi_pti(
+        "#include <cassert>\n"
+        "__global__ void k(int *o, int n){\n"
+        "  assert((128 <= 1024) && (128 % 32) == 0); o[0] = n; }\n",
+        "rpi307", "-Iruntime/include");
+
+    CHNE(p, NULL);
+    if (p) CHEQ(strstr(p, "trap;"), NULL);
+    PASS();
+}
+TH_REG("rpi", 307, "a literal assert guard leaves no trap", rpi307)
+
+static void rpi308(void)
+{
+    static const char *const src =
+        "#include <cassert>\n"
+        "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n";
+    const char *p = rpi_pti(src, "rpi308a", "-Iruntime/include");
+
+    CHNE(p, NULL);
+    if (p) CHNE(strstr(p, "trap;"), NULL);
+    p = rpi_pti(src, "rpi308b", "-Iruntime/include -DNDEBUG");
+    CHNE(p, NULL);
+    if (p) CHEQ(strstr(p, "trap;"), NULL);
+    PASS();
+}
+TH_REG("rpi", 308, "NDEBUG reaches the device compile", rpi308)

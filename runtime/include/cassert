@@ -1,0 +1,9 @@
+#undef assert
+
+#ifdef NDEBUG
+#define assert(e) ((void)0)
+#elif defined(__CUDACC__)
+#define assert(e) do { if (!(e)) __trap(); } while (0)
+#else
+#include <assert.h>
+#endif

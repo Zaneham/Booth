@@ -301,6 +301,15 @@ CUDART_C cudaError_t cudaSetDeviceFlags(unsigned flags);
 CUDART_C cudaError_t cudaDeviceCanAccessPeer(int *out, int dev, int peer);
 CUDART_C cudaError_t cudaDeviceEnablePeerAccess(int peer, unsigned flags);
 
+#if defined(__cplusplus)
+
+extern "C" cudaError_t cudaStreamWaitEvent(cudaStream_t s, cudaEvent_t e,
+                                           unsigned flags = 0u);
+extern "C" cudaError_t cudaMallocManaged(void **out, size_t n,
+                                         unsigned flags = cudaMemAttachGlobal);
+
+#endif
+
 #if !defined(__CUDACC__)
 
 extern const uint3 threadIdx;
@@ -352,11 +361,6 @@ static cudaError_t cudaGetDeviceProperties(cudaDeviceProp *prop, int dev)
 }
 
 #if defined(__cplusplus)
-
-extern "C" cudaError_t cudaStreamWaitEvent(cudaStream_t s, cudaEvent_t e,
-                                           unsigned flags = 0u);
-extern "C" cudaError_t cudaMallocManaged(void **out, size_t n,
-                                         unsigned flags = cudaMemAttachGlobal);
 
 template <class T>
 static cudaError_t cudaFuncSetAttribute(T *fn, int attr, int val)
