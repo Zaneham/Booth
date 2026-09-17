@@ -20,6 +20,7 @@ int hg_fat(const char *cubin, const char *ptx, uint32_t sm, const char *out);
 
 int hg_binc(char *buf, size_t n);
 
-int hg_cc(const char *src, const char *out, const char *const *inc, int ninc);
+int hg_cc(const char *src, const char *out, const char *const *inc, int ninc,
+          const char *const *def, int ndef);
 
 #endif /* BOOTH_HGEN_H */

@@ -21,6 +21,17 @@
 #define MAXPASS 24
 #define PATHN   512
 #define MAXINC  16
+#define MAXDEF  64
+#define MAXFWD  16
+
+typedef struct {
+    const char *file, *out;
+    const char *inc[MAXINC];
+    const char *def[MAXDEF];
+    const char *fwd[MAXFWD];
+    int ninc, ndef, nfwd;
+    int obj, pic, fb;
+} cuo_t;
 
 static const char VADD_SRC[] =
     "__global__ void vadd(int *out, int *a, int *b)\n"
@@ -499,18 +510,24 @@ static int verb_doctor(void)
 /* ---- dispatch ---- */
 
 static int cuda1(const char *flag, const char *file, const char *out,
-                 const char *fat, const char *const *inc, int ninc)
+                 const char *fat, const cuo_t *F)
 {
-    char *av[10 + 2 * MAXINC];
+    char *av[12 + 2 * MAXINC + 2 * MAXDEF + MAXFWD];
     int   n = 0;
 
     av[n++] = (char *)"kath";
     av[n++] = (char *)flag;
     if (fat != NULL) { av[n++] = (char *)"--fatbin"; av[n++] = (char *)fat; }
-    for (int i = 0; i < ninc; i++) {
+    for (int i = 0; i < F->ninc; i++) {
         av[n++] = (char *)"-I";
-        av[n++] = (char *)inc[i];
+        av[n++] = (char *)F->inc[i];
     }
+    for (int i = 0; i < F->ndef; i++) {
+        av[n++] = (char *)"-D";
+        av[n++] = (char *)F->def[i];
+    }
+    for (int i = 0; i < F->nfwd; i++)
+        av[n++] = (char *)F->fwd[i];
     av[n++] = (char *)file;
     av[n++] = (char *)"-o";
     av[n++] = (char *)out;
@@ -534,8 +551,12 @@ static int oinc(char *b, size_t n, size_t *u, const char *d)
     return oapp(b, n, u, " -I\"") && oapp(b, n, u, d) && oapp(b, n, u, "\"");
 }
 
-static int cc_obj(const char *src, const char *out, const char *const *inc,
-                  int ninc, int pic)
+static int odef(char *b, size_t n, size_t *u, const char *d)
+{
+    return oapp(b, n, u, " -D\"") && oapp(b, n, u, d) && oapp(b, n, u, "\"");
+}
+
+static int cc_obj(const char *src, const char *out, const cuo_t *F, int pic)
 {
     char        cmd[4096], own[512];
     const char *cc = getenv("BOOTH_CXX");
@@ -547,8 +568,10 @@ static int cc_obj(const char *src, const char *out, const char *const *inc,
     ok = oapp(cmd, sizeof cmd, &u, cc)
       && oapp(cmd, sizeof cmd, &u, " -std=c++17 -O2");
     if (ok && pic) ok = oapp(cmd, sizeof cmd, &u, " -fPIC");
-    for (int i = 0; ok && i < ninc; i++)
-        ok = oinc(cmd, sizeof cmd, &u, inc[i]);
+    for (int i = 0; ok && i < F->ndef; i++)
+        ok = odef(cmd, sizeof cmd, &u, F->def[i]);
+    for (int i = 0; ok && i < F->ninc; i++)
+        ok = oinc(cmd, sizeof cmd, &u, F->inc[i]);
     if (ok && hg_binc(own, sizeof own))
         ok = oinc(cmd, sizeof cmd, &u, own);
     ok = ok && oapp(cmd, sizeof cmd, &u, " -c \"")
@@ -560,59 +583,111 @@ static int cc_obj(const char *src, const char *out, const char *const *inc,
     return ok_status(system(cmd)) ? 0 : 1;
 }
 
-static int verb_cuda(int argc, char **argv)
+static int cutoo(const char *what, int max)
 {
-    const char *file = NULL, *out = NULL;
-    const char *inc[MAXINC];
-    char cub[PATHN], ptx[PATHN], fat[PATHN], cpp[PATHN], obuf[PATHN];
-    int  ninc = 0, rc, obj = 0, pic = 0, fb = 1, nocub = 0;
+    fprintf(stderr, "kath cuda: too many %s (max %d)\n", what, max);
+    return 2;
+}
 
+static int cufull(const char *s)
+{
+    return streq(s, "--no-cfold") || streq(s, "--no-dce")
+        || streq(s, "--no-mem2reg") || streq(s, "--no-sroa")
+        || streq(s, "--no-sched");
+}
+
+static int cuparse(int argc, char **argv, cuo_t *O)
+{
     for (int i = 2; i < argc; i++) {
-        if (streq(argv[i], "-c")) { obj = 1; continue; }
-        if (streq(argv[i], "-fPIC")) { pic = 1; continue; }
-        if (streq(argv[i], "--ptx-fallback")) { fb = 1; continue; }
-        if (streq(argv[i], "--no-ptx-fallback")) { fb = 0; continue; }
-        if (streq(argv[i], "-o") && i + 1 < argc) { out = argv[++i]; continue; }
+        if (streq(argv[i], "-c")) { O->obj = 1; continue; }
+        if (streq(argv[i], "-fPIC")) { O->pic = 1; continue; }
+        if (streq(argv[i], "--ptx-fallback")) { O->fb = 1; continue; }
+        if (streq(argv[i], "--no-ptx-fallback")) { O->fb = 0; continue; }
+        if (streq(argv[i], "-o") && i + 1 < argc) { O->out = argv[++i]; continue; }
         if (streq(argv[i], "-I") && i + 1 < argc) {
-            if (ninc < MAXINC) inc[ninc++] = argv[++i];
-            else i++;
+            if (O->ninc >= MAXINC) return cutoo("-I", MAXINC);
+            O->inc[O->ninc++] = argv[++i];
             continue;
         }
         if (strncmp(argv[i], "-I", 2) == 0 && argv[i][2] != '\0') {
-            if (ninc < MAXINC) inc[ninc++] = argv[i] + 2;
+            if (O->ninc >= MAXINC) return cutoo("-I", MAXINC);
+            O->inc[O->ninc++] = argv[i] + 2;
             continue;
         }
-        if (argv[i][0] != '-' && file == NULL) file = argv[i];
+        if (streq(argv[i], "-D") && i + 1 < argc) {
+            if (O->ndef >= MAXDEF) return cutoo("-D", MAXDEF);
+            O->def[O->ndef++] = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "-D", 2) == 0 && argv[i][2] != '\0') {
+            if (O->ndef >= MAXDEF) return cutoo("-D", MAXDEF);
+            O->def[O->ndef++] = argv[i] + 2;
+            continue;
+        }
+        if (streq(argv[i], "--lang") && i + 1 < argc) {
+            if (O->nfwd + 1 >= MAXFWD) return cutoo("--lang", MAXFWD);
+            O->fwd[O->nfwd++] = argv[i];
+            O->fwd[O->nfwd++] = argv[++i];
+            continue;
+        }
+        if (cufull(argv[i])) {
+            if (O->nfwd >= MAXFWD) return cutoo(argv[i], MAXFWD);
+            O->fwd[O->nfwd++] = argv[i];
+            continue;
+        }
+        if (argv[i][0] == '-') {
+            fprintf(stderr, "kath cuda: unknown option %s\n", argv[i]);
+            return 2;
+        }
+        if (O->file == NULL) O->file = argv[i];
     }
-    if (file == NULL) {
+    return 0;
+}
+
+static int verb_cuda(int argc, char **argv)
+{
+    char cub[PATHN], ptx[PATHN], fat[PATHN], cpp[PATHN], obuf[PATHN];
+    const char *file, *out;
+    int  rc, nocub = 0;
+    cuo_t O;
+
+    memset(&O, 0, sizeof O);
+    O.fb = 1;
+    rc = cuparse(argc, argv, &O);
+    if (rc != 0) return rc;
+    if (O.file == NULL) {
         fprintf(stderr, "usage: kath cuda <file.cu> [-c] [-fPIC] [-o out]"
-                " [-I dir] [--ptx-fallback|--no-ptx-fallback]\n");
+                " [-I dir] [-D name[=val]] [--lang file]"
+                " [--ptx-fallback|--no-ptx-fallback]\n");
         return 2;
     }
-    if (out == NULL) {
-        repl_ext(obuf, sizeof obuf, file, obj ? "o" : "exe");
-        out = obuf;
+    file = O.file;
+    if (O.out == NULL) {
+        repl_ext(obuf, sizeof obuf, file, O.obj ? "o" : "exe");
+        O.out = obuf;
     }
+    out = O.out;
 
     tmppath(cub, sizeof cub, "cuda", "cubin");
     tmppath(ptx, sizeof ptx, "cuda", "ptx");
     tmppath(fat, sizeof fat, "cuda", "fatbin");
     tmppath(cpp, sizeof cpp, "cuda", "cpp");
 
-    rc = cuda1("--nvidia-cubin", file, cub, NULL, inc, ninc);
-    if (rc != 0 && fb) { nocub = 1; rc = 0; }
+    rc = cuda1("--nvidia-cubin", file, cub, NULL, &O);
+    if (rc != 0 && O.fb) { nocub = 1; rc = 0; }
     else if (rc != 0)
         fprintf(stderr, "kath cuda: %s: SASS refused this unit and "
                 "--no-ptx-fallback is set, so this is a hard failure\n", file);
-    if (rc == 0) rc = cuda1("--nvidia-ptx", file, ptx, NULL, inc, ninc);
+    if (rc == 0) rc = cuda1("--nvidia-ptx", file, ptx, NULL, &O);
     if (rc == 0 && nocub)
         fprintf(stderr, "kath cuda: ==== PTX FALLBACK ==== %s\n"
                 "kath cuda: SASS refused a kernel here, see the refusals above; "
                 "PTX carries this unit and no SASS is in its fatbin\n", file);
     if (rc == 0) rc = hg_fat(nocub ? NULL : cub, ptx, 89u, fat);
-    if (rc == 0) rc = cuda1("--cuda-host", file, cpp, fat, inc, ninc);
+    if (rc == 0) rc = cuda1("--cuda-host", file, cpp, fat, &O);
     if (rc == 0) {
-        rc = obj ? cc_obj(cpp, out, inc, ninc, pic) : hg_cc(cpp, out, inc, ninc);
+        rc = O.obj ? cc_obj(cpp, out, &O, O.pic)
+                   : hg_cc(cpp, out, O.inc, O.ninc, O.def, O.ndef);
         if (rc != 0) (void)be_fail(BC_E623, file, rc);
     }
     remove(cub); remove(ptx); remove(fat);

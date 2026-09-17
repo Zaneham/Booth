@@ -786,7 +786,13 @@ static int cinc(char *b, size_t n, size_t *u, const char *d)
     return capp(b, n, u, " -I\"") && capp(b, n, u, d) && capp(b, n, u, "\"");
 }
 
-int hg_cc(const char *src, const char *out, const char *const *inc, int ninc)
+static int cdef(char *b, size_t n, size_t *u, const char *d)
+{
+    return capp(b, n, u, " -D\"") && capp(b, n, u, d) && capp(b, n, u, "\"");
+}
+
+int hg_cc(const char *src, const char *out, const char *const *inc, int ninc,
+          const char *const *def, int ndef)
 {
     char   cmd[4096], own[512];
     const char *cc = getenv("BOOTH_CXX");
@@ -799,6 +805,8 @@ int hg_cc(const char *src, const char *out, const char *const *inc, int ninc)
     cmd[0] = '\0';
     ok = capp(cmd, sizeof cmd, &u, cc)
       && capp(cmd, sizeof cmd, &u, " -std=c++17 -O2");
+    for (int i = 0; ok && i < ndef; i++)
+        ok = cdef(cmd, sizeof cmd, &u, def[i]);
     for (int i = 0; ok && i < ninc; i++)
         ok = cinc(cmd, sizeof cmd, &u, inc[i]);
     if (ok && hg_binc(own, sizeof own))

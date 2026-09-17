@@ -6139,3 +6139,44 @@ static void rpi308(void)
     PASS();
 }
 TH_REG("rpi", 308, "NDEBUG reaches the device compile", rpi308)
+
+static void rpi309(void)
+{
+    const char *path = scratch("rpi309.cu",
+        "#include <cassert>\n"
+        "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n");
+    char cmd[512];
+    long a, b;
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd,
+             "%s cuda -c %s -o build/rpi309a.o -Iruntime/include",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    snprintf(cmd, sizeof cmd,
+             "%s cuda -c %s -o build/rpi309b.o -Iruntime/include -DNDEBUG",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    a = rpi_fsz("build/rpi309a.o");
+    b = rpi_fsz("build/rpi309b.o");
+    CHECK(a > 0);
+    CHECK(b > 0);
+    CHECK(a != b);
+    PASS();
+}
+TH_REG("rpi", 309, "kath cuda forwards -D to its sub-compiles", rpi309)
+
+static void rpi310(void)
+{
+    const char *path = scratch("rpi310.cu",
+        "__global__ void k(int *o){ o[0] = 1; }\n");
+    char cmd[512];
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s cuda -c %s -o build/rpi310.o --bogus-flag",
+             BC_BIN, path);
+    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "unknown option"), NULL);
+    PASS();
+}
+TH_REG("rpi", 310, "kath cuda refuses a flag it would ignore", rpi310)
