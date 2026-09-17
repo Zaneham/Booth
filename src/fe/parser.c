@@ -1592,6 +1592,16 @@ static uint32_t tnargs(parser_t *P)
                     (((pd & 1) ? QUAL_PTR1 : 0) | ((pd & 2) ? QUAL_PTR2 : 0));
             else if (ta && pd > 3)
                 P->nodes[ta].qualifiers |= QUAL_DECOR;
+            if (ta && cur_type(P) == TOK_LBRACKET) {
+                advance(P);
+                if (cur_type(P) == TOK_RBRACKET) {
+                    P->nodes[ta].arrx = TS_AUNS;
+                } else {
+                    uint32_t ex = parse_expr(P, 0);
+                    P->nodes[ta].arrx = ex ? ex : TS_AUNS;
+                }
+                if (!match(P, TOK_RBRACKET)) P->nodes[ta].arrx = TS_AUNS;
+            }
             if (!ta || !(at_gt(P) || cur_type(P) == TOK_COMMA ||
                          cur_type(P) == TOK_ELLIPSIS)) {
                 P->pos = sp;
@@ -2567,6 +2577,9 @@ static uint32_t parse_declaration(parser_t *P)
 
             while (cur_type(P) == TOK_CONST || cur_type(P) == TOK_NOEXCEPT ||
                    cur_type(P) == TOK_OVERRIDE || cur_type(P) == TOK_FINAL) {
+                if (cur_type(P) == TOK_CONST)
+                    P->nodes[func].qualifiers =
+                        (uint16_t)(P->nodes[func].qualifiers | QUAL_CONST);
                 advance(P);
             }
 

@@ -498,3 +498,29 @@ static void tpl35(void)
     PASS();
 }
 TH_REG("tpl", 35, "a local alias reaches the code under it", tpl35)
+
+static void tpl36(void)
+{
+    CHEQ(tprun("namespace na {\n"
+               "template<typename T>\n"
+               "__device__ void ld(T & t, const T * p, const int s)\n"
+               "{ t = p[s] * 11; }\n"
+               "}\n"
+               "namespace nb {\n"
+               "template<int st, typename T>\n"
+               "__device__ void ld(T & t, const T * p, const int r,\n"
+               "                   const int c)\n"
+               "{ t = p[r*st + c] * 23; }\n"
+               "}\n"
+               "__global__ void k(float *d, const float *s){\n"
+               "    float a = 0.0f, b = 0.0f;\n"
+               "    na::ld(a, s, 3);\n"
+               "    nb::ld<32>(b, s, 1, 2);\n"
+               "    d[0] = a + b;\n"
+               "}\n", "--ir"), 0);
+    CHNE(strstr(obuf, "@ld$1"), NULL);
+    CHEQ(strstr(obuf, "E073"), NULL);
+    CHEQ(strstr(obuf, "E721"), NULL);
+    PASS();
+}
+TH_REG("tpl", 36, "a namespace picks its own template overload", tpl36)
