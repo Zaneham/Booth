@@ -368,6 +368,8 @@ typedef struct {
     binding_t       pnb[MAX_NEST][MAX_TPARM];
     int             pdep;
     binding_t       tnb[MAX_TPARM];
+    binding_t       fnb[MAX_TPARM];
+    int             fdep;
     binding_t       xnb[MAX_NEST][MAX_TPARM];
     int             xdep;
     int             tsc;
@@ -13850,6 +13852,12 @@ static int hasl(lower_t *L, uint32_t nd, int depth, int hop)
     if (ND(L, nd)->type == AST_LAUNCH) return 1;
     if (ND(L, nd)->type == AST_CALL && hop > 0) {
         uint32_t cn = ND(L, nd)->first_child;
+        if (cn && ND(L, cn)->type == AST_CAST) {
+            uint32_t t = ND(L, cn)->first_child;
+            uint32_t e = t ? ND(L, t)->next_sibling : 0;
+
+            if (e && ND(L, e)->type == AST_INIT_LIST) return 1;
+        }
         if (cn && ND(L, cn)->type == AST_IDENT) {
             char nm[128];
             get_text(L, cn, nm, sizeof(nm));
@@ -14015,6 +14023,182 @@ static int swrap(lower_t *L, uint32_t node)
     L->nbbase = old_bs;
     L->nbindings = old_nb;
     return 1;
+}
+
+static int clsf(const char *key, int k, char *mk, char *val, size_t vz)
+{
+    const char *p = key;
+    size_t      n = 0;
+
+    for (int i = 0; i <= k; i++) {
+        p = strchr(p, '|');
+        if (p == NULL) return 0;
+        p++;
+    }
+    if (*p == '\0') return 0;
+    *mk = *p++;
+    while (*p != '\0' && *p != '|' && n + 1u < vz) val[n++] = *p++;
+    val[n] = '\0';
+    return 1;
+}
+
+static int clsb(lower_t *L, uint32_t ty, binding_t *nb, int *ntpo)
+{
+    const char *h;
+    char        key[256];
+    int         ci, ntp;
+
+    *ntpo = 0;
+    if (!ckey(L, ty, key, sizeof key)) return 0;
+    h = strchr(key, '#');
+    if (!h) return 0;
+    ci = (int)strtol(h + 1, NULL, 10);
+    if (ci < 0 || ci >= L->nclss || !L->clss[ci].ast) return 0;
+    ntp = tparm(L, L->clss[ci].ast, nb);
+    if (ntp < 0) return 0;
+    for (int k = 0; k < ntp; k++) {
+        char mk = 0, val[96];
+
+        if (nb[k].is_pack || !clsf(key, k, &mk, val, sizeof val)) return 0;
+        if (mk == 't') {
+            nb[k].is_type = 1;
+            nb[k].type = (uint32_t)strtoul(val, NULL, 10);
+        } else if (mk == 'n') {
+            nb[k].is_type = 0;
+            nb[k].ival = (int64_t)strtoll(val, NULL, 10);
+        } else if (mk == 'f') {
+            nb[k].is_type = 0;
+            nb[k].is_fn = 1;
+            ncpy(nb[k].fnm, sizeof nb[k].fnm, val);
+        } else {
+            return 0;
+        }
+        nb[k].fixed = 1;
+    }
+    *ntpo = ntp;
+    return 1;
+}
+
+static uint32_t fcty(lower_t *L, uint32_t cal)
+{
+    uint32_t ty = 0, ts, nm;
+    char     n[64];
+
+    if (ND(L, cal)->type == AST_CAST) {
+        uint16_t sb;
+        int      su;
+
+        ts = ND(L, cal)->first_child;
+        nm = ts ? ND(L, ts)->next_sibling : 0;
+        if (!ts || !nm || ND(L, nm)->type != AST_INIT_LIST) return 0;
+        if (ND(L, ts)->type != AST_TYPE_SPEC
+            || ND(L, ts)->d.btype.kind != TYPE_NAME) return 0;
+        nm = ND(L, ts)->first_child;
+        if (!nm || ND(L, nm)->type != AST_IDENT) return 0;
+        get_text(L, nm, n, sizeof n);
+        if (find_binding(L, n, &ty)) return ty;
+        sb = L->rtbad;
+        su = L->rtunk;
+        ty = resolve_type(L, ts, 0, 0);
+        if (L->rtbad || L->rtunk) ty = 0;
+        L->rtbad = sb;
+        L->rtunk = su;
+        return ty;
+    }
+    if (ND(L, cal)->type == AST_IDENT && !ND(L, cal)->first_child) {
+        const sym_t *s;
+
+        get_text(L, cal, n, sizeof n);
+        s = find_sym(L, n);
+        return s ? s->type : 0;
+    }
+    return 0;
+}
+
+static uint32_t fopm(lower_t *L, uint32_t sd, int *tpl)
+{
+    uint32_t tn, m;
+    char     raw[96], nm[96];
+
+    *tpl = 0;
+    tn = sd ? ND(L, sd)->first_child : 0;
+    if (!tn) return 0;
+    for (m = ND(L, tn)->next_sibling; m; m = ND(L, m)->next_sibling) {
+        uint32_t f = m, nn;
+
+        if (ND(L, m)->type == AST_TEMPLATE_DECL) {
+            for (f = ND(L, m)->first_child; f; f = ND(L, f)->next_sibling)
+                if (ND(L, f)->type == AST_FUNC_DEF) break;
+            if (!f) continue;
+        } else if (ND(L, m)->type != AST_FUNC_DEF) {
+            continue;
+        }
+        nn = child_at(L, f, 1);
+        if (!nn || ND(L, nn)->type != AST_IDENT) continue;
+        get_text(L, nn, raw, sizeof raw);
+        normalize_op_name(raw, nm, (int)sizeof nm);
+        if (strcmp(nm, "operator()") != 0) continue;
+        *tpl = ND(L, m)->type == AST_TEMPLATE_DECL;
+        return m;
+    }
+    return 0;
+}
+
+static int sfun(lower_t *L, uint32_t node)
+{
+    uint32_t    cal = ND(L, node)->first_child;
+    uint32_t    ty, sd, mem, body, fn2 = 0;
+    uint32_t    av[BC_MAX_ARGS];
+    const char *sn;
+    int         si, tpl = 0, ntp = 0, nt2 = 0, na, onb, obs, hit = 0;
+
+    if (!cal || L->fdep >= MAX_FWD) return 0;
+    ty = fcty(L, cal);
+    if (!ty) return 0;
+    sn = sname(L, ty);
+    if (!sn) return 0;
+    si = cslot(L, sn);
+    if (si < 0) return 0;
+    sd = L->structs[si].node;
+    mem = fopm(L, sd, &tpl);
+    if (!mem) return 0;
+    if (!clsb(L, ty, L->fnb, &ntp)) return 0;
+
+    onb = L->nbindings;
+    obs = L->nbbase;
+    if (ntp > MAX_BIND - onb) return 0;
+    for (int i = 0; i < ntp; i++) L->bindings[L->nbindings++] = L->fnb[i];
+    L->fdep++;
+
+    if (!tpl) {
+        body = find_func_body(L, mem);
+        if (body && hasl(L, body, 0, MAX_FWD)) {
+            scan_launches(L, body);
+            hit = 1;
+        }
+    } else {
+        L->pkbad = 0;
+        na = subav(L, ND(L, cal)->next_sibling, av, BC_MAX_ARGS);
+        if (na >= 0
+            && tdeduc(L, mem, cal, av, na, L->fnb, &nt2, &fn2) && fn2
+            && nt2 <= MAX_BIND - L->nbindings) {
+            body = find_func_body(L, fn2);
+            if (body && hasl(L, body, 0, MAX_FWD)) {
+                for (int i = 0; i < nt2; i++)
+                    L->bindings[L->nbindings++] = L->fnb[i];
+                if (fwpush(L, fn2, av, na)) {
+                    scan_launches(L, body);
+                    L->nfwf--;
+                    hit = 1;
+                }
+            }
+        }
+    }
+
+    L->fdep--;
+    L->nbbase = obs;
+    L->nbindings = onb;
+    return hit;
 }
 
 static int lgen(const lower_t *L, uint32_t lam)
@@ -14298,6 +14482,7 @@ static void scan_launches(lower_t *L, uint32_t node)
     if (n->type == AST_LAUNCH && slnal(L, node)) return;
     if (n->type == AST_CALL && sglc(L, node)) return;
     if (n->type == AST_CALL && swrap(L, node)) return;
+    if (n->type == AST_CALL && sfun(L, node)) return;
 
     if (n->type == AST_BLOCK) {
         int gsv = L->nglm, fsv = L->nfnal;

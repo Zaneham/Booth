@@ -411,3 +411,13 @@ static void hst25(void)
     PASS();
 }
 TH_REG("hst", 25, "every byte value survives the fatbin literal", hst25)
+
+static void hst26(void)
+{
+    CHECK(emit("tests/hfun.cu", "tests/hst26.cpp"));
+    CHECK(strstr(hbuf, "\"kern\"") != NULL);
+    CHECK(strstr(hbuf, "\"kern$1\"") != NULL);
+    remove("tests/hst26.cpp");
+    PASS();
+}
+TH_REG("hst", 26, "a functor's operator() registers its kernel", hst26)
