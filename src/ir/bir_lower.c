@@ -1482,6 +1482,7 @@ static struct_def_t *vreg(lower_t *L, const vecty_t *v)
     sd->algn = (uint8_t)valgn(v);
     sd->bir_type = vnty(L, v->kind, v->bits, v->lanes);
     if (!sd->bir_type) return NULL;
+    (void)bir_salg(L->M, sd->bir_type, sd->algn);
     for (int fi = 0; fi < v->lanes; fi++) {
         sd->field_types[fi] = et;
         ncpy(sd->field_names[fi], sizeof(sd->field_names[0]), xyzw[fi]);
@@ -11399,8 +11400,10 @@ static void salgn(lower_t *L, struct_def_t *sd, uint32_t node)
         onat += sz;
         ocud += sz;
     }
-    if (want > bir_balg(L->M, sd->bir_type, 8))
+    if (want > bir_balg(L->M, sd->bir_type, 8)) {
         sd->algn = (uint16_t)want;
+        (void)bir_salg(L->M, sd->bir_type, want);
+    }
 }
 
 static int malfnd(const lower_t *L, const char *cls, const char *nm,

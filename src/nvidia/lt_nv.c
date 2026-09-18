@@ -130,8 +130,9 @@ static uint32_t pblock(const lt_nvk_t *k)
 
     for (uint32_t i = 0; i < k->np; i++) {
         uint32_t w = k->psz[i];
+        uint32_t a = k->palg[i] != 0u ? k->palg[i] : (w != 0u ? w : 1u);
 
-        o = align(o, w != 0u ? w : 1u);
+        o = align(o, a);
         o += w;
     }
     return o;
@@ -150,8 +151,9 @@ static uint32_t nvinfo(uint8_t *p, const lt_nvk_t *k, uint32_t symi)
 
     for (uint32_t i = 0; i < k->np; i++) {
         uint32_t w = k->psz[i];
+        uint32_t a = k->palg[i] != 0u ? k->palg[i] : (w != 0u ? w : 1u);
 
-        o = align(o, w != 0u ? w : 1u);
+        o = align(o, a);
         p[n++] = 0x04u; p[n++] = 0x17u; w16(p + n, 12u); n += 2u;
         w32(p + n, 0u); n += 4u;
         w16(p + n, i); n += 2u;

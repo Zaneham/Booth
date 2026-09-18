@@ -491,6 +491,17 @@ int bir_umrk(bir_module_t *M, uint32_t ty)
     return 1;
 }
 
+/* A struct may be declared more aligned than its members need: CUDA's
+ * uint4 wants 16 where four u32s would settle for 4. width is dead on a
+ * STRUCT, so the declared alignment lives there and bir_balg believes it. */
+int bir_salg(bir_module_t *M, uint32_t ty, uint32_t a)
+{
+    if (ty >= M->num_types || M->types[ty].kind != BIR_TYPE_STRUCT) return 0;
+    if (a == 0u || a > 0xFFFFu || (a & (a - 1u)) != 0u) return 0;
+    M->types[ty].width = (uint16_t)a;
+    return 1;
+}
+
 uint32_t bir_tcst(bir_module_t *M, uint32_t ty)
 {
     bir_type_t t;
@@ -565,6 +576,8 @@ uint32_t bir_bsz(const bir_module_t *M, uint32_t ty, uint32_t psz)
                 sp++;
                 continue;
             }
+            if ((uint32_t)T->width > fr[i].alg)
+                fr[i].alg = (uint32_t)T->width;
             w  = bsz_up(fr[i].sum, fr[i].alg);
             va = fr[i].alg;
         } else {
@@ -613,6 +626,7 @@ uint32_t bir_balg(const bir_module_t *M, uint32_t ty, uint32_t psz)
             continue;
         }
         if (T->kind == BIR_TYPE_STRUCT) {
+            if ((uint32_t)T->width > best) best = (uint32_t)T->width;
             for (uint16_t f = 0; f < T->num_fields; f++) {
                 if (T->count + f >= M->num_type_fields) return 0;
                 if (sp >= BIR_BSZ_DEEP) return 0;

@@ -329,8 +329,16 @@ typedef struct {
 typedef struct {
     uint32_t name;       /* string table offset */
     uint8_t  rfile;      /* NV_RF_U32/U64/F32/F64 */
-    uint8_t  pad[3];
+    uint8_t  algn;       /* bytes, from the type, not the register file */
+    uint16_t size;       /* bytes, ditto */
 } nv_param_t;
+
+/* Scalars leave size and algn at zero and are sized by their register
+ * file, exactly as they always were. An aggregate carries its real size,
+ * because the register file only knows the part of it that fits. */
+#define NV_RFSZ(rf) (((rf) == NV_RF_U64 || (rf) == NV_RF_F64) ? 8u : \
+                     ((rf) == NV_RF_U16 || (rf) == NV_RF_F16) ? 2u : 4u)
+#define NV_PAGG(P)  ((P)->size != 0u)
 
 typedef struct {
     uint32_t    name;        /* string table offset */

@@ -408,6 +408,7 @@ uint32_t    bir_tunq(const bir_module_t *M, uint32_t ty);
 uint32_t    bir_type_array(bir_module_t *M, uint32_t elem, uint32_t count);
 uint32_t    bir_type_vector(bir_module_t *M, uint32_t elem, uint32_t count);
 uint32_t    bir_type_struct(bir_module_t *M, const uint32_t *fields, int nfields);
+int         bir_salg(bir_module_t *M, uint32_t ty, uint32_t a);
 uint32_t    bir_sfwd(bir_module_t *M);
 int         bir_sfin(bir_module_t *M, uint32_t ty,
                      const uint32_t *fields, int nfields);

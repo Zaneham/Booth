@@ -117,6 +117,9 @@ static uint16_t new_vreg(uint8_t rf)
     return S.nv->rc[rf]++;
 }
 
+static int pagg(uint32_t ty);
+static uint32_t vtyof(uint32_t val);
+
 /* BIR type -> PTX register file */
 static uint8_t bir_rfile(uint32_t type_idx)
 {
@@ -140,6 +143,25 @@ static uint8_t bir_rfile(uint32_t type_idx)
     default:
         return NV_RF_U32;
     }
+}
+
+/* A parameter's size and alignment come from its type. Scalars stay at
+ * zero and are sized by their register file, as they always were. */
+static int psinf(nv_param_t *P, uint32_t ty)
+{
+    uint32_t z, a;
+
+    P->rfile = bir_rfile(ty);
+    P->size = 0u;
+    P->algn = 0u;
+    if (!pagg(ty)) return 1;
+
+    z = bir_bsz(S.bir, ty, 8);
+    a = bir_balg(S.bir, ty, 8);
+    if (z == 0u || z > 0xFFFFu || a == 0u || a > 16u) return 0;
+    P->size = (uint16_t)z;
+    P->algn = (uint8_t)a;
+    return 1;
 }
 
 static uint8_t def_rf(uint32_t idx, uint32_t type_idx)
@@ -282,6 +304,21 @@ static uint32_t algnb(uint8_t subop)
     uint32_t k = subop & 31u;
 
     return (k > 12u) ? (1u << 12) : (1u << k);
+}
+
+/* An aggregate's value is its address, so it needs a u64 home whatever
+ * the register file would otherwise make of its type. */
+static nv_opnd_t mapu64(uint32_t idx)
+{
+    uint16_t rn;
+
+    if (idx >= BIR_MAX_INSTS) return mop_reg(NV_RF_U64, 0);
+    if (S.nv->val_vreg[idx] != 0)
+        return mop_reg(S.nv->val_rfile[idx], S.nv->val_vreg[idx]);
+    rn = new_vreg(NV_RF_U64);
+    S.nv->val_vreg[idx] = rn;
+    S.nv->val_rfile[idx] = NV_RF_U64;
+    return mop_reg(NV_RF_U64, rn);
 }
 
 static void unsz(const char *what, uint32_t ty)
@@ -991,14 +1028,125 @@ static uint16_t stop(int as, uint8_t vrf, uint32_t psz)
     }
 }
 
+/* ---- Aggregates ----
+ *
+ * An aggregate has no register wide enough to be, so it lives in .local
+ * and travels as its address. Copying is the only move it has. */
+
+static int pagg(uint32_t ty)
+{
+    uint8_t k;
+
+    if (ty >= S.bir->num_types) return 0;
+    k = S.bir->types[ty].kind;
+    return k == BIR_TYPE_STRUCT || k == BIR_TYPE_ARRAY
+        || k == BIR_TYPE_VECTOR;
+}
+
+/* Widest step the offset, the remainder and the alignment will all bear.
+ * The alignment is the one that bites: a uint3 sits on 4, so copying it
+ * eight bytes at a time faults the moment it lands on an odd slot. */
+static uint32_t agstp(uint32_t off, uint32_t rem, uint32_t al)
+{
+    uint32_t w = (al < 8u) ? al : 8u;
+
+    while (w > 1u && (rem < w || (off & (w - 1u)) != 0u)) w >>= 1;
+    return w;
+}
+
+static uint8_t agrf(uint32_t w)
+{
+    return (w == 8u) ? (uint8_t)NV_RF_U64
+         : (w == 2u) ? (uint8_t)NV_RF_U16 : (uint8_t)NV_RF_U32;
+}
+
+/* Reserve a local slot, the way an alloca would. */
+static uint32_t lslot(uint32_t sz, uint32_t a)
+{
+    uint32_t off = (S.lcl_off + a - 1u) & ~(a - 1u);
+
+    if (off < S.lcl_off || off >= NV_MAX_FRAME || sz > NV_MAX_FRAME - off)
+        return NV_MAX_FRAME;
+    S.lcl_off = off + sz;
+    if (a > S.lcl_alg) S.lcl_alg = a;
+    return off;
+}
+
+static nv_opnd_t agadd(nv_opnd_t base, uint32_t off)
+{
+    nv_opnd_t d;
+
+    if (off == 0u) return base;
+    d = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    em1(NV_ADD_U64, d, base, mop_imm((int32_t)off));
+    return d;
+}
+
+/* An aggregate's home: a local slot, with its address in a u64. */
+static int aghome(uint32_t idx, uint32_t ty, nv_opnd_t *out,
+                  uint32_t *psz, uint32_t *pal)
+{
+    uint32_t sz = bir_bsz(S.bir, ty, 8);
+    uint32_t al = bir_balg(S.bir, ty, 8);
+    uint32_t off;
+
+    if (sz == 0u || al == 0u) { unsz("aggregate", ty); return 0; }
+    off = lslot(sz, al);
+    if (off >= NV_MAX_FRAME) {
+        nv_refuse("a local frame this large");
+        return 0;
+    }
+    *out = mapu64(idx);
+    *psz = sz;
+    *pal = al;
+    em1u(NV_LEA_LOCAL, *out, mop_imm((int32_t)off));
+    return 1;
+}
+
+static void agcpy(nv_opnd_t dst, int das, nv_opnd_t src, int sas,
+                  uint32_t sz, uint32_t al)
+{
+    uint32_t off = 0u, g = sz + 8u;
+
+    while (off < sz && g--) {
+        uint32_t w = agstp(off, sz - off, al);
+        uint8_t rf;
+        nv_opnd_t t, ops[2];
+
+        if (w == 1u) {
+            nv_refuse("an aggregate with an odd byte size");
+            return;
+        }
+        rf = agrf(w);
+        t = mop_reg(rf, new_vreg(rf));
+        em1u(ldop(sas, rf, 0u), t, agadd(src, off));
+        ops[0] = agadd(dst, off);
+        ops[1] = t;
+        emit(stop(das, rf, 0u), 0, 2, ops, 0);
+        off += w;
+    }
+}
+
+/* ---- Memory: Load ---- */
+
 static void is_load(uint32_t idx, const bir_inst_t *I)
 {
-    nv_opnd_t d = map_val(idx, I->type);
-    uint8_t drf = S.nv->val_rfile[idx];
     uint32_t ptr_val = I->operands[0];
     int as = pas(ptr_val);
     nv_opnd_t addr = mat_const(ptr_val, NV_RF_U64);
+    nv_opnd_t d;
+    uint8_t drf;
 
+    if (pagg(I->type)) {
+        uint32_t sz, al;
+
+        if (!aghome(idx, I->type, &d, &sz, &al)) return;
+        agcpy(d, BIR_AS_PRIVATE, addr, as, sz, al);
+        return;
+    }
+
+    d = map_val(idx, I->type);
+    drf = S.nv->val_rfile[idx];
     em1u(ldop(as, drf, pntsz(ptr_val)), d, addr);
 }
 
@@ -1007,15 +1155,31 @@ static void is_load(uint32_t idx, const bir_inst_t *I)
 static void is_store(const bir_inst_t *I)
 {
     /* BIR store: ops[0]=value, ops[1]=address */
-    nv_opnd_t val = rslv(I->operands[0]);
-    uint8_t vrf = rslv_rf(I->operands[0]);
+    uint32_t vval = I->operands[0];
+    uint32_t vty = vtyof(vval);
     uint32_t ptr_val = I->operands[1];
     int as = pas(ptr_val);
     nv_opnd_t addr = mat_const(ptr_val, NV_RF_U64);
+    nv_opnd_t val;
+    uint8_t vrf;
+
+    /* An aggregate is an address, so storing one is a copy. Its home is
+     * always .local, whatever the pointer it is being written through. */
+    if (pagg(vty)) {
+        uint32_t sz = bir_bsz(S.bir, vty, 8);
+        uint32_t al = bir_balg(S.bir, vty, 8);
+
+        if (sz == 0u || al == 0u) { unsz("store", vty); return; }
+        agcpy(addr, as, mat_const(vval, NV_RF_U64), BIR_AS_PRIVATE, sz, al);
+        return;
+    }
+
+    val = rslv(vval);
+    vrf = rslv_rf(vval);
 
     /* Value must be in a register for stores */
     if (val.kind != NV_MOP_REG)
-        val = mat_const(I->operands[0], vrf);
+        val = mat_const(vval, vrf);
 
     /* Store: 0 defs, 2 uses (addr, value) */
     nv_opnd_t ops[2] = { addr, val };
@@ -1229,10 +1393,44 @@ static void is_gep(uint32_t idx, const bir_inst_t *I)
 static void is_param(uint32_t idx, const bir_inst_t *I)
 {
     uint8_t rf = bir_rfile(I->type);
-    nv_opnd_t d = map_val(idx, I->type);
     uint32_t pi = I->subop;
-
+    nv_opnd_t d;
     uint16_t op;
+
+    /* An aggregate parameter is wider than any register, so it is read
+     * out of .param a chunk at a time into a local slot, and what the
+     * rest of the function sees is that slot's address. */
+    if (pagg(I->type)) {
+        uint32_t sz, al, o = 0u, g;
+
+        if (!aghome(idx, I->type, &d, &sz, &al)) return;
+        g = sz + 8u;
+        while (o < sz && g--) {
+            uint32_t w = agstp(o, sz - o, al);
+            uint8_t crf;
+            nv_opnd_t t, lops[3], sops[2];
+
+            if (w == 1u) {
+                nv_refuse("an aggregate with an odd byte size");
+                return;
+            }
+            crf = agrf(w);
+            t = mop_reg(crf, new_vreg(crf));
+            lops[0] = t;
+            lops[1] = mop_imm((int32_t)pi);
+            lops[2] = mop_imm((int32_t)o);
+            emit(w == 8u ? NV_LD_PARAM_U64
+               : w == 2u ? NV_LD_PARAM_B16 : NV_LD_PARAM_U32,
+                 1, 2, lops, 0);
+            sops[0] = agadd(d, o);
+            sops[1] = t;
+            emit(stop(BIR_AS_PRIVATE, crf, 0u), 0, 2, sops, 0);
+            o += w;
+        }
+        return;
+    }
+
+    d = map_val(idx, I->type);
     switch (rf) {
     case NV_RF_U64:  op = NV_LD_PARAM_U64; break;
     case NV_RF_F32:  op = NV_LD_PARAM_F32; break;
@@ -3285,7 +3483,8 @@ static void fsig(nv_mfunc_t *MF, const bir_func_t *F)
     for (i = 0; i < np; i++) {
         uint32_t pt = (FT->count + i < S.bir->num_type_fields)
                     ? S.bir->type_fields[FT->count + i] : 0;
-        MF->params[i].rfile = bir_rfile(pt);
+        if (!psinf(&MF->params[i], pt))
+            nv_refuse("a parameter this large");
     }
     MF->num_params = np;
 
@@ -3353,7 +3552,8 @@ static int isel_func(uint32_t fi)
                 nv_cap("kernel parameters", (unsigned)NV_MAX_PARAMS);
                 break;
             }
-            MF->params[pi].rfile = bir_rfile(I->type);
+            if (!psinf(&MF->params[pi], I->type))
+                nv_refuse("a parameter this large");
             pi++;
         }
         MF->num_params = pi;

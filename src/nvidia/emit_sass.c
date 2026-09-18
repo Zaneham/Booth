@@ -2641,7 +2641,7 @@ static void sapld(const nv_minst_t *I)
 {
     lt_nrw_t x;
     uint64_t w[2];
-    uint32_t d, o, n;
+    uint32_t d, o, n, po;
 
     memset(&x, 0, sizeof x);
     n = sadw(I);
@@ -2656,15 +2656,18 @@ static void sapld(const nv_minst_t *I)
         sabad(I->op, BC_E609);
         return;
     }
+    po = (I->num_uses >= 2u && I->ops[2].kind == (uint8_t)NV_MOP_IMM
+          && I->ops[2].imm > 0) ? (uint32_t)I->ops[2].imm : 0u;
+
     if (sast.isfn != 0u) {
-        uint32_t s = LT_NV_ARG0 + sast.pofs[I->ops[1].imm] / 4u;
+        uint32_t s = LT_NV_ARG0 + (sast.pofs[I->ops[1].imm] + po) / 4u;
 
         lt_nvmov(w, d, s);
         safire(w, &x, 0u);
         if (n == 2u) { lt_nvmov(w, d + 1u, s + 1u); safire(w, &x, 0u); }
         return;
     }
-    o = LT_NV_PBASE + sast.pofs[I->ops[1].imm];
+    o = LT_NV_PBASE + sast.pofs[I->ops[1].imm] + po;
     lt_nvmovc(w, d, 0u, o);
     safire(w, &x, 0u);
     if (I->op == (uint16_t)NV_LD_PARAM_B16) {
@@ -3046,11 +3049,20 @@ static void saspst(const nv_minst_t *I)
         if ((v = saspv(I, k)) != SA_NOIX) sast.rmap[v] = (uint16_t)SA_NOIX;
 }
 
-static uint32_t sapsz(uint8_t rf)
+/* The type says how big a parameter is. The register file only ever says
+ * how much of it fits in one register, which for a uint3 is a third. */
+static uint32_t sapsz(const nv_param_t *P)
 {
-    if (rf == (uint8_t)NV_RF_U64 || rf == (uint8_t)NV_RF_F64) return 8u;
-    if (rf == (uint8_t)NV_RF_U16 || rf == (uint8_t)NV_RF_F16) return 2u;
-    return 4u;
+    if (P->size != 0u) return P->size;
+    return NV_RFSZ(P->rfile);
+}
+
+static uint32_t sapal(const nv_param_t *P)
+{
+    uint32_t a = P->algn;
+
+    if (a == 0u || (a & (a - 1u)) != 0u) a = sapsz(P);
+    return a > 16u ? 16u : a;
 }
 
 static void sapar(void)
@@ -3059,12 +3071,14 @@ static void sapar(void)
 
     sast.k.np = sast.F->num_params;
     for (uint32_t i = 0; i < sast.k.np && i < LT_MAX_NVPRM; i++) {
-        uint32_t z = sapsz(sast.F->params[i].rfile);
+        uint32_t z = sapsz(&sast.F->params[i]);
+        uint32_t a = sapal(&sast.F->params[i]);
 
-        if (sast.isfn != 0u && z < 4u) z = 4u;
-        o = (o + z - 1u) & ~(z - 1u);
+        if (sast.isfn != 0u && z < 4u) { z = 4u; a = 4u; }
+        o = (o + a - 1u) & ~(a - 1u);
         sast.pofs[i] = o;
-        sast.k.psz[i] = (uint8_t)z;
+        sast.k.psz[i] = (uint16_t)z;
+        sast.k.palg[i] = (uint8_t)a;
         o += z;
     }
 }

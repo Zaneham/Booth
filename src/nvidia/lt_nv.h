@@ -140,7 +140,8 @@ typedef struct {
     uint32_t    nreg;
     uint32_t    smem;
     uint32_t    lmem;
-    uint8_t     psz[LT_MAX_NVPRM];
+    uint16_t    psz[LT_MAX_NVPRM];
+    uint8_t     palg[LT_MAX_NVPRM];
     uint32_t    np;
     uint32_t    wave;
     uint32_t    mthr;
