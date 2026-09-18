@@ -3049,8 +3049,6 @@ static void saspst(const nv_minst_t *I)
         if ((v = saspv(I, k)) != SA_NOIX) sast.rmap[v] = (uint16_t)SA_NOIX;
 }
 
-/* The type says how big a parameter is. The register file only ever says
- * how much of it fits in one register, which for a uint3 is a third. */
 static uint32_t sapsz(const nv_param_t *P)
 {
     if (P->size != 0u) return P->size;
@@ -3059,9 +3057,11 @@ static uint32_t sapsz(const nv_param_t *P)
 
 static uint32_t sapal(const nv_param_t *P)
 {
+    uint32_t z = sapsz(P);
     uint32_t a = P->algn;
 
-    if (a == 0u || (a & (a - 1u)) != 0u) a = sapsz(P);
+    if (a == 0u || (a & (a - 1u)) != 0u) a = z;
+    if (P->size != 0u && a < 4u && (z & 3u) == 0u) a = 4u;
     return a > 16u ? 16u : a;
 }
 

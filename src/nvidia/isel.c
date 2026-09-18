@@ -145,8 +145,6 @@ static uint8_t bir_rfile(uint32_t type_idx)
     }
 }
 
-/* A parameter's size and alignment come from its type. Scalars stay at
- * zero and are sized by their register file, as they always were. */
 static int psinf(nv_param_t *P, uint32_t ty)
 {
     uint32_t z, a;
@@ -306,8 +304,6 @@ static uint32_t algnb(uint8_t subop)
     return (k > 12u) ? (1u << 12) : (1u << k);
 }
 
-/* An aggregate's value is its address, so it needs a u64 home whatever
- * the register file would otherwise make of its type. */
 static nv_opnd_t mapu64(uint32_t idx)
 {
     uint16_t rn;
@@ -1028,11 +1024,6 @@ static uint16_t stop(int as, uint8_t vrf, uint32_t psz)
     }
 }
 
-/* ---- Aggregates ----
- *
- * An aggregate has no register wide enough to be, so it lives in .local
- * and travels as its address. Copying is the only move it has. */
-
 static int pagg(uint32_t ty)
 {
     uint8_t k;
@@ -1043,9 +1034,11 @@ static int pagg(uint32_t ty)
         || k == BIR_TYPE_VECTOR;
 }
 
-/* Widest step the offset, the remainder and the alignment will all bear.
- * The alignment is the one that bites: a uint3 sits on 4, so copying it
- * eight bytes at a time faults the moment it lands on an odd slot. */
+static uint32_t agea(uint32_t al, uint32_t sz)
+{
+    return (al < 4u && (sz & 3u) == 0u) ? 4u : al;
+}
+
 static uint32_t agstp(uint32_t off, uint32_t rem, uint32_t al)
 {
     uint32_t w = (al < 8u) ? al : 8u;
@@ -1060,7 +1053,6 @@ static uint8_t agrf(uint32_t w)
          : (w == 2u) ? (uint8_t)NV_RF_U16 : (uint8_t)NV_RF_U32;
 }
 
-/* Reserve a local slot, the way an alloca would. */
 static uint32_t lslot(uint32_t sz, uint32_t a)
 {
     uint32_t off = (S.lcl_off + a - 1u) & ~(a - 1u);
@@ -1082,7 +1074,6 @@ static nv_opnd_t agadd(nv_opnd_t base, uint32_t off)
     return d;
 }
 
-/* An aggregate's home: a local slot, with its address in a u64. */
 static int aghome(uint32_t idx, uint32_t ty, nv_opnd_t *out,
                   uint32_t *psz, uint32_t *pal)
 {
@@ -1098,7 +1089,7 @@ static int aghome(uint32_t idx, uint32_t ty, nv_opnd_t *out,
     }
     *out = mapu64(idx);
     *psz = sz;
-    *pal = al;
+    *pal = agea(al, sz);
     em1u(NV_LEA_LOCAL, *out, mop_imm((int32_t)off));
     return 1;
 }
@@ -1126,8 +1117,6 @@ static void agcpy(nv_opnd_t dst, int das, nv_opnd_t src, int sas,
         off += w;
     }
 }
-
-/* ---- Memory: Load ---- */
 
 static void is_load(uint32_t idx, const bir_inst_t *I)
 {
@@ -1163,14 +1152,13 @@ static void is_store(const bir_inst_t *I)
     nv_opnd_t val;
     uint8_t vrf;
 
-    /* An aggregate is an address, so storing one is a copy. Its home is
-     * always .local, whatever the pointer it is being written through. */
     if (pagg(vty)) {
         uint32_t sz = bir_bsz(S.bir, vty, 8);
         uint32_t al = bir_balg(S.bir, vty, 8);
 
         if (sz == 0u || al == 0u) { unsz("store", vty); return; }
-        agcpy(addr, as, mat_const(vval, NV_RF_U64), BIR_AS_PRIVATE, sz, al);
+        agcpy(addr, as, mat_const(vval, NV_RF_U64), BIR_AS_PRIVATE, sz,
+              agea(al, sz));
         return;
     }
 
@@ -1397,9 +1385,6 @@ static void is_param(uint32_t idx, const bir_inst_t *I)
     nv_opnd_t d;
     uint16_t op;
 
-    /* An aggregate parameter is wider than any register, so it is read
-     * out of .param a chunk at a time into a local slot, and what the
-     * rest of the function sees is that slot's address. */
     if (pagg(I->type)) {
         uint32_t sz, al, o = 0u, g;
 

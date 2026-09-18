@@ -491,9 +491,6 @@ int bir_umrk(bir_module_t *M, uint32_t ty)
     return 1;
 }
 
-/* A struct may be declared more aligned than its members need: CUDA's
- * uint4 wants 16 where four u32s would settle for 4. width is dead on a
- * STRUCT, so the declared alignment lives there and bir_balg believes it. */
 int bir_salg(bir_module_t *M, uint32_t ty, uint32_t a)
 {
     if (ty >= M->num_types || M->types[ty].kind != BIR_TYPE_STRUCT) return 0;
@@ -609,29 +606,33 @@ uint32_t bir_bsz(const bir_module_t *M, uint32_t ty, uint32_t psz)
 
 uint32_t bir_balg(const bir_module_t *M, uint32_t ty, uint32_t psz)
 {
-    uint32_t st[BIR_BSZ_DEEP], sp = 0, guard = 4u * BIR_MAX_TYPE_FIELDS;
+    struct { uint32_t ty, fld; } fr[BIR_BSZ_DEEP];
+    uint32_t sp = 1, guard = 4u * BIR_MAX_TYPE_FIELDS;
     uint32_t best = 1;
 
-    st[sp++] = ty;
+    fr[0].ty = ty; fr[0].fld = 0;
     while (sp && guard--) {
-        uint32_t t = st[--sp], w;
+        uint32_t i = sp - 1, w;
         const bir_type_t *T;
 
-        if (t >= M->num_types) return 0;
-        T = &M->types[t];
+        if (fr[i].ty >= M->num_types) return 0;
+        T = &M->types[fr[i].ty];
 
         if (T->kind == BIR_TYPE_ARRAY || T->kind == BIR_TYPE_VECTOR) {
-            if (sp >= BIR_BSZ_DEEP) return 0;
-            st[sp++] = T->inner;
+            fr[i].ty = T->inner;
             continue;
         }
         if (T->kind == BIR_TYPE_STRUCT) {
             if ((uint32_t)T->width > best) best = (uint32_t)T->width;
-            for (uint16_t f = 0; f < T->num_fields; f++) {
-                if (T->count + f >= M->num_type_fields) return 0;
-                if (sp >= BIR_BSZ_DEEP) return 0;
-                st[sp++] = M->type_fields[T->count + f];
+            if (fr[i].fld < (uint32_t)T->num_fields) {
+                uint32_t f = T->count + fr[i].fld++;
+                if (f >= M->num_type_fields || sp >= BIR_BSZ_DEEP) return 0;
+                fr[sp].ty = M->type_fields[f];
+                fr[sp].fld = 0;
+                sp++;
+                continue;
             }
+            sp--;
             continue;
         }
         switch (T->kind) {
@@ -643,6 +644,7 @@ uint32_t bir_balg(const bir_module_t *M, uint32_t ty, uint32_t psz)
         }
         w = bsz_al(w, psz);
         if (w > best) best = w;
+        sp--;
     }
     return sp ? 0 : best;
 }
