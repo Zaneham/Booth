@@ -4405,6 +4405,16 @@ static uint32_t bin_val(lower_t *L, uint32_t node, int op,
             rhs = coerce_to(L, rhs, lt, 0);
             res_t = lt;
         }
+    } else if (op != TOK_SHL && op != TOK_SHR
+               && lt < L->M->num_types && rt < L->M->num_types
+               && L->M->types[lt].kind == BIR_TYPE_INT
+               && L->M->types[rt].kind == BIR_TYPE_INT) {
+        if (L->M->types[rt].width > L->M->types[lt].width) {
+            lhs = coerce_to(L, lhs, rt, node_is_unsigned(L, lhs_n));
+            res_t = rt;
+        } else if (L->M->types[lt].width > L->M->types[rt].width) {
+            rhs = coerce_to(L, rhs, lt, node_is_unsigned(L, rhs_n));
+        }
     }
     int fp  = is_float_type(L, res_t);
     int opc = bin_op_code(op, fp, node_is_unsigned(L, node));
