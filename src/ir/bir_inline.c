@@ -371,39 +371,74 @@ static uint32_t emit_phi(inl_t *X, uint32_t type, const uint32_t *preds,
     return ni;
 }
 
-static uint32_t vasof(const bir_module_t *M, uint32_t v, int *ok)
-{
-    uint32_t i = BIR_VAL_INDEX(v), t;
+#define AS_UNK 0xFFu
+#define AS_MIX 0xFEu
 
-    *ok = 0;
-    if (v == BIR_VAL_NONE || BIR_VAL_IS_CONST(v)) return 0;
-    if (i >= M->num_insts) return 0;
-    t = M->insts[i].type;
-    if (t >= M->num_types || M->types[t].kind != BIR_TYPE_PTR) return 0;
-    *ok = 1;
-    return M->types[t].addrspace;
+static uint8_t ASST[BIR_MAX_INSTS];
+
+static int asder(uint16_t op)
+{
+    return op == BIR_GEP || op == BIR_BITCAST || op == BIR_SELECT
+        || op == BIR_PHI;
 }
 
-static uint32_t aspass(bir_module_t *M)
+static uint32_t asopv(const bir_module_t *M, const bir_inst_t *I, uint32_t k)
 {
-    uint32_t ni, hit = 0;
+    if (I->num_operands != BIR_OPERANDS_OVERFLOW)
+        return (k < I->num_operands) ? I->operands[k] : BIR_VAL_NONE;
+    if (k >= I->operands[1]
+        || I->operands[0] + k >= M->num_extra_ops) return BIR_VAL_NONE;
+    return M->extra_operands[I->operands[0] + k];
+}
 
-    for (ni = 0; ni < M->num_insts; ni++) {
-        bir_inst_t *I = &M->insts[ni];
-        uint32_t t = I->type, base, inner, as;
-        int ok;
+static uint8_t asmeet(const bir_module_t *M, uint32_t ni)
+{
+    const bir_inst_t *I = &M->insts[ni];
+    uint32_t n = (I->num_operands == BIR_OPERANDS_OVERFLOW)
+               ? I->operands[1] : I->num_operands;
+    uint32_t lo = (I->op == BIR_SELECT || I->op == BIR_PHI) ? 1u : 0u;
+    uint32_t st = (I->op == BIR_PHI) ? 2u : 1u;
+    uint8_t r = AS_UNK;
 
-        if (I->op != BIR_GEP && I->op != BIR_BITCAST) continue;
+    if (I->op == BIR_GEP || I->op == BIR_BITCAST) n = (n > 1u) ? 1u : n;
+    for (uint32_t k = lo; k < n && k < 4096u; k += st) {
+        uint32_t v = asopv(M, I, k), vi = BIR_VAL_INDEX(v);
+        uint8_t s;
+
+        if (v == BIR_VAL_NONE || BIR_VAL_IS_CONST(v)) continue;
+        if (vi >= M->num_insts || vi == ni) continue;
+        s = ASST[vi];
+        if (s == AS_UNK) continue;
+        if (s == AS_MIX || (r != AS_UNK && r != s)) return AS_MIX;
+        r = s;
+    }
+    return r;
+}
+
+static void asinit(const bir_module_t *M)
+{
+    for (uint32_t ni = 0; ni < M->num_insts; ni++) {
+        uint32_t t = M->insts[ni].type;
+
+        ASST[ni] = AS_UNK;
         if (t >= M->num_types || M->types[t].kind != BIR_TYPE_PTR) continue;
-        if (I->num_operands == BIR_OPERANDS_OVERFLOW)
-            base = (I->operands[1] >= 1u)
-                 ? M->extra_operands[I->operands[0]] : BIR_VAL_NONE;
-        else
-            base = (I->num_operands >= 1u) ? I->operands[0] : BIR_VAL_NONE;
-        as = vasof(M, base, &ok);
-        if (!ok || as == M->types[t].addrspace) continue;
-        inner = M->types[t].inner;
-        I->type = bir_type_ptr(M, inner, (int)as);
+        if (!asder(M->insts[ni].op)) ASST[ni] = M->types[t].addrspace;
+    }
+}
+
+static uint32_t aspass(const bir_module_t *M)
+{
+    uint32_t hit = 0;
+
+    for (uint32_t ni = 0; ni < M->num_insts; ni++) {
+        uint32_t t = M->insts[ni].type;
+        uint8_t s;
+
+        if (!asder(M->insts[ni].op) || ASST[ni] == AS_MIX) continue;
+        if (t >= M->num_types || M->types[t].kind != BIR_TYPE_PTR) continue;
+        s = asmeet(M, ni);
+        if (s == ASST[ni] || s == AS_UNK) continue;
+        ASST[ni] = s;
         hit++;
     }
     return hit;
@@ -411,14 +446,21 @@ static uint32_t aspass(bir_module_t *M)
 
 int bir_asfix(bir_module_t *M)
 {
-    uint32_t round, n = 0;
+    uint32_t n = 0;
 
     if (M == NULL) return 0;
-    for (round = 0; round < 16u; round++) {
-        uint32_t hit = aspass(M);
+    asinit(M);
+    for (uint32_t round = 0; round < 64u; round++)
+        if (aspass(M) == 0u) break;
+    for (uint32_t ni = 0; ni < M->num_insts; ni++) {
+        bir_inst_t *I = &M->insts[ni];
+        uint32_t t = I->type;
 
-        n += hit;
-        if (hit == 0u) break;
+        if (!asder(I->op) || ASST[ni] >= AS_MIX) continue;
+        if (t >= M->num_types || M->types[t].kind != BIR_TYPE_PTR) continue;
+        if (M->types[t].addrspace == ASST[ni]) continue;
+        I->type = bir_type_ptr(M, M->types[t].inner, (int)ASST[ni]);
+        n++;
     }
     return (int)n;
 }

@@ -6350,3 +6350,25 @@ static void rpi317(void)
     PASS();
 }
 TH_REG("rpi", 317, "either arm of a ternary can yield a struct", rpi317)
+
+static void rpi318(void)
+{
+    const char *p = rpi_ptx(
+        "template <typename T, bool ids>\n"
+        "__global__ void k(const T *x, int n) {\n"
+        "  extern __shared__ char data[];\n"
+        "  char *shb = data;\n"
+        "  char *cb = ids ? (shb + 64) : shb;\n"
+        "  T *t = (T *) cb + threadIdx.y * 4;\n"
+        "  int i = threadIdx.x;\n"
+        "  if (i < n) t[i] = x[i]; }\n"
+        "template __global__ void k<float, false>(const float *, int);\n"
+        "template __global__ void k<float, true>(const float *, int);\n",
+        "rpi318");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, "st.shared.f32"), NULL);
+    CHEQ(strstr(p, "st.global.f32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 318, "a shared pointer stays shared past a ternary", rpi318)
