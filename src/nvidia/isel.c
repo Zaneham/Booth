@@ -1593,6 +1593,35 @@ static void is_brcond(const bir_inst_t *I)
 
 /* ---- PHI Nodes ---- */
 
+static int aphsrc(uint32_t val, uint32_t idx, uint32_t bir_bi,
+                  nv_opnd_t *src)
+{
+    const bir_block_t *B = &S.bir->blocks[bir_bi];
+    uint32_t vi = BIR_VAL_INDEX(val);
+
+    if (val == BIR_MAKE_VAL(idx)) return 1;
+    if (BIR_VAL_IS_CONST(val) || vi >= S.bir->num_insts) {
+        nv_refuse("an aggregate phi fed by a constant");
+        return 2;
+    }
+    if (S.bir->insts[vi].op == BIR_PHI && vi >= B->first_inst
+        && vi < B->first_inst + B->num_insts) {
+        nv_refuse("an aggregate phi fed by another phi of its own block");
+        return 2;
+    }
+    *src = mapu64(vi);
+    return 0;
+}
+
+static void aphend(uint32_t idx, uint32_t ty, nv_opnd_t from)
+{
+    nv_opnd_t h;
+    uint32_t sz, al;
+
+    if (!aghome(idx, ty, &h, &sz, &al)) return;
+    agcpy(h, BIR_AS_PRIVATE, from, BIR_AS_PRIVATE, sz, al);
+}
+
 static void is_phi(uint32_t idx, const bir_inst_t *I,
                    uint32_t cur_bir_blk)
 {
@@ -1601,8 +1630,10 @@ static void is_phi(uint32_t idx, const bir_inst_t *I,
      * positions, value at odd. Getting this backwards gives you
      * undefined predicate registers and a kernel that treats GPU
      * memory like a pinball machine. We learned this the hard way. */
-    uint8_t rf = bir_rfile(I->type);
-    nv_opnd_t d = map_val(idx, I->type);
+    int ag = pagg(I->type);
+    uint8_t rf = ag ? (uint8_t)NV_RF_U64 : bir_rfile(I->type);
+    nv_opnd_t d = ag ? mop_reg(NV_RF_U64, new_vreg(NV_RF_U64))
+                     : map_val(idx, I->type);
     uint32_t nop = n_ops(I);
 
     uint16_t mop = movof(rf);
@@ -1621,7 +1652,11 @@ static void is_phi(uint32_t idx, const bir_inst_t *I,
         if (mblkl(pred_bir, &m_pred) != 0) return;
         if (m_pred >= NV_MAX_MBLK) continue;
 
-        nv_opnd_t src = rslv_p(val);
+        nv_opnd_t src = ag ? mop_imm(0) : rslv_p(val);
+        int ar = ag ? aphsrc(val, idx, cur_bir_blk, &src) : 0;
+
+        if (ar == 2) return;
+        if (ar == 1) continue;
 
         /* Self-copy: skip */
         if (src.kind == NV_MOP_REG && src.rfile == d.rfile &&
@@ -1640,6 +1675,7 @@ static void is_phi(uint32_t idx, const bir_inst_t *I,
             S_npc++;
         }
     }
+    if (ag) aphend(idx, I->type, d);
 }
 
 /* ---- Barriers ---- */

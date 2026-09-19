@@ -6332,3 +6332,21 @@ static void rpi316(void)
     PASS();
 }
 TH_REG("rpi", 316, "a wrapper's local keeps its dependent type", rpi316)
+
+static void rpi317(void)
+{
+    const char *p = rpi_ptx(
+        "struct cf { float re, im; };\n"
+        "static __device__ float pick(cf v) { return v.re + v.im; }\n"
+        "__global__ void k(float *o, const float *p, int n, int m) {\n"
+        "  int i = threadIdx.x;\n"
+        "  const cf v = (i < n && i < m) ? *(const cf *)(p + 2 * i)\n"
+        "                                : cf{0.0f, 0.0f};\n"
+        "  o[i] = pick(v); }\n", "rpi317");
+
+    CHNE(p, NULL);
+    CHEQ(strstr(obuf, "E840"), NULL);
+    CHNE(strstr(p, "st.global.f32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 317, "either arm of a ternary can yield a struct", rpi317)
