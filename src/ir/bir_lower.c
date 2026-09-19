@@ -10121,6 +10121,9 @@ static void lower_var_decl(lower_t *L, uint32_t node)
         return;
     }
 
+    int cxok = 0;
+    uint32_t cxv = BIR_VAL_NONE;
+
     if ((n->qualifiers & (QUAL_CONSTEXPR | QUAL_CONST)) && n->d.oper.op == 0) {
         uint32_t ci = ND(L, name_n)->next_sibling;
         int n0 = L->ncag;
@@ -10137,6 +10140,10 @@ static void lower_var_decl(lower_t *L, uint32_t node)
             if ((n->qualifiers & QUAL_CONSTEXPR) && cv.fnd) {
                 L->ncag = n0;
                 return;
+            }
+            if (!cv.agg && !cv.fnd) {
+                cxv  = sdemv(L, &cv, elem_t);
+                cxok = 1;
             }
         }
         L->ncag = n0;
@@ -10224,6 +10231,11 @@ static void lower_var_decl(lower_t *L, uint32_t node)
             L->nzst = 0;
             ainit(L, node, BIR_MAKE_VAL(alloca), elem_t, init_n, 0, name);
         }
+    } else if (cxok) {
+        uint32_t st = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
+
+        set_op(L, st, 0, cxv);
+        set_op(L, st, 1, BIR_MAKE_VAL(alloca));
     } else if (init_n && ND(L, init_n)->type != AST_NONE) {
         uint32_t init_v;
         uint32_t vt;
