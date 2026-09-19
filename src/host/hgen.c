@@ -1006,6 +1006,7 @@ static void opro(const hg_in_t *in)
     if (c == 1u)
         fprintf(stderr, "kath: %s: the fatbin carries PTX only, no cubin\n",
                 in->file != NULL ? in->file : "?");
+    os_("#include <stdint.h>\n");
     os_("#include <cuda_runtime.h>\n");
     os_("static void __bl(const void *f, void **a)\n{\n");
     os_("    dim3 g, b;\n    size_t s;\n    void *t;\n\n");

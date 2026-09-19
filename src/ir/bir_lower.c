@@ -528,7 +528,7 @@ static void lnsc(const lower_t *L, uint32_t t, char *out, size_t oz)
         else if (y->width == 8u)  ncpy(out, oz, "signed char");
         else if (y->width == 16u) ncpy(out, oz, "short");
         else if (y->width == 32u) ncpy(out, oz, "int");
-        else if (y->width == 64u) ncpy(out, oz, "long long");
+        else if (y->width == 64u) ncpy(out, oz, "int64_t");
     } else if (y->kind == BIR_TYPE_FLOAT) {
         if (y->width == 16u)      ncpy(out, oz, "__half");
         else if (y->width == 32u) ncpy(out, oz, "float");
