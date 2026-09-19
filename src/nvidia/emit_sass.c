@@ -290,11 +290,6 @@ static uint32_t satgt(const nv_opnd_t *o)
     return sast.bmap[g];
 }
 
-static int sapair(const nv_minst_t *a, const nv_minst_t *b)
-{
-    return a->op == (uint16_t)NV_BRA_PRED && b->op == (uint16_t)NV_BRA;
-}
-
 static uint32_t saterm(const nv_minst_t *I)
 {
     if (I->op == (uint16_t)NV_BRA) return TBR;
@@ -317,10 +312,10 @@ static int sasplit(void)
         sast.bmap[bi] = (uint16_t)n;
         sast.ist[n] = s;
         n++;
-        if (B->num_insts >= 2u
-            && sapair(&M->minsts[B->first_inst + B->num_insts - 2u],
-                      &M->minsts[B->first_inst + B->num_insts - 1u])) {
-            sast.ist[n] = e - 1u;
+        for (uint32_t i = s; i + 1u < e; i++) {
+            if (M->minsts[sast.f0 + i].op != (uint16_t)NV_BRA_PRED) continue;
+            if (n + 2u >= SA_NBB) return 1;
+            sast.ist[n] = i + 1u;
             n++;
         }
     }
