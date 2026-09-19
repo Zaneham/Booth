@@ -6309,3 +6309,26 @@ static void rpi315(void)
     PASS();
 }
 TH_REG("rpi", 315, "a ternary that only reads stays a select", rpi315)
+
+static void rpi316(void)
+{
+    CHNE(scratch("rpi316.cu",
+        "template <typename S, typename D>\n"
+        "__global__ void kk(const S *s, D *d, int n) {\n"
+        "  int i = threadIdx.x; if (i < n) d[i] = (D)s[i]; }\n"
+        "template <typename S, typename D>\n"
+        "static void inner(const S *s, D *d, int n) {\n"
+        "  kk<S, D><<<1, n>>>(s, d, n); }\n"
+        "template <typename S>\n"
+        "static void outer(const void *p, float *d, int n) {\n"
+        "  const S *s = (const S *)p;\n"
+        "  inner(s, d, n); }\n"
+        "void host(const void *p, float *d, int n) {\n"
+        "  outer<double>(p, d, n); }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi316.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @kk(ptr<global, f64>"), NULL);
+    CHEQ(strstr(obuf, "func @kk(ptr<global, i32>"), NULL);
+    PASS();
+}
+TH_REG("rpi", 316, "a wrapper's local keeps its dependent type", rpi316)

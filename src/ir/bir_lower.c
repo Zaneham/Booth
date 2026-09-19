@@ -14526,6 +14526,7 @@ static void scan_launches(lower_t *L, uint32_t node)
                 continue;
             }
             scan_launches(L, c);
+            if (ND(L, c)->type == AST_VAR_DECL) vscn(L, c);
         }
         pop_scope(L);
         L->nglm = gsv;
