@@ -371,6 +371,63 @@ static uint32_t emit_phi(inl_t *X, uint32_t type, const uint32_t *preds,
     return ni;
 }
 
+/* ---- Address space of the bound argument ---- */
+
+/* A pointer's address space belongs to the argument it was bound to, not to
+   the `T *` the callee declared, so shared memory handed to a device helper
+   keeps its space through the clones that index it. */
+static uint32_t vasof(const bir_module_t *M, uint32_t v, int *ok)
+{
+    uint32_t i = BIR_VAL_INDEX(v), t;
+
+    *ok = 0;
+    if (v == BIR_VAL_NONE || BIR_VAL_IS_CONST(v)) return 0;
+    if (i >= M->num_insts) return 0;
+    t = M->insts[i].type;
+    if (t >= M->num_types || M->types[t].kind != BIR_TYPE_PTR) return 0;
+    *ok = 1;
+    return M->types[t].addrspace;
+}
+
+static uint32_t aspass(bir_module_t *M)
+{
+    uint32_t ni, hit = 0;
+
+    for (ni = 0; ni < M->num_insts; ni++) {
+        bir_inst_t *I = &M->insts[ni];
+        uint32_t t = I->type, base, inner, as;
+        int ok;
+
+        if (I->op != BIR_GEP && I->op != BIR_BITCAST) continue;
+        if (t >= M->num_types || M->types[t].kind != BIR_TYPE_PTR) continue;
+        if (I->num_operands == BIR_OPERANDS_OVERFLOW)
+            base = (I->operands[1] >= 1u)
+                 ? M->extra_operands[I->operands[0]] : BIR_VAL_NONE;
+        else
+            base = (I->num_operands >= 1u) ? I->operands[0] : BIR_VAL_NONE;
+        as = vasof(M, base, &ok);
+        if (!ok || as == M->types[t].addrspace) continue;
+        inner = M->types[t].inner;
+        I->type = bir_type_ptr(M, inner, (int)as);
+        hit++;
+    }
+    return hit;
+}
+
+int bir_asfix(bir_module_t *M)
+{
+    uint32_t round, n = 0;
+
+    if (M == NULL) return 0;
+    for (round = 0; round < 16u; round++) {
+        uint32_t hit = aspass(M);
+
+        n += hit;
+        if (hit == 0u) break;
+    }
+    return (int)n;
+}
+
 /* ---- Splice one call ---- */
 
 /* Splice a single straight-line block callee at `call_oi`. Its parameters

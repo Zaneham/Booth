@@ -140,6 +140,7 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     /* Optimisation passes: same shape regardless of frontend. */
     if (!cfg->no_sroa)    bir_sroa(bir);
     if (!cfg->no_mem2reg) bir_mem2reg(bir);
+    (void)bir_asfix(bir);
     if (!cfg->no_cfold)   bir_cfold(bir);
     if (!cfg->no_dce)     bir_dce(bir);
 

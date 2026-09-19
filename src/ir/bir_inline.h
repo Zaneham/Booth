@@ -24,4 +24,12 @@
  */
 int bir_inline_device(bir_module_t *M, int drop);
 
+/* Settle every pointer's address space against the value it derives from.
+ * A callee declares `T *`, which lowers to ptr<global>, so a __shared__ array
+ * passed to a device helper keeps the callee's global type once mem2reg has
+ * forwarded the argument past the parameter copy. isel reads that type to pick
+ * between a shared and a global access, so the mismatch has to be settled
+ * before it runs. Returns the number of types corrected. */
+int bir_asfix(bir_module_t *M);
+
 #endif /* BARRACUDA_BIR_INLINE_H */
