@@ -371,11 +371,6 @@ static uint32_t emit_phi(inl_t *X, uint32_t type, const uint32_t *preds,
     return ni;
 }
 
-/* ---- Address space of the bound argument ---- */
-
-/* A pointer's address space belongs to the argument it was bound to, not to
-   the `T *` the callee declared, so shared memory handed to a device helper
-   keeps its space through the clones that index it. */
 static uint32_t vasof(const bir_module_t *M, uint32_t v, int *ok)
 {
     uint32_t i = BIR_VAL_INDEX(v), t;
