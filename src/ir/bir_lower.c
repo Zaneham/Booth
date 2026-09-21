@@ -4377,6 +4377,32 @@ static int ptr_t(const lower_t *L, uint32_t t)
     return t < L->M->num_types && L->M->types[t].kind == BIR_TYPE_PTR;
 }
 
+static uint32_t pstep(lower_t *L, uint32_t node, int base, uint32_t slot,
+                      uint32_t pt, uint32_t old, uint32_t n)
+{
+    uint32_t it = ref_type(L, n), g, st;
+
+    if ((base != TOK_PLUS && base != TOK_MINUS) || it >= L->M->num_types
+        || L->M->types[it].kind != BIR_TYPE_INT) {
+        lower_error(L, node, BC_E102);
+        return BIR_VAL_NONE;
+    }
+    if (base == TOK_MINUS) {
+        uint32_t ng = emit(L, BIR_SUB, it, 2, 0);
+
+        set_op(L, ng, 0, BIR_MAKE_CONST(bir_const_int(L->M, it, 0)));
+        set_op(L, ng, 1, n);
+        n = BIR_MAKE_VAL(ng);
+    }
+    g = emit(L, BIR_GEP, pt, 2, 0);
+    set_op(L, g, 0, BIR_MAKE_VAL(old));
+    set_op(L, g, 1, n);
+    st = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
+    set_op(L, st, 0, BIR_MAKE_VAL(g));
+    set_op(L, st, 1, slot);
+    return BIR_MAKE_VAL(g);
+}
+
 static uint32_t bin_val(lower_t *L, uint32_t node, int op,
                         uint32_t lhs, uint32_t lhs_n,
                         uint32_t rhs, uint32_t rhs_n)
@@ -7349,6 +7375,7 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             set_op(L, old, 0, ptr);
             uint32_t rhs = lower_expr(L, rhs_n);
 
+            if (ptr_t(L, et)) return pstep(L, node, base, ptr, et, old, rhs);
             if (base != TOK_SHL && base != TOK_SHR)
                 rhs = stfit(L, rhs, et, rhs_n);
             int fp   = is_float_type(L, et);
@@ -7573,6 +7600,10 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             if (is_float_type(L, et)) {
                 one = BIR_MAKE_CONST(bir_const_float(L->M, et, 1.0));
                 res = emit(L, op==TOK_INC ? BIR_FADD : BIR_FSUB, et, 2, 0);
+            } else if (ptr_t(L, et)) {
+                one = BIR_MAKE_CONST(bir_const_int(L->M, bir_type_int(L->M, 32),
+                                                   op == TOK_INC ? 1 : -1));
+                res = emit(L, BIR_GEP, et, 2, 0);
             } else {
                 one = BIR_MAKE_CONST(bir_const_int(L->M, et, 1));
                 res = emit(L, op==TOK_INC ? BIR_ADD : BIR_SUB, et, 2, 0);
@@ -7613,6 +7644,10 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             if (is_float_type(L, et)) {
                 one = BIR_MAKE_CONST(bir_const_float(L->M, et, 1.0));
                 res = emit(L, op==TOK_INC ? BIR_FADD : BIR_FSUB, et, 2, 0);
+            } else if (ptr_t(L, et)) {
+                one = BIR_MAKE_CONST(bir_const_int(L->M, bir_type_int(L->M, 32),
+                                                   op == TOK_INC ? 1 : -1));
+                res = emit(L, BIR_GEP, et, 2, 0);
             } else {
                 one = BIR_MAKE_CONST(bir_const_int(L->M, et, 1));
                 res = emit(L, op==TOK_INC ? BIR_ADD : BIR_SUB, et, 2, 0);

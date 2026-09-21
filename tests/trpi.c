@@ -6394,3 +6394,19 @@ static void rpi319(void)
     PASS();
 }
 TH_REG("rpi", 319, "a 64-bit constant is built, not cut to 32 bits", rpi319)
+
+static void rpi320(void)
+{
+    CHNE(scratch("rpi320.cu",
+        "__global__ void k(float *o, const float *x, int bs) {\n"
+        "  int t = threadIdx.x, row = blockIdx.x;\n"
+        "  o += row * bs; x -= t; x++; ++x; x--;\n"
+        "  o[t] = *x; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi320.cu", obuf, (int)sizeof obuf), 0);
+
+    CHEQ(strstr(obuf, "add ptr<"), NULL);
+    CHEQ(strstr(obuf, "sub ptr<"), NULL);
+    CHNE(strstr(obuf, "gep ptr<global, f32>, %0"), NULL);
+    PASS();
+}
+TH_REG("rpi", 320, "a pointer steps by elements, however written", rpi320)
