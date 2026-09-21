@@ -6378,3 +6378,19 @@ static void rpi318(void)
     PASS();
 }
 TH_REG("rpi", 318, "a shared pointer stays shared past a ternary", rpi318)
+
+static void rpi319(void)
+{
+    const char *p = rpi_ptx(
+        "__global__ void k(float *o, int n) {\n"
+        "  int t = threadIdx.x; long long i = t;\n"
+        "  if (t < n) o[t] = (float)(int)((i * 3000000007LL + 5) >> 20); }\n",
+        "rpi319");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, "mul.lo.u64"), NULL);
+    CHEQ(strstr(strstr(p, "mul.lo.u64"), "-1294967289"), NULL);
+    CHNE(strstr(p, "shl.b64"), NULL);
+    PASS();
+}
+TH_REG("rpi", 319, "a 64-bit constant is built, not cut to 32 bits", rpi319)

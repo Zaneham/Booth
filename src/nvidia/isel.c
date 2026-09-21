@@ -35,6 +35,7 @@ static void nv_refuse(const char *what)
 
 /* Forward declaration — rslv needs em1 for f64 constant materialisation */
 static void em1(uint16_t op, nv_opnd_t d, nv_opnd_t a, nv_opnd_t b);
+static void em1u(uint16_t op, nv_opnd_t d, nv_opnd_t a);
 static nv_opnd_t mat_pred(nv_opnd_t op);
 static uint16_t movof(uint8_t rf);
 
@@ -188,6 +189,33 @@ static nv_opnd_t map_val(uint32_t idx, uint32_t type_idx)
     return mop_reg(rf, rn);
 }
 
+static int kwide(uint32_t val)
+{
+    const bir_const_t *C;
+
+    if (val == BIR_VAL_NONE || !BIR_VAL_IS_CONST(val)) return 0;
+    if (BIR_VAL_INDEX(val) >= S.bir->num_consts) return 0;
+    C = &S.bir->consts[BIR_VAL_INDEX(val)];
+    return C->kind == BIR_CONST_INT && bir_rfile(C->type) == NV_RF_U64
+        && C->d.ival != (int64_t)(int32_t)C->d.ival;
+}
+
+static nv_opnd_t k64(int64_t v)
+{
+    nv_opnd_t lo = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    nv_opnd_t zl = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    nv_opnd_t hi = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    nv_opnd_t sh = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    nv_opnd_t d  = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+
+    em1u(NV_MOV_U32, lo, mop_imm((int32_t)(uint32_t)v));
+    em1u(NV_CVT_U64_U32, zl, lo);
+    em1u(NV_MOV_U64, hi, mop_imm((int32_t)(v >> 32)));
+    em1(NV_SHL_B64, sh, hi, mop_imm(32));
+    em1(NV_OR_B64, d, sh, zl);
+    return d;
+}
+
 static nv_opnd_t rslv_p(uint32_t val)
 {
     if (val == BIR_VAL_NONE) return mop_imm(0);
@@ -200,7 +228,7 @@ static nv_opnd_t rslv_p(uint32_t val)
         if (C->kind == BIR_CONST_ZERO || C->kind == BIR_CONST_NULL)
             return mop_imm(0);
         if (C->kind == BIR_CONST_INT)
-            return mop_imm((int32_t)C->d.ival);
+            return kwide(val) ? k64(C->d.ival) : mop_imm((int32_t)C->d.ival);
         if (C->kind == BIR_CONST_FLOAT) {
             uint8_t rf = bir_rfile(C->type);
             if (rf == NV_RF_F64) {
@@ -1613,6 +1641,18 @@ static int aphsrc(uint32_t val, uint32_t idx, uint32_t bir_bi,
     return 0;
 }
 
+static int phsrc(uint32_t val, uint32_t idx, uint32_t bir_bi, int ag,
+                 nv_opnd_t *src)
+{
+    if (kwide(val)) {
+        nv_refuse("a phi fed by a 64-bit constant wider than an immediate");
+        return 2;
+    }
+    if (ag) return aphsrc(val, idx, bir_bi, src);
+    *src = rslv_p(val);
+    return 0;
+}
+
 static void aphend(uint32_t idx, uint32_t ty, nv_opnd_t from)
 {
     nv_opnd_t h;
@@ -1652,8 +1692,8 @@ static void is_phi(uint32_t idx, const bir_inst_t *I,
         if (mblkl(pred_bir, &m_pred) != 0) return;
         if (m_pred >= NV_MAX_MBLK) continue;
 
-        nv_opnd_t src = ag ? mop_imm(0) : rslv_p(val);
-        int ar = ag ? aphsrc(val, idx, cur_bir_blk, &src) : 0;
+        nv_opnd_t src = mop_imm(0);
+        int ar = phsrc(val, idx, cur_bir_blk, ag, &src);
 
         if (ar == 2) return;
         if (ar == 1) continue;
