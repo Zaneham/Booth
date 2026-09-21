@@ -4377,6 +4377,7 @@ static int ptr_t(const lower_t *L, uint32_t t)
     return t < L->M->num_types && L->M->types[t].kind == BIR_TYPE_PTR;
 }
 
+/* Ollama was producing garbage tokens cuz p += n stepped a pointer by bytes, not elements. */
 static uint32_t pstep(lower_t *L, uint32_t node, int base, uint32_t slot,
                       uint32_t pt, uint32_t old, uint32_t n)
 {
