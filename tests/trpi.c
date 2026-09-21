@@ -6300,15 +6300,21 @@ TH_REG("rpi", 314, "a storing ternary stores once", rpi314)
 static void rpi315(void)
 {
     CHNE(scratch("rpi315.cu",
-        "__global__ void k(int *o, const int *a, int n) {\n"
-        "  int i = threadIdx.x; o[i] = (i < n) ? a[i] : 0; }\n"), NULL);
+        "__global__ void k(int *o, int m, int n) {\n"
+        "  int i = threadIdx.x; o[i] = (i < n) ? m + i : 0; }\n"), NULL);
     CHEQ(th_run(BC_BIN " --ir build/rpi315.cu", obuf, (int)sizeof obuf), 0);
-
     CHNE(strstr(obuf, "select i32"), NULL);
     CHEQ(strstr(obuf, "tern.then"), NULL);
+
+    CHNE(scratch("rpi315b.cu",
+        "__global__ void k(float *o, const float *p) {\n"
+        "  int i = threadIdx.x; o[i] = p ? p[i] : 2.0f; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi315b.cu", obuf, (int)sizeof obuf), 0);
+    CHEQ(strstr(obuf, "select f32"), NULL);
+    CHNE(strstr(obuf, "tern.then"), NULL);
     PASS();
 }
-TH_REG("rpi", 315, "a ternary that only reads stays a select", rpi315)
+TH_REG("rpi", 315, "a ternary selects values and branches on reads", rpi315)
 
 static void rpi316(void)
 {

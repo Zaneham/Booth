@@ -6922,11 +6922,15 @@ static int tpure(const lower_t *L, uint32_t node)
 
         case AST_UNARY_PREFIX:
         case AST_UNARY_POSTFIX:
-            if (p->d.oper.op == TOK_INC || p->d.oper.op == TOK_DEC) return 0;
+            if (p->d.oper.op == TOK_INC || p->d.oper.op == TOK_DEC
+                || p->d.oper.op == TOK_STAR) return 0;
             break;
 
-        case AST_PAREN:   case AST_MEMBER:
-        case AST_SUBSCRIPT: case AST_TERNARY:
+        case AST_MEMBER:
+            if (p->d.member.is_arrow) return 0;
+            break;
+
+        case AST_PAREN: case AST_TERNARY:
             break;
 
         default:
