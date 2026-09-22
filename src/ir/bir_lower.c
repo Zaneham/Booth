@@ -1851,11 +1851,12 @@ static uint32_t vmake(lower_t *L, const struct_def_t *sd,
         uint32_t ci  = BIR_MAKE_CONST(bir_const_int(L->M,
                            bir_type_int(L->M, 32), i));
         uint32_t gep = emit(L, BIR_GEP, fpt, 2, 0);
-        uint32_t sv;
+        uint32_t sv, fv;
         set_op(L, gep, 0, BIR_MAKE_VAL(al));
         set_op(L, gep, 1, ci);
+        fv = stfit(L, vals[i], sd->field_types[i], 0);
         sv = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
-        set_op(L, sv, 0, stfit(L, vals[i], sd->field_types[i], 0));
+        set_op(L, sv, 0, fv);
         set_op(L, sv, 1, BIR_MAKE_VAL(gep));
     }
     ld = emit(L, BIR_LOAD, st, 1, 0);
@@ -8177,8 +8178,9 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
                     uint32_t gep = emit(L, BIR_GEP, fpt, 2, 0);
                     set_op(L, gep, 0, BIR_MAKE_VAL(al));
                     set_op(L, gep, 1, ci);
+                    uint32_t fv = stfit(L, val, vsd->field_types[fi], an);
                     uint32_t sv = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
-                    set_op(L, sv, 0, stfit(L, val, vsd->field_types[fi], an));
+                    set_op(L, sv, 0, fv);
                     set_op(L, sv, 1, BIR_MAKE_VAL(gep));
                     an = ND(L, an)->next_sibling;
                 }

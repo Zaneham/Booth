@@ -6438,7 +6438,12 @@ static void rpi322(void)
     CHEQ(th_run(BC_BIN " --ir build/rpi322.cu", obuf, (int)sizeof obuf), 0);
 
     CHNE(strstr(obuf, "fptrunc f32"), NULL);
-    CHEQ(strstr(obuf, "store f32 %"), strstr(obuf, "store f32 %"));
+    {
+        const char *t = strstr(obuf, "fptrunc f32");
+        const char *st = strstr(obuf, "store f16 %");
+        CHNE(st, NULL);
+        CHECK(t < st);
+    }
     {
         const char *p = obuf;
         int bad = 0;
