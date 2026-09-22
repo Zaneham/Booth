@@ -1836,6 +1836,8 @@ static uint32_t vlane(lower_t *L, uint32_t val, int lane)
     return BIR_MAKE_VAL(ld);
 }
 
+static uint32_t stfit(lower_t *L, uint32_t val, uint32_t dt, uint32_t src_n);
+
 static uint32_t vmake(lower_t *L, const struct_def_t *sd,
                       const uint32_t *vals, int n)
 {
@@ -1853,7 +1855,7 @@ static uint32_t vmake(lower_t *L, const struct_def_t *sd,
         set_op(L, gep, 0, BIR_MAKE_VAL(al));
         set_op(L, gep, 1, ci);
         sv = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
-        set_op(L, sv, 0, vals[i]);
+        set_op(L, sv, 0, stfit(L, vals[i], sd->field_types[i], 0));
         set_op(L, sv, 1, BIR_MAKE_VAL(gep));
     }
     ld = emit(L, BIR_LOAD, st, 1, 0);
@@ -8176,7 +8178,7 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
                     set_op(L, gep, 0, BIR_MAKE_VAL(al));
                     set_op(L, gep, 1, ci);
                     uint32_t sv = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
-                    set_op(L, sv, 0, val);
+                    set_op(L, sv, 0, stfit(L, val, vsd->field_types[fi], an));
                     set_op(L, sv, 1, BIR_MAKE_VAL(gep));
                     an = ND(L, an)->next_sibling;
                 }

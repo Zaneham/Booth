@@ -6426,3 +6426,29 @@ static void rpi321(void)
     PASS();
 }
 TH_REG("rpi", 321, "a signed byte keeps its sign when it widens", rpi321)
+
+static void rpi322(void)
+{
+    CHNE(scratch("rpi322.cu",
+        "__global__ void k(float *o, const half2 *x, const float2 *y) {\n"
+        "  int i = threadIdx.x;\n"
+        "  const float2 t = y[i];\n"
+        "  const half2 p = x[i] * make_half2(t.x, t.y);\n"
+        "  o[i] = __low2float(p) + __high2float(p); }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi322.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "fptrunc f32"), NULL);
+    CHEQ(strstr(obuf, "store f32 %"), strstr(obuf, "store f32 %"));
+    {
+        const char *p = obuf;
+        int bad = 0;
+        while ((p = strstr(p, "store f32 ")) != NULL) {
+            const char *q = strchr(p, ',');
+            if (q && strstr(q, "ptr<private, f16>") == q + 2) bad++;
+            p += 10;
+        }
+        CHEQ(bad, 0);
+    }
+    PASS();
+}
+TH_REG("rpi", 322, "make_half2 narrows its floats before it stores", rpi322)
