@@ -894,10 +894,27 @@ static void is_f2i(nv_opnd_t d, nv_opnd_t s, uint32_t v0, int sgn)
     cocpy(d, t, sgn);
 }
 
+static nv_opnd_t sx8(uint32_t v0, nv_opnd_t s)
+{
+    uint32_t ty = vtyof(v0);
+    nv_opnd_t w, l, r;
+
+    if (s.kind != NV_MOP_REG || ty >= S.bir->num_types
+        || S.bir->types[ty].kind != BIR_TYPE_INT
+        || S.bir->types[ty].width != 8u) return s;
+    w = cofit(s, NV_RF_U32, 0);
+    l = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    r = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    em1(NV_SHL_B32, l, w, mop_imm(24));
+    em1(NV_SHR_S32, r, l, mop_imm(24));
+    return r;
+}
+
 static void is_i2f(nv_opnd_t d, nv_opnd_t s, uint32_t v0, int sgn)
 {
     uint8_t drf = d.rfile;
-    uint8_t srf = rslv_rf(v0);
+    uint8_t srf = (s.kind == NV_MOP_REG && s.rfile == NV_RF_U32)
+                ? (uint8_t)NV_RF_U32 : rslv_rf(v0);
     uint16_t op;
     nv_opnd_t t;
 
@@ -961,12 +978,14 @@ static void is_cvt(uint32_t idx, const bir_inst_t *I)
         is_f2i(d, s, v0, I->op == BIR_FPTOSI);
         return;
     case BIR_SITOFP: case BIR_UITOFP:
+        if (I->op == BIR_SITOFP) s = sx8(v0, s);
         is_i2f(d, s, v0, I->op == BIR_SITOFP);
         return;
     case BIR_FPTRUNC: case BIR_FPEXT:
         is_fext(d, s, v0, I->type);
         return;
     case BIR_ZEXT: case BIR_SEXT: case BIR_TRUNC:
+        if (I->op == BIR_SEXT) s = sx8(v0, s);
         cocpy(d, s, I->op == BIR_SEXT);
         return;
     default:

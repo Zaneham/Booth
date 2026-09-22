@@ -6410,3 +6410,19 @@ static void rpi320(void)
     PASS();
 }
 TH_REG("rpi", 320, "a pointer steps by elements, however written", rpi320)
+
+static void rpi321(void)
+{
+    const char *p = rpi_ptx(
+        "__global__ void k(float *o, const signed char *q,\n"
+        "                  const unsigned char *u, int n) {\n"
+        "  int i = threadIdx.x;\n"
+        "  if (i < n) o[i] = (float)q[i] * 0.5f + (float)u[i]; }\n", "rpi321");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, "shr.s32"), NULL);
+    CHEQ(strstr(p, "cvt.s32.s16"), NULL);
+    CHNE(strstr(p, "cvt.rn.f32.u32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 321, "a signed byte keeps its sign when it widens", rpi321)
