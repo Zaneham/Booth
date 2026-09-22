@@ -13393,7 +13393,8 @@ static void vscn(lower_t *L, uint32_t vd)
     if (!nn || ND(L, nn)->type != AST_IDENT) return;
     get_text(L, nn, vn, (int)sizeof vn);
     if (!vn[0]) return;
-    t = rtype(L, n->first_child, n->d.oper.flags, n->cuda_flags);
+    t = resolve_type(L, n->first_child, n->d.oper.flags, n->cuda_flags);
+    if (L->rtbad || L->rtunk) { L->rtbad = 0; L->rtunk = 0; return; }
     if (t) {
         uint32_t aft = 0;
         int bad = 0;

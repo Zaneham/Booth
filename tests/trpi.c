@@ -6493,3 +6493,20 @@ static void rpi324(void)
     PASS();
 }
 TH_REG("rpi", 324, "a short promotes to int before it shifts", rpi324)
+
+static void rpi325(void)
+{
+    CHNE(scratch("rpi325.cu",
+        "#include <array>\n"
+        "__global__ void k(float *o) { o[threadIdx.x] = 1.0f; }\n"
+        "void go(float *o) {\n"
+        "  constexpr std::array<int, 2> slow = { 1, 2 };\n"
+        "  k<<<1, slow[1]>>>(o); }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi325.cu", obuf, (int)sizeof obuf), 0);
+
+    CHEQ(strstr(obuf, "E134"), NULL);
+    CHNE(strstr(obuf, "func @k("), NULL);
+    PASS();
+}
+TH_REG("rpi", 325, "a wrapper local Booth cannot name is skipped", rpi325)
