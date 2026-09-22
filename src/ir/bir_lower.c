@@ -12157,6 +12157,21 @@ static void collect_template(lower_t *L, uint32_t node)
  *   - callee = "scale"
  *   - Deduce T from literal arguments
  */
+static uint32_t apointee(lower_t *L, uint32_t base)
+{
+    uint32_t bt;
+
+    L->atdp++;
+    bt = arg_type(L, base);
+    L->atdp--;
+    if (bt < L->M->num_types
+        && (L->M->types[bt].kind == BIR_TYPE_ARRAY
+            || L->M->types[bt].kind == BIR_TYPE_PTR)
+        && L->M->types[bt].inner)
+        return bir_tunq(L->M, L->M->types[bt].inner);
+    return 0;
+}
+
 static uint32_t arg_type(lower_t *L, uint32_t arg)
 {
     const ast_node_t *a;
@@ -12183,17 +12198,12 @@ static uint32_t arg_type(lower_t *L, uint32_t arg)
         sy = find_sym(L, nm);
         if (sy && sy->type) return sy->type;
     }
-    if (a->type == AST_SUBSCRIPT && a->first_child && L->atdp < MAX_CDEP) {
-        uint32_t bt;
+    if ((a->type == AST_SUBSCRIPT
+         || (a->type == AST_UNARY_PREFIX && a->d.oper.op == TOK_STAR))
+        && a->first_child && L->atdp < MAX_CDEP) {
+        uint32_t et = apointee(L, a->first_child);
 
-        L->atdp++;
-        bt = arg_type(L, a->first_child);
-        L->atdp--;
-        if (bt < L->M->num_types
-            && (L->M->types[bt].kind == BIR_TYPE_ARRAY
-                || L->M->types[bt].kind == BIR_TYPE_PTR)
-            && L->M->types[bt].inner)
-            return bir_tunq(L->M, L->M->types[bt].inner);
+        if (et) return et;
     }
     if (a->type == AST_MEMBER && a->first_child && L->atdp < MAX_CDEP) {
         uint32_t obj = a->first_child;

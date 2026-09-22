@@ -6457,3 +6457,22 @@ static void rpi322(void)
     PASS();
 }
 TH_REG("rpi", 322, "make_half2 narrows its floats before it stores", rpi322)
+
+static void rpi323(void)
+{
+    CHNE(scratch("rpi323.cu",
+        "template <typename D, typename S>\n"
+        "static __device__ D conv(S x) { return D(x); }\n"
+        "template <typename S, typename D>\n"
+        "static __device__ void one(const char *ci, char *co) {\n"
+        "  *(D *) co = conv<D>(*(const S *) ci); }\n"
+        "__global__ void k(const char *a, char *b) {\n"
+        "  one<float, float>(a + 4 * threadIdx.x, b + 4 * threadIdx.x); }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi323.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @conv(f32"), NULL);
+    CHEQ(strstr(obuf, "fptosi"), NULL);
+    PASS();
+}
+TH_REG("rpi", 323, "a deduction sees through a dereferenced cast", rpi323)
