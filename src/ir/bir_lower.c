@@ -4407,15 +4407,23 @@ static uint32_t pstep(lower_t *L, uint32_t node, int base, uint32_t slot,
     return BIR_MAKE_VAL(g);
 }
 
+static void iprom(lower_t *L, uint32_t *v, uint32_t *t, uint32_t n)
+{
+    uint32_t t32 = bir_type_int(L->M, 32);
+    if (*t >= L->M->num_types || L->M->types[*t].kind != BIR_TYPE_INT
+        || L->M->types[*t].width >= 32) return;
+    *v = coerce_to(L, *v, t32, is_i1(L, *t) || node_is_unsigned(L, n));
+    *t = t32;
+}
+
 static uint32_t bin_val(lower_t *L, uint32_t node, int op,
                         uint32_t lhs, uint32_t lhs_n,
                         uint32_t rhs, uint32_t rhs_n)
 {
     uint32_t lt = ref_type(L, lhs), rt = ref_type(L, rhs);
 
-    uint32_t t32 = bir_type_int(L->M, 32);
-    if (is_i1(L, lt)) { lhs = coerce_to(L, lhs, t32, 1); lt = t32; }
-    if (is_i1(L, rt)) { rhs = coerce_to(L, rhs, t32, 1); rt = t32; }
+    iprom(L, &lhs, &lt, lhs_n);
+    iprom(L, &rhs, &rt, rhs_n);
 
     uint32_t res_t = lt;
     int lf = is_float_type(L, lt), rf = is_float_type(L, rt);

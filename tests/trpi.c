@@ -6476,3 +6476,20 @@ static void rpi323(void)
     PASS();
 }
 TH_REG("rpi", 323, "a deduction sees through a dereferenced cast", rpi323)
+
+static void rpi324(void)
+{
+    CHNE(scratch("rpi324.cu",
+        "__global__ void k(const unsigned short *x, int *o) {\n"
+        "  int v = x[2 * threadIdx.x] << 0;\n"
+        "  v |= x[2 * threadIdx.x + 1] << 16;\n"
+        "  o[threadIdx.x] = v; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi324.cu", obuf, (int)sizeof obuf), 0);
+
+    CHEQ(strstr(obuf, "shl i16"), NULL);
+    CHEQ(strstr(obuf, "sext"), NULL);
+    CHNE(strstr(obuf, "shl i32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 324, "a short promotes to int before it shifts", rpi324)
