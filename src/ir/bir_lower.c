@@ -425,6 +425,7 @@ typedef struct {
     int             ntags;
     struct { char name[64]; fnc_t c[MAX_FNC]; int n; } fnal[MAX_FNAL];
     int             nfnal;
+    uint32_t        scnrt;
     glent_t         glms[MAX_GLAM];
     int             nglm;
 
@@ -11892,6 +11893,31 @@ static void tdbad(lower_t *L, typedef_def_t *td)
     ncpy(td->snm, sizeof(td->snm), L->rtsnm);
 }
 
+static uint32_t fpty(lower_t *L, uint32_t name_n, uint32_t type_n, int depth)
+{
+    uint32_t pv[MAX_PARM], pt[MAX_PARM], ret, t;
+    int      np = collect_params(L, name_n, pv, MAX_PARM);
+
+    if (np <= 0) return resolve_type(L, type_n, depth, 0);
+    ret = resolve_type(L, type_n, 0, 0);
+    if (L->rtbad || L->rtunk) { L->rtbad = 0; L->rtunk = 0; return 0; }
+    for (int i = 0; i < np; i++) {
+        const ast_node_t *pn = ND(L, pv[i]);
+
+        if (pn->d.oper.op == PRM_VARG || pn->d.oper.op == PRM_PACK) return 0;
+        pt[i] = resolve_type(L, pn->first_child, pn->d.oper.flags,
+                             pn->cuda_flags);
+        if (L->rtbad || L->rtunk || !pt[i]) {
+            L->rtbad = 0;
+            L->rtunk = 0;
+            return 0;
+        }
+    }
+    t = bir_type_func(L->M, ret, pt, np);
+    for (int i = 0; i < depth; i++) t = bir_type_ptr(L->M, t, BIR_AS_GLOBAL);
+    return t;
+}
+
 static void collect_typedef(lower_t *L, uint32_t node)
 {
     /* typedef TYPE NAME;
@@ -11948,7 +11974,7 @@ static void collect_typedef(lower_t *L, uint32_t node)
     typedef_def_t *td = &L->typedefs[L->ntypedefs++];
     memset(td, 0, sizeof(*td));
     get_text(L, name_n, td->name, sizeof(td->name));
-    td->bir_type = resolve_type(L, type_n, ND(L, node)->d.oper.flags, 0);
+    td->bir_type = fpty(L, name_n, type_n, ND(L, node)->d.oper.flags);
     tdbad(L, td);
 }
 
@@ -14325,7 +14351,49 @@ static uint32_t lbody(const lower_t *L, uint32_t lam)
     return body;
 }
 
-static int sfval(lower_t *L, uint32_t node)
+static void tdtgt(lower_t *L, uint32_t fn, binding_t *nb, int ntp, uint32_t tt)
+{
+    const bir_type_t *ft;
+    uint32_t          fpn[MAX_PARM];
+    int               nfp;
+
+    if (tt && tt < L->M->num_types && L->M->types[tt].kind == BIR_TYPE_PTR)
+        tt = L->M->types[tt].inner;
+    if (!tt || tt >= L->M->num_types || L->M->types[tt].kind != BIR_TYPE_FUNC)
+        return;
+    ft = &L->M->types[tt];
+    nfp = collect_params(L, fn, fpn, MAX_PARM);
+    for (int i = 0; i < nfp && i < (int)ft->num_fields; i++) {
+        const ast_node_t *pn = ND(L, fpn[i]);
+        uint32_t          ts = pn->first_child, at;
+        char              tname[64];
+
+        if (!ts || ND(L, ts)->type != AST_TYPE_SPEC
+            || ND(L, ts)->d.btype.kind != TYPE_NAME
+            || !ND(L, ts)->first_child) continue;
+        get_text(L, ND(L, ts)->first_child, tname, sizeof tname);
+        at = tpeel(L, L->M->type_fields[ft->count + (uint32_t)i],
+                   pn->d.oper.flags);
+        if (at) tdty(L, nb, ntp, tname, at);
+    }
+}
+
+static int tdfp(lower_t *L, const template_def_t *t, uint32_t cal, uint32_t tt,
+                binding_t *nb, int *ntpo, uint32_t *fno)
+{
+    int ntp = tparm(L, t->ast, nb);
+
+    *ntpo = ntp < 0 ? 0 : ntp;
+    *fno = tfunc(L, t);
+    if (ntp < 0 || !*fno || !texpl(L, cal, nb, ntp)) return 0;
+    tdtgt(L, *fno, nb, ntp, tt);
+    for (int i = 0; i < ntp; i++)
+        if (nb[i].is_type && !nb[i].fixed && nb[i].type == 0 && !nb[i].dflt)
+            return 0;
+    return tdflt(L, nb, ntp);
+}
+
+static int sfval(lower_t *L, uint32_t node, uint32_t tt)
 {
     uint32_t ta = ND(L, node)->first_child;
     char     cname[128];
@@ -14338,14 +14406,13 @@ static int sfval(lower_t *L, uint32_t node)
     for (int i = 0; i < L->ntemplates; i++) {
         template_def_t *t = &L->templates[i];
         binding_t      *nb = L->tnb;
-        uint32_t        fn, body, dfn = 0;
+        uint32_t        fn = 0, body;
         int             ntp = 0, onb = L->nbindings, obs = L->nbbase;
 
         if (!tmhit(L, t, cname)) continue;
-        fn = tfunc(L, t);
-        body = fn ? find_func_body(L, fn) : 0;
+        if (!tdfp(L, t, node, tt, nb, &ntp, &fn)) continue;
+        body = find_func_body(L, fn);
         if (!body || !hasl(L, body, 0, MAX_FWD)) continue;
-        if (!tdeduc(L, t->ast, node, NULL, 0, nb, &ntp, &dfn)) continue;
         if (ntp > MAX_BIND - onb) continue;
         for (int k = 0; k < ntp; k++) L->bindings[L->nbindings++] = nb[k];
         L->fdep++;
@@ -14359,6 +14426,18 @@ static int sfval(lower_t *L, uint32_t node)
         hit = 1;
     }
     return hit;
+}
+
+static uint32_t fnret(lower_t *L, uint32_t fd)
+{
+    uint32_t ts = ND(L, fd)->first_child, t;
+
+    if (!ts || ND(L, ts)->type != AST_TYPE_SPEC) return 0;
+    t = resolve_type(L, ts, ND(L, fd)->d.oper.flags, ND(L, fd)->cuda_flags);
+    if (L->rtbad || L->rtunk) t = 0;
+    L->rtbad = 0;
+    L->rtunk = 0;
+    return t;
 }
 
 static int sglc(lower_t *L, uint32_t node)
@@ -14607,7 +14686,10 @@ static void scan_launches(lower_t *L, uint32_t node)
     if (n->type == AST_CALL && sglc(L, node)) return;
     if (n->type == AST_CALL && swrap(L, node)) return;
     if (n->type == AST_CALL && sfun(L, node)) return;
-    if (n->type == AST_IDENT && sfval(L, node)) return;
+    if (n->type == AST_IDENT && sfval(L, node, 0)) return;
+    if (n->type == AST_RETURN && n->first_child
+        && ND(L, n->first_child)->type == AST_IDENT
+        && sfval(L, n->first_child, L->scnrt)) return;
 
     if (n->type == AST_BLOCK) {
         int gsv = L->nglm, fsv = L->nfnal;
@@ -15070,7 +15152,9 @@ int bir_ltu(const parser_t *P, uint32_t ast_root, bir_module_t *M,
         if (n->type == AST_FUNC_DEF && !(n->cuda_flags & (CUDA_GLOBAL|CUDA_DEVICE))) {
             /* Host function — scan for launches */
             uint32_t body = find_func_body(L, c);
+            L->scnrt = fnret(L, c);
             if (body) scan_launches(L, body);
+            L->scnrt = 0;
         }
         if (n->type == AST_TEMPLATE_INST) tixp(L, c);
     }

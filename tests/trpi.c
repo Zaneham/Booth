@@ -6525,3 +6525,20 @@ static void rpi326(void)
     PASS();
 }
 TH_REG("rpi", 326, "a template handed out as a pointer launches", rpi326)
+
+static void rpi327(void)
+{
+    CHNE(scratch("rpi327.cu",
+        "template <typename S, typename D> __global__ void k(const S *x, D *y) {\n"
+        "  y[threadIdx.x] = (D) x[threadIdx.x]; }\n"
+        "template <typename S, typename D> static void go(const void *x, D *y) {\n"
+        "  k<S><<<1, 4>>>((const S *) x, y); }\n"
+        "typedef void (*to16_t)(const void *, short *);\n"
+        "to16_t pick(int i) { return go<float>; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi327.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @k(ptr<global, f32> %0, ptr<global, i16> %1)"), NULL);
+    PASS();
+}
+TH_REG("rpi", 327, "a pointer typedef lends deduction its params", rpi327)

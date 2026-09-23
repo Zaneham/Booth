@@ -1743,8 +1743,9 @@ static void skippar(parser_t *P)
     }
 }
 
-/* T (*name)(sig) — inner stars add to *depth, and the signature is skipped
-   because Booth has no indirect calls to lower it to. 0 if abstract. */
+/* T (*name)(sig) — inner stars add to *depth, and the signature hangs off
+   the name as params, so a template handed out through the pointer can be
+   deduced against it. 0 if abstract. */
 static uint32_t fnptr(parser_t *P, int *depth)
 {
     uint32_t name = 0;
@@ -1759,7 +1760,13 @@ static uint32_t fnptr(parser_t *P, int *depth)
         advance(P);
     }
     expect(P, TOK_RPAREN);
-    if (cur_type(P) == TOK_LPAREN) skippar(P);
+    if (cur_type(P) == TOK_LPAREN) {
+        if (!name) { skippar(P); return 0; }
+        advance(P);
+        uint32_t params = parse_param_list(P);
+        if (params) add_child(P, name, params);
+        expect(P, TOK_RPAREN);
+    }
     return name;
 }
 
