@@ -14325,6 +14325,42 @@ static uint32_t lbody(const lower_t *L, uint32_t lam)
     return body;
 }
 
+static int sfval(lower_t *L, uint32_t node)
+{
+    uint32_t ta = ND(L, node)->first_child;
+    char     cname[128];
+    int      hit = 0;
+
+    if (!ta || ND(L, ta)->type != AST_TEMPLATE_ARGS) return 0;
+    if (L->fdep >= MAX_FWD) return 0;
+    get_text(L, node, cname, sizeof cname);
+    if (!find_template(L, cname)) return 0;
+    for (int i = 0; i < L->ntemplates; i++) {
+        template_def_t *t = &L->templates[i];
+        binding_t      *nb = L->tnb;
+        uint32_t        fn, body, dfn = 0;
+        int             ntp = 0, onb = L->nbindings, obs = L->nbbase;
+
+        if (!tmhit(L, t, cname)) continue;
+        fn = tfunc(L, t);
+        body = fn ? find_func_body(L, fn) : 0;
+        if (!body || !hasl(L, body, 0, MAX_FWD)) continue;
+        if (!tdeduc(L, t->ast, node, NULL, 0, nb, &ntp, &dfn)) continue;
+        if (ntp > MAX_BIND - onb) continue;
+        for (int k = 0; k < ntp; k++) L->bindings[L->nbindings++] = nb[k];
+        L->fdep++;
+        push_scope(L);
+        pscn(L, fn);
+        scan_launches(L, body);
+        pop_scope(L);
+        L->fdep--;
+        L->nbbase = obs;
+        L->nbindings = onb;
+        hit = 1;
+    }
+    return hit;
+}
+
 static int sglc(lower_t *L, uint32_t node)
 {
     uint32_t cn = ND(L, node)->first_child, lam = 0, a, body;
@@ -14571,6 +14607,7 @@ static void scan_launches(lower_t *L, uint32_t node)
     if (n->type == AST_CALL && sglc(L, node)) return;
     if (n->type == AST_CALL && swrap(L, node)) return;
     if (n->type == AST_CALL && sfun(L, node)) return;
+    if (n->type == AST_IDENT && sfval(L, node)) return;
 
     if (n->type == AST_BLOCK) {
         int gsv = L->nglm, fsv = L->nfnal;

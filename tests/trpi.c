@@ -6510,3 +6510,18 @@ static void rpi325(void)
     PASS();
 }
 TH_REG("rpi", 325, "a wrapper local Booth cannot name is skipped", rpi325)
+
+static void rpi326(void)
+{
+    CHNE(scratch("rpi326.cu",
+        "template <typename T> __global__ void k(T *o) { o[threadIdx.x] = T(1); }\n"
+        "template <typename T> static void go(T *o) { k<T><<<1, 4>>>(o); }\n"
+        "typedef void (*fn_t)(float *);\n"
+        "fn_t pick(int i) { return go<float>; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi326.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @k(ptr<global, f32>"), NULL);
+    PASS();
+}
+TH_REG("rpi", 326, "a template handed out as a pointer launches", rpi326)
