@@ -6542,3 +6542,29 @@ static void rpi327(void)
     PASS();
 }
 TH_REG("rpi", 327, "a pointer typedef lends deduction its params", rpi327)
+
+static void rpi328(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const float *x, const float *g, float *o, long long n){\n"
+        "  const bool use_g = g != nullptr; float acc = 0.0f;\n"
+        "  for (long long i = threadIdx.x; i < n; i += 32) {\n"
+        "    acc += x[i]; if (use_g) acc += g[i]; }\n"
+        "  o[threadIdx.x] = acc; }\n", "rpi328");
+    int seen = 0;
+
+    CHNE(p, NULL);
+    for (const char *q = strstr(p, "NV_SETP_NE_U64"); q; q = strstr(q + 1, "NV_SETP_NE_U64")) {
+        const char *ln = q;
+        unsigned long long lo, hi;
+
+        while (ln > p && ln[-1] != '\n') ln--;
+        CHEQ(sscanf(ln, "%*x %llx %llx", &lo, &hi), 2);
+        if ((lo & 0xFFFull) != 0x20Cull) continue;
+        CHECK(((hi >> 17) & 7ull) >= 2ull);
+        seen++;
+    }
+    CHECK(seen >= 2);
+    PASS();
+}
+TH_REG("rpi", 328, "P1 is scratch for wide compares, never a value", rpi328)

@@ -617,7 +617,7 @@ static uint32_t sapick(uint32_t w, uint32_t v)
 
 static uint32_t sappik(uint32_t v)
 {
-    for (uint32_t r = 1u; r < SA_NPR; r++)
+    for (uint32_t r = 2u; r < SA_NPR; r++)
         if (saocc(sast.pocc[r], v, 0) == 0) return r;
     return SA_NPR;
 }
@@ -3217,7 +3217,7 @@ static int sarega(void)
     }
     if (saspil() != 0) {
         if (sast.npr != 0u)
-            (void)be_fail(BC_E604, "nvptx", sast.name, (unsigned)SA_NPR - 1u);
+            (void)be_fail(BC_E604, "nvptx", sast.name, (unsigned)SA_NPR - 2u);
         else
             (void)be_fail(BC_E603, "nvptx", sast.name,
                           (unsigned)(LT_MAX_NVREG - SA_RBAS));
