@@ -6568,3 +6568,21 @@ static void rpi328(void)
     PASS();
 }
 TH_REG("rpi", 328, "P1 is scratch for wide compares, never a value", rpi328)
+
+static void rpi329(void)
+{
+    CHNE(scratch("rpi329.cu",
+        "template <typename T> using fp_t = void (*)(const void *, T *, long);\n"
+        "typedef fp_t<short> to16_t;\n"
+        "template <typename S, typename D> __global__ void k(const S *x, D *y) {\n"
+        "  y[threadIdx.x] = (D) x[threadIdx.x]; }\n"
+        "template <typename S, typename D> static void go(const void *x, D *y, long n) {\n"
+        "  k<S><<<1, 4>>>((const S *) x, y); }\n"
+        "to16_t pick(int i) { return go<float>; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi329.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @k(ptr<global, f32> %0, ptr<global, i16> %1)"), NULL);
+    PASS();
+}
+TH_REG("rpi", 329, "an alias template of a pointer keeps params", rpi329)

@@ -1558,6 +1558,8 @@ static int tpdep(const lower_t *L, uint32_t n)
 }
 
 static int altry(lower_t *L, const char *nm, uint32_t ta, uint32_t *out);
+static uint32_t fpty(lower_t *L, uint32_t name_n, uint32_t type_n, int depth,
+                     uint16_t cuda);
 static int malfnd(const lower_t *L, const char *cls, const char *nm,
                   uint32_t *ty);
 
@@ -2220,8 +2222,9 @@ static int altry(lower_t *L, const char *nm, uint32_t ta, uint32_t *out)
         for (int i = 0; i < ntp; i++) L->bindings[L->nbindings++] = nb[i];
         L->nbbase = onb;
         if (ty && ND(L, ty)->type == AST_TYPE_SPEC)
-            *out = resolve_type(L, ty, ND(L, al->use)->d.oper.flags,
-                                ND(L, al->use)->cuda_flags);
+            *out = fpty(L, ND(L, al->use)->first_child, ty,
+                        ND(L, al->use)->d.oper.flags,
+                        ND(L, al->use)->cuda_flags);
         else
             ok = 0;
         if (ok && (L->rtbad || L->rtunk)) ok = 0;
@@ -11893,12 +11896,13 @@ static void tdbad(lower_t *L, typedef_def_t *td)
     ncpy(td->snm, sizeof(td->snm), L->rtsnm);
 }
 
-static uint32_t fpty(lower_t *L, uint32_t name_n, uint32_t type_n, int depth)
+static uint32_t fpty(lower_t *L, uint32_t name_n, uint32_t type_n, int depth,
+                     uint16_t cuda)
 {
     uint32_t pv[MAX_PARM], pt[MAX_PARM], ret, t;
     int      np = collect_params(L, name_n, pv, MAX_PARM);
 
-    if (np <= 0) return resolve_type(L, type_n, depth, 0);
+    if (np <= 0) return resolve_type(L, type_n, depth, cuda);
     ret = resolve_type(L, type_n, 0, 0);
     if (L->rtbad || L->rtunk) { L->rtbad = 0; L->rtunk = 0; return 0; }
     for (int i = 0; i < np; i++) {
@@ -11974,7 +11978,7 @@ static void collect_typedef(lower_t *L, uint32_t node)
     typedef_def_t *td = &L->typedefs[L->ntypedefs++];
     memset(td, 0, sizeof(*td));
     get_text(L, name_n, td->name, sizeof(td->name));
-    td->bir_type = fpty(L, name_n, type_n, ND(L, node)->d.oper.flags);
+    td->bir_type = fpty(L, name_n, type_n, ND(L, node)->d.oper.flags, 0);
     tdbad(L, td);
 }
 
@@ -11998,8 +12002,8 @@ static int ureg(lower_t *L, uint32_t node)
     }
     memset(td, 0, sizeof(*td));
     ncpy(td->name, sizeof(td->name), nm);
-    td->bir_type = resolve_type(L, ty_n, ND(L, node)->d.oper.flags,
-                                ND(L, node)->cuda_flags);
+    td->bir_type = fpty(L, nm_n, ty_n, ND(L, node)->d.oper.flags,
+                        ND(L, node)->cuda_flags);
     tdbad(L, td);
     L->rtbad = 0;
     return 1;

@@ -541,6 +541,7 @@ static uint32_t parse_stmt(parser_t *P);
 static uint32_t parse_type_spec(parser_t *P, uint16_t *quals, uint16_t *cuda);
 static uint32_t parse_decl_or_stmt(parser_t *P);
 static uint32_t fnptr(parser_t *P, int *depth);
+static uint32_t fnpta(parser_t *P, int *depth, uint32_t owner);
 static int is_fnptr(parser_t *P);
 static uint32_t tnargs(parser_t *P);
 static uint32_t parse_param_list(parser_t *P);
@@ -1748,6 +1749,11 @@ static void skippar(parser_t *P)
    deduced against it. 0 if abstract. */
 static uint32_t fnptr(parser_t *P, int *depth)
 {
+    return fnpta(P, depth, 0);
+}
+
+static uint32_t fnpta(parser_t *P, int *depth, uint32_t owner)
+{
     uint32_t name = 0;
     advance(P);                                     /* ( */
     while (cur_type(P) == TOK_STAR) { advance(P); (*depth)++; }
@@ -1761,10 +1767,11 @@ static uint32_t fnptr(parser_t *P, int *depth)
     }
     expect(P, TOK_RPAREN);
     if (cur_type(P) == TOK_LPAREN) {
-        if (!name) { skippar(P); return 0; }
+        uint32_t at = name ? name : owner;
+        if (!at) { skippar(P); return 0; }
         advance(P);
         uint32_t params = parse_param_list(P);
-        if (params) add_child(P, name, params);
+        if (params) add_child(P, at, params);
         expect(P, TOK_RPAREN);
     }
     return name;
@@ -2259,6 +2266,7 @@ static uint32_t parse_declaration(parser_t *P)
                 int pd2 = 0;
                 uint32_t alias_type = parse_type_spec(P, &q2, &c2);
                 while (cur_type(P) == TOK_STAR) { advance(P); pd2++; }
+                if (is_fnptr(P)) (void)fnpta(P, &pd2, name);
                 P->nodes[u].d.oper.flags = pd2;
                 P->nodes[u].cuda_flags = c2;
                 add_child(P, u, alias_type);
