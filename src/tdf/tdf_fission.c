@@ -29,6 +29,37 @@
  * originally produced the address. Returns the parameter index or
  * -1 if the trail goes cold.
  */
+static uint32_t alsrc(const bir_module_t *bir, uint32_t slot)
+{
+    uint32_t hit = BIR_VAL_NONE;
+
+    for (uint32_t i = 0; i < bir->num_insts; i++) {
+        const bir_inst_t *I = &bir->insts[i];
+
+        if (I->op != BIR_STORE || I->operands[1] != slot) continue;
+        if (hit != BIR_VAL_NONE) return BIR_VAL_NONE;
+        hit = I->operands[0];
+    }
+    return hit;
+}
+
+static int isloc(const bir_module_t *bir, uint32_t val)
+{
+    int guard = FS_TRACE_GUARD;
+
+    while (guard-- > 0) {
+        const bir_inst_t *I;
+
+        if (val == BIR_VAL_NONE || BIR_VAL_IS_CONST(val)) return 0;
+        if (BIR_VAL_INDEX(val) >= bir->num_insts) return 0;
+        I = &bir->insts[BIR_VAL_INDEX(val)];
+        if (I->op == BIR_ALLOCA) return 1;
+        if (I->op != BIR_GEP && I->op != BIR_BITCAST) return 0;
+        val = I->operands[0];
+    }
+    return 0;
+}
+
 static int trace_to_param(const bir_module_t *bir, uint32_t val)
 {
     int guard = FS_TRACE_GUARD;
@@ -48,6 +79,10 @@ static int trace_to_param(const bir_module_t *bir, uint32_t val)
         }
         if (I->op == BIR_LOAD) {
             val = I->operands[0];
+            continue;
+        }
+        if (I->op == BIR_ALLOCA) {
+            val = alsrc(bir, val);
             continue;
         }
         return -1;
@@ -142,11 +177,11 @@ static int classify_params(const bir_module_t *bir, uint32_t func_idx,
                 return BC_ERR_TDF;
             }
 
-            if (I->op == BIR_LOAD) {
+            if (I->op == BIR_LOAD && !isloc(bir, I->operands[0])) {
                 int pi = trace_to_param(bir, I->operands[0]);
                 if (pi >= 0 && (uint32_t)pi < nparams)
                     params[(uint32_t)pi].loaded = 1;
-            } else if (I->op == BIR_STORE) {
+            } else if (I->op == BIR_STORE && !isloc(bir, I->operands[1])) {
                 int pi = trace_to_param(bir, I->operands[1]);
                 if (pi >= 0 && (uint32_t)pi < nparams)
                     params[(uint32_t)pi].stored = 1;

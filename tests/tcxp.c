@@ -616,3 +616,53 @@ static void cxp43(void)
 }
 TH_REG("cxp", 43, "a loop in a constexpr body is refused", cxp43)
 
+static void cxp44(void)
+{
+    CHEQ(cxrun("struct t4 { static constexpr int ne = 4; half2 x[ne]; };\n"
+               "struct t8 { static constexpr int ne = 8; half2 x[ne]; };\n"
+               "__global__ void k(int *o){\n"
+               " if constexpr (std::is_same_v<decltype(t4::x), half2[4]>)"
+               " o[0] = 11; else o[0] = 22;\n"
+               " if constexpr (std::is_same_v<decltype(t4::x), half2[8]>)"
+               " o[1] = 33; else o[1] = 44;\n"
+               " if constexpr (std::is_same_v<decltype(t8::x), half2[8]>)"
+               " o[2] = 55; else o[2] = 66; }\n", "--ir"), 0);
+    CHNE(strstr(obuf, "store i32 11"), NULL);
+    CHNE(strstr(obuf, "store i32 44"), NULL);
+    CHNE(strstr(obuf, "store i32 55"), NULL);
+    CHEQ(strstr(obuf, "store i32 22"), NULL);
+    CHEQ(strstr(obuf, "store i32 33"), NULL);
+    CHEQ(strstr(obuf, "store i32 66"), NULL);
+    PASS();
+}
+TH_REG("cxp", 44, "an array extent is part of type identity", cxp44)
+
+static void cxp45(void)
+{
+    CHEQ(cxrun("struct t4 { static constexpr int ne = 4; half2 x[ne]; };\n"
+               "__global__ void k(int *o){\n"
+               " if constexpr (std::is_same_v<decltype(t4::x), half2[t4::ne]>)"
+               " o[0] = 11; else o[0] = 22;\n"
+               " if constexpr (std::is_same_v<decltype(t4::x), float[t4::ne]>)"
+               " o[1] = 33; else o[1] = 44; }\n", "--ir"), 0);
+    CHNE(strstr(obuf, "store i32 11"), NULL);
+    CHNE(strstr(obuf, "store i32 44"), NULL);
+    CHEQ(strstr(obuf, "store i32 22"), NULL);
+    CHEQ(strstr(obuf, "store i32 33"), NULL);
+    PASS();
+}
+TH_REG("cxp", 45, "a dependent extent folds before comparison", cxp45)
+
+static void cxp46(void)
+{
+    CHNE(cxrun("struct t4 { static constexpr int ne = 4; half2 x[ne]; };\n"
+               "__global__ void k(int *o){\n"
+               " if constexpr (std::is_same_v<decltype(t4::x), half2[]>)"
+               " o[0] = 11; else o[0] = 22; }\n", "--ir"), 0);
+    CHNE(strstr(obuf, "E158"), NULL);
+    CHEQ(strstr(obuf, "store i32 11"), NULL);
+    CHEQ(strstr(obuf, "store i32 22"), NULL);
+    PASS();
+}
+TH_REG("cxp", 46, "an extent that will not fold is refused", cxp46)
+

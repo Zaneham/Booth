@@ -92,11 +92,53 @@ static cf_t G;
  * If foldable, sets S->val_rewrite[ii] and returns 1.
  * Otherwise returns 0.
  */
-static int try_fold(cf_t *S, uint32_t ii)
+static void cfpe(bir_module_t *M, uint32_t from, uint32_t b)
+{
+    const bir_block_t *B;
+
+    if (b >= M->num_blocks) return;
+    B = &M->blocks[b];
+    for (uint32_t j = 0; j < B->num_insts; j++) {
+        bir_inst_t *I = &M->insts[B->first_inst + j];
+        uint32_t w = 0, k, n;
+        if (I->op != BIR_PHI) continue;
+        if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
+            uint32_t st = I->operands[0];
+            n = I->operands[1];
+            for (k = 0; k + 1 < n; k += 2) {
+                if (st + k + 1 >= M->num_extra_ops) break;
+                if (M->extra_operands[st + k] == from) continue;
+                M->extra_operands[st + w]     = M->extra_operands[st + k];
+                M->extra_operands[st + w + 1] = M->extra_operands[st + k + 1];
+                w += 2;
+            }
+            I->operands[1] = w;
+        } else {
+            n = I->num_operands;
+            for (k = 0; k + 1 < n; k += 2) {
+                if (I->operands[k] == from) continue;
+                I->operands[w]     = I->operands[k];
+                I->operands[w + 1] = I->operands[k + 1];
+                w += 2;
+            }
+            I->num_operands = (uint8_t)w;
+        }
+    }
+}
+
+static int try_fold(cf_t *S, uint32_t ii, uint32_t ab)
 {
     bir_module_t *M = S->M;
     bir_inst_t *I = &M->insts[ii];
     uint16_t op = I->op;
+
+    if (op == BIR_PHI) {
+        uint32_t n = (I->num_operands == BIR_OPERANDS_OVERFLOW)
+                   ? I->operands[1] : I->num_operands;
+        if (n != 2) return 0;
+        S->val_rewrite[ii] = bir_oper(M, I, 1u);
+        return 1;
+    }
 
     /* SELECT with constant condition — propagate chosen operand */
     if (op == BIR_SELECT && I->num_operands >= 3) {
@@ -107,6 +149,26 @@ static int try_fold(cf_t *S, uint32_t ii)
         const bir_const_t *c = &M->consts[ci];
         if (c->kind != BIR_CONST_INT) return 0;
         S->val_rewrite[ii] = c->d.ival ? I->operands[1] : I->operands[2];
+        return 1;
+    }
+
+    if (op == BIR_BR_COND && I->num_operands >= 3) {
+        uint32_t cond = I->operands[0];
+        if (!BIR_VAL_IS_CONST(cond)) return 0;
+        uint32_t ci = BIR_VAL_INDEX(cond);
+        if (ci >= M->num_consts) return 0;
+        const bir_const_t *c = &M->consts[ci];
+        uint32_t keep, lost;
+        int taken;
+        if (c->kind == BIR_CONST_INT)       taken = c->d.ival != 0;
+        else if (c->kind == BIR_CONST_ZERO) taken = 0;
+        else return 0;
+        keep = taken ? I->operands[1] : I->operands[2];
+        lost = taken ? I->operands[2] : I->operands[1];
+        I->operands[0] = keep;
+        I->op = BIR_BR;
+        I->num_operands = 1;
+        if (lost != keep) cfpe(M, ab, lost);
         return 1;
     }
 
@@ -366,7 +428,11 @@ static int cf_run_func(cf_t *S, uint32_t fi)
     for (uint32_t i = base; i < end; i++)
         S->val_rewrite[i] = BIR_VAL_NONE;
 
-    for (uint32_t i = base; i < end; i++) {
+    for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
+    uint32_t ab = F->first_block + bi;
+    const bir_block_t *BB = &M->blocks[ab];
+    for (uint32_t bj = 0; bj < BB->num_insts; bj++) {
+        uint32_t i = BB->first_inst + bj;
         bir_inst_t *I = &M->insts[i];
 
         /* Rewrite operands through val_rewrite[] */
@@ -390,7 +456,8 @@ static int cf_run_func(cf_t *S, uint32_t fi)
         }
 
         /* Try to fold */
-        changes += try_fold(S, i);
+        changes += try_fold(S, i, ab);
+    }
     }
 
     return changes;

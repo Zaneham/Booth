@@ -32,6 +32,19 @@ The compiled binary is `kath` (after Kathleen Booth); the project is Booth. They
 ./kath build <file> -o out.o      # compile only
 ./kath doctor                     # report devices and toolchain, then self-test
 
+# Compile a .cu the way nvcc would: device code into a fatbin, host code
+# through your C++ compiler, one object out
+./kath cuda -c -fPIC kernel.cu -o kernel.o
+
+# When the cubin backend refuses a kernel, that unit's fatbin carries PTX
+# alone and the fallback says so on stderr. On by default, and Latimer runs
+# PTX where it finds no SASS.
+./kath cuda -c kernel.cu -o kernel.o --ptx-fallback
+
+# Turn it off and a refused unit is a hard failure again. That is how you
+# enumerate every gap in the SASS backend across a whole build.
+./kath cuda -c kernel.cu -o kernel.o --no-ptx-fallback
+
 # Compile to AMD GPU binary (RDNA 3, default)
 ./kath --amdgpu-bin kernel.cu -o kernel.hsaco
 

@@ -41,6 +41,7 @@ E050=#include: cannot read '%s'
 E051=unknown directive: #%s
 E052=unterminated #if/#ifdef (missing %d #endif)
 E053=preprocessor output overflow (max %d bytes)
+E054=#include: cannot find '%s' on any search path
 
 # ---- Sema (E070-E099) ----
 E070=arrow on non-pointer
@@ -185,7 +186,7 @@ E581=%s: a call names function %u, which is not in the module
 E582=%s: a call argument of type %s needs a register pair or a reference, which Booth does not lay down
 E583=%s: a call returning %s needs a register pair or a reference, which Booth does not lay down
 E584=%s: a call carries an operand list the emitter cannot read
-E600=%s: a cubin holds one kernel and this module has %u
+E600=%s: a cubin holds at most %u kernels and this module has %u
 E601=%s: %s has no SASS form the backend can encode
 E602=%s: %s needs %u basic blocks and the SASS control-flow pass holds %u
 E603=%s: %s needs more than the %u registers the SASS backend allocates
@@ -197,6 +198,10 @@ E608=%s: the cubin for %s did not assemble
 E609=%s: %s takes an operand the SASS backend has no form for
 E610=%s: special register %u has no SASS form
 E611=%s: %s has an address or width the SASS backend has no form for
+E620=%s: '%s' is launched here and no kernel of that name reached the cubin
+E621=%s: '%s' takes a parameter the host stub cannot carry, so no launch for it can be written
+E622=%s: the host registration table holds at most %u kernels and this module has more
+E623=%s: the host compiler refused the emitted source (exit %d)
 E640='%s' needs a PTX form no Booth backend emits
 E660='%s' has more initialisers than it has elements
 E661=Booth cannot lay this initialiser down: %s

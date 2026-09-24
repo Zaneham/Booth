@@ -69,6 +69,7 @@ typedef enum {
     AST_NAMESPACE,
     AST_TEMPLATE_DECL,
     AST_TEMPLATE_PARAM,
+    AST_TEMPLATE_INST,
 
     AST_BASE,
 
@@ -112,6 +113,8 @@ typedef enum {
 #define QUAL_PTR1       0x4000
 #define QUAL_PTR2       0x8000
 
+#define TS_AUNS         0xFFFFFFFFu
+
 typedef enum {
     TYPE_VOID, TYPE_BOOL, TYPE_CHAR, TYPE_SHORT, TYPE_INT, TYPE_LONG,
     TYPE_LLONG, TYPE_FLOAT, TYPE_DOUBLE, TYPE_LDOUBLE,
@@ -134,6 +137,7 @@ typedef struct {
     uint32_t    launch_bounds_max;  /* 0 = not set. Outside union to avoid the oper.flags conflict. */
     uint32_t    launch_bounds_min;  /* 0 = not set */
     uint32_t    algn;
+    uint32_t    arrx;
     union {
         int64_t     ival;
         double      fval;

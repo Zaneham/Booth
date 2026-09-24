@@ -151,3 +151,20 @@ static void cfd07(void)
     PASS();
 }
 TH_REG("cfd", 7, "subtraction folds in order", cfd07)
+
+static void cfd08(void)
+{
+    int rc = th_run(BC_BIN " --ir tests/cf_dead.cu", obuf, TH_BUFSZ);
+    CHEQ(rc, 0);
+    const char *fn = strstr(obuf, "cf_deadarm");
+    CHECK(fn != NULL);
+    const char *body = strchr(fn, '\n');
+    CHECK(body != NULL);
+    const char *fn_end = strstr(body, "\n}");
+    CHECK(fn_end != NULL);
+    CHECK(strnstr_range(body, fn_end, "br_cond") == NULL);
+    CHECK(strnstr_range(body, fn_end, "store i32 99") == NULL);
+    CHECK(strnstr_range(body, fn_end, "unreachable") != NULL);
+    PASS();
+}
+TH_REG("cfd", 8, "a branch on two literals drops its dead arm", cfd08)

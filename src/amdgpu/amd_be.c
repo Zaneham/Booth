@@ -180,7 +180,7 @@ const be_desc_t be_amd = {
     .feats     = BE_F_SIMT | BE_F_ATOMIC | BE_F_SHARED | BE_F_WARP
                | BE_F_BARRIER | BE_F_DIV | BE_F_SCRATCH | BE_F_TRANSC
                | BE_F_F16 | BE_F_F64 | BE_F_MFMA | BE_F_NOCALL
-               | BE_F_BYTES,
+               | BE_F_BYTES | BE_F_REACH,
     .opts_size = sizeof(amd_opts_t),
     .flags     = amd_flags,
     .parse     = amd_parse,

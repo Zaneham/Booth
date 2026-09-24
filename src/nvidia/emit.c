@@ -926,9 +926,14 @@ static void em_inst(nv_module_t *nv, const nv_minst_t *I)
         case NV_LD_PARAM_B16: tsuf = ".b16"; break;
         default:              tsuf = ".u32"; break;
         }
+        int32_t po = (I->num_uses >= 2 && I->ops[2].kind == NV_MOP_IMM)
+                     ? I->ops[2].imm : 0;
         nv_apnd(nv, "ld.param%s ", tsuf);
-        em_opnd(nv, &I->ops[0]); nv_apnd(nv, ", [param%d]",
-                I->ops[1].imm);
+        em_opnd(nv, &I->ops[0]);
+        if (po != 0)
+            nv_apnd(nv, ", [param%d+%d]", I->ops[1].imm, po);
+        else
+            nv_apnd(nv, ", [param%d]", I->ops[1].imm);
         break;
     }
 
@@ -1464,10 +1469,17 @@ static void em_fhdr(nv_module_t *nv, const nv_mfunc_t *MF)
     }
 
     for (uint32_t pi = 0; pi < MF->num_params; pi++) {
-        const char *tsuf = MF->is_kern ? rf_param(MF->params[pi].rfile)
-                                       : rf_bits(MF->params[pi].rfile);
+        const nv_param_t *P = &MF->params[pi];
+
         if (pi > 0) nv_apnd(nv, ",\n");
-        nv_apnd(nv, "\t.param %s param%u", tsuf, pi);
+        if (NV_PAGG(P)) {
+            nv_apnd(nv, "\t.param .align %u .b8 param%u[%u]",
+                    (unsigned)(P->algn ? P->algn : 4u), pi,
+                    (unsigned)P->size);
+            continue;
+        }
+        nv_apnd(nv, "\t.param %s param%u",
+                MF->is_kern ? rf_param(P->rfile) : rf_bits(P->rfile), pi);
     }
     if (nv->bkhit && MF->is_kern)
         nv_apnd(nv, ",\n\t.param .u64 __bkhit");

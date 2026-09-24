@@ -733,8 +733,9 @@ static int mt_stmt(metal_module_t *mm, uint32_t gi)
     case BIR_BARRIER:
     case BIR_BARRIER_GROUP:
         if (!mt_ind(mm)) return 0;
-        return mt_wstr(mm,
-            "threadgroup_barrier(mem_flags::mem_threadgroup);\n");
+        return mt_wstr(mm, I->subop
+            ? "simdgroup_barrier(mem_flags::mem_threadgroup);\n"
+            : "threadgroup_barrier(mem_flags::mem_threadgroup);\n");
 
     case BIR_SHARED_ALLOC:
     case BIR_ALLOCA: {

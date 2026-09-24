@@ -126,6 +126,7 @@ static const tfam_t fam_order[] = {
     { "bkd", "tbackend.c",  "backend registry",         2 },
     { "cmp", "tcomp.c",     "compile matrix",           2 },
     { "wsz", "twarpsize.c", "warp size",                2 },
+    { "hst", "thost.c",     "host side",                2 },
 
     { "ord", "tordr.c",     "harness ordering",         2 },
     { "ocm", "tocm.c",      "OCaml frontend",           2 },

@@ -61,6 +61,7 @@ typedef enum {
  * calls and are left alone. */
 #define BE_F_NOCALL     (1u << 14)
 #define BE_F_BYTES      (1u << 15)  /* materialises byte-initialised globals */
+#define BE_F_REACH      (1u << 16)
 
 /* ---- Options storage ----
  * Each backend gets one fixed slot for whatever its flags set. Sized at

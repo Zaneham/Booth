@@ -23,7 +23,7 @@ CFLAGS  = -std=c99 -MMD -MP -Wall -Wextra -pedantic -O2 \
           -Wdouble-promotion -Wswitch-enum -Wwrite-strings \
           -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE $(CF_PROT) \
           $(GCC_ONLY) \
-          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec -Iruntime/include \
+          -Isrc -Isrc/fe -Isrc/ir -Isrc/tdf -Isrc/backend -Isrc/amdgpu -Isrc/tensix -Isrc/nvidia -Isrc/metal -Isrc/intel -Isrc/triton -Isrc/cpu -Isrc/build -Isrc/exec -Isrc/host -Iruntime/include \
           $(COVFLAGS)
 LDFLAGS = -pie
 LIBS    = -lm
@@ -78,6 +78,7 @@ SOURCES = src/main.c src/kauri_impl.c \
           src/triton/lex.c src/triton/parse.c src/triton/sema.c src/triton/lower.c \
           src/mlir/mlir_fe.c src/mlir/lower.c \
           src/exec/execs.c src/exec/cpu_exec.c src/exec/booth_run.c src/exec/verbs.c \
+          src/host/hgen.c \
           runtime/host/cuda/nv_rt.c runtime/host/cuda/nv_exec.c
 
 # Certik's pure-C MLIR reader, vendored under src/mlir/vendor. It carries his
@@ -179,7 +180,7 @@ TSRC    = tests/tmain.c tests/tsmoke.c tests/tcomp.c tests/tenc.c \
           tests/ttpl.c \
           tests/tvec.c \
           tests/tref.c tests/ttyc.c tests/tcpp.c \
-          tests/tmof.c tests/tasm.c
+          tests/tmof.c tests/tasm.c tests/thost.c
 
 TOBJS   = $(TSRC:%.c=$(OBJDIR)/%.o)
 COBJS   = $(OBJDIR)/src/kauri_impl.o $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir_print.o $(OBJDIR)/src/ir/bir_lower.o $(OBJDIR)/src/ir/bir_mem2reg.o $(OBJDIR)/src/ir/bir_cfold.o $(OBJDIR)/src/ir/bir_dce.o $(OBJDIR)/src/ir/bir_struct.o $(OBJDIR)/src/ir/bir_insert.o $(OBJDIR)/src/ir/bir_sroa.o $(OBJDIR)/src/ir/bir_inline.o \
@@ -190,6 +191,7 @@ COBJS   = $(OBJDIR)/src/kauri_impl.o $(OBJDIR)/src/ir/bir.o $(OBJDIR)/src/ir/bir
           $(OBJDIR)/src/fe/bc_err.o $(OBJDIR)/src/fe/lexer.o $(OBJDIR)/src/fe/parser.o $(OBJDIR)/src/fe/preproc.o $(OBJDIR)/src/fe/sema.o \
           $(OBJDIR)/runtime/host/bc_abend.o $(HOSTRT) \
           $(OBJDIR)/src/backend/backends.o \
+          $(OBJDIR)/src/host/hgen.o \
           $(OBJDIR)/src/amdgpu/amd_be.o $(OBJDIR)/src/nvidia/nv_be.o \
           $(OBJDIR)/src/tensix/tensix_be.o $(OBJDIR)/src/cpu/cpu_be.o \
           $(OBJDIR)/src/metal/metal_be.o $(OBJDIR)/src/intel/intel_be.o \

@@ -109,17 +109,18 @@ static void vec05(void)
 }
 TH_REG("vec", 5, "__half22float2 widens both lanes", vec05)
 
-/* ---- Alignment, which BIR's type record cannot carry ---- */
+/* ---- Alignment, which BIR's type record now carries ---- */
 
 static void vec06(void)
 {
-    CHNE(vcrun("struct s { char c; float4 v; };\n"
-               "__global__ void k(float *o){ struct s q; q.v.x = 1.0f;"
-               " o[0] = q.v.x; }\n", "--ir"), 0);
-    CHNE(strstr(obuf, "E142"), NULL);
+    CHEQ(vcrun("struct s { char c; float4 v; };\n"
+               "__global__ void k(unsigned *o){ struct s q; q.v.x = 1.0f;"
+               " o[0] = (unsigned)sizeof(s); }\n", "--ir"), 0);
+    CHEQ(strstr(obuf, "E142"), NULL);
+    CHNE(strstr(obuf, "store i32 32"), NULL);
     PASS();
 }
-TH_REG("vec", 6, "float4 after a char refuses", vec06)
+TH_REG("vec", 6, "float4 after a char lands on sixteen", vec06)
 
 static void vec07(void)
 {

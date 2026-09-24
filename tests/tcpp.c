@@ -286,14 +286,14 @@ TH_REG("cpp", 20, "a macro definition too wide to hold says so", cpp20)
 
 static void cpp15(void)
 {
-    CHNE(cprun("template<typename T> __device__ T id(T v){ return v; }\n"
+    CHEQ(cprun("template<typename T> __device__ T id(T v){ return v; }\n"
                "template __device__ float id<float>(float v);\n",
-               "--parse"), 0);
-    CHNE(strstr(obuf, "E175"), NULL);
-    CHEQ(strstr(obuf, "E020"), NULL);
+               "--ir"), 0);
+    CHNE(strstr(obuf, "@id"), NULL);
+    CHEQ(strstr(obuf, "E175"), NULL);
     PASS();
 }
-TH_REG("cpp", 15, "an explicit instantiation is refused by name", cpp15)
+TH_REG("cpp", 15, "an explicit instantiation emits the function", cpp15)
 
 static void cpp16(void)
 {
@@ -345,10 +345,120 @@ static void cpp30(void)
                "__global__ void k(int *o, int n){\n"
                "  auto f = [=](int x) -> int { return x + n; };\n"
                "  o[0] = ap(f); }\n", "--ir"), 0);
-    CHNE(strstr(obuf, "E170"), NULL);
+    CHEQ(strstr(obuf, "E170"), NULL);
     PASS();
 }
-TH_REG("cpp", 30, "a closure as a value is refused, not guessed", cpp30)
+TH_REG("cpp", 30, "a closure the template cannot bind refuses", cpp30)
+
+/* ---- Calling an object ---- */
+
+static void cpp44(void)
+{
+    CHEQ(cpptx("struct S { int p;\n"
+               "  __device__ int operator()(int x) const { return x + 1000; }\n"
+               "};\n"
+               "__global__ void k(int *o){ S s; s.p = 0; o[0] = s(1); }\n"), 0);
+    CHNE(strstr(code, "1001"), NULL);
+    PASS();
+}
+TH_REG("cpp", 44, "a named object calls its operator()", cpp44)
+
+static void cpp45(void)
+{
+    CHEQ(cprun("struct S { int p;\n"
+               "  __device__ int operator()(int x) const { return x + 7; }\n"
+               "};\n"
+               "__global__ void k(int *o){ o[0] = S{0}(1); }\n", "--ir"), 0);
+    CHNE(strstr(obuf, "@S$operator()"), NULL);
+    PASS();
+}
+TH_REG("cpp", 45, "a temporary calls its operator()", cpp45)
+
+static void cpp46(void)
+{
+    CHEQ(cprun("struct S { int p;\n"
+               "  __device__ int operator()(int x) const { return x + 5; }\n"
+               "};\n"
+               "template<typename F> __device__ int ap(const F &f)"
+               "{ return f(1); }\n"
+               "__global__ void k(int *o){ S s; s.p = 0; o[0] = ap(s); }\n",
+               "--ir"), 0);
+    PASS();
+}
+TH_REG("cpp", 46, "an object called through a parameter", cpp46)
+
+static void cpp47(void)
+{
+    CHEQ(cprun("template<int n> struct U {\n"
+               "  __device__ int operator()(int x) const { return x + n; }\n"
+               "};\n"
+               "__global__ void k(int *o){ U<3> u; o[0] = u(1); }\n",
+               "--ir"), 0);
+    PASS();
+}
+TH_REG("cpp", 47, "a class template instance is callable", cpp47)
+
+static void cpp48(void)
+{
+    CHEQ(cpptx("struct S { int v;\n"
+               "  __device__ int operator()(int x) { return x + 1000; }\n"
+               "  __device__ int operator()(int x) const { return x + 2000; }\n"
+               "};\n"
+               "__global__ void k(int *o){ S s; s.v = 0; o[0] = s(1); }\n"), 0);
+    CHNE(strstr(code, "1001"), NULL);
+    CHEQ(strstr(code, "2001"), NULL);
+    PASS();
+}
+TH_REG("cpp", 48, "a non-const object takes the non-const one", cpp48)
+
+static void cpp49(void)
+{
+    CHEQ(cpptx("struct S { int v;\n"
+               "  __device__ int operator()(int x) { return x + 1000; }\n"
+               "  __device__ int operator()(int x) const { return x + 2000; }\n"
+               "};\n"
+               "__global__ void k(int *o){ S s; s.v = 0; const S c = s;\n"
+               "  o[0] = c(1); }\n"), 0);
+    CHNE(strstr(code, "2001"), NULL);
+    CHEQ(strstr(code, "1001"), NULL);
+    PASS();
+}
+TH_REG("cpp", 49, "a const object takes the const one", cpp49)
+
+static void cpp50(void)
+{
+    CHNE(cprun("struct S {\n"
+               "  __device__ int operator()(float x) { return (int)x + 1; }\n"
+               "  __device__ int operator()(double x) { return (int)x + 2; }\n"
+               "};\n"
+               "__global__ void k(int *o){ S s; o[0] = s(1); }\n", "--ir"), 0);
+    CHNE(strstr(obuf, "E156"), NULL);
+    CHNE(strstr(obuf, "S$operator()"), NULL);
+    PASS();
+}
+TH_REG("cpp", 50, "an even pair of operator() refuses by name", cpp50)
+
+static void cpp51(void)
+{
+    CHNE(cprun("struct S {\n"
+               "  template<typename T> __device__ T operator()(T x) const"
+               " { return x + 1; }\n"
+               "};\n"
+               "__global__ void k(int *o){ S s; o[0] = s(1); }\n", "--ir"), 0);
+    CHNE(strstr(obuf, "member template"), NULL);
+    PASS();
+}
+TH_REG("cpp", 51, "operator() as a member template says so", cpp51)
+
+static void cpp52(void)
+{
+    CHNE(cprun("struct S { int p; };\n"
+               "__global__ void k(int *o){ S s; s.p = 1; o[0] = s(1); }\n",
+               "--ir"), 0);
+    CHNE(strstr(obuf, "S$operator()"), NULL);
+    PASS();
+}
+TH_REG("cpp", 52, "an object with no operator() names it", cpp52)
 
 static void cpp21(void)
 {
