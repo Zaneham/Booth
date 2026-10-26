@@ -116,7 +116,6 @@ static const tfam_t fam_order[] = {
 
     { "tri", "ttriton.c",   "Triton frontend",          2 },
     { "mma", "tmma.c",      "warp matrix multiply",     2 },
-    { "mlr", "tmlir.c",     "MLIR reader",              2 },
     { "bir", "tbir.c",      "BIR text frontend",        2 },
 
     { "sfp", "tsoft_fp.c",  "soft float",               2 },
@@ -126,6 +125,7 @@ static const tfam_t fam_order[] = {
     { "bkd", "tbackend.c",  "backend registry",         2 },
     { "cmp", "tcomp.c",     "compile matrix",           2 },
     { "wsz", "twarpsize.c", "warp size",                2 },
+    { "hst", "thost.c",     "host side",                2 },
 
     { "ord", "tordr.c",     "harness ordering",         2 },
     { "ocm", "tocm.c",      "OCaml frontend",           2 },

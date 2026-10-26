@@ -17,9 +17,7 @@
 #include "metal.h"
 #include "intel.h"
 #include "triton.h"
-#include "mlir/mlir_fe.h"
 #include "bir_parse.h"
-#include "mlir/mlir_lower.h"
 #include "tdf.h"
 #include "rv_buf.h"
 #include "rv_elf.h"
@@ -29,6 +27,7 @@
 #include "backend.h"
 #include "backend_cfg.h"
 #include "exec/front.h"
+#include "hgen.h"
 #include <stdlib.h>
 
 static char       source_buf[BC_MAX_SOURCE];
@@ -36,6 +35,8 @@ static char       pp_out_buf[BC_MAX_SOURCE];  /* preprocessor output */
 static token_t    token_buf[BC_MAX_TOKENS];
 static ast_node_t node_buf[BC_MAX_NODES];
 static bir_module_t *bir_module; /* heap-allocated (~11 MB) */
+static uint32_t   g_ntok;
+static uint32_t   g_slen;
 
 /* kath run wants a kernel name, and only the built module knows one */
 static kath_out_t *g_kout;
@@ -129,7 +130,7 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     {
         const be_desc_t *b = be_active();
         if (b != NULL && (b->feats & BE_F_NOCALL)) {
-            int irc = bir_inline_device(bir);
+            int irc = bir_inline_device(bir, (b->feats & BE_F_REACH) != 0);
             if (irc != BC_OK) { (void)bir_pchk(bir, "device inlining"); return irc; }
         }
     }
@@ -137,6 +138,7 @@ static int run_bir_backends(bir_module_t *bir, const backend_cfg_t *cfg)
     /* Optimisation passes: same shape regardless of frontend. */
     if (!cfg->no_sroa)    bir_sroa(bir);
     if (!cfg->no_mem2reg) bir_mem2reg(bir);
+    (void)bir_asfix(bir);
     if (!cfg->no_cfold)   bir_cfold(bir);
     if (!cfg->no_dce)     bir_dce(bir);
 
@@ -240,6 +242,7 @@ static void dump_tokens(const lexer_t *L)
 
 typedef struct {
     int mode_pp, mode_lex, mode_parse, mode_sema, mode_hip, no_pp;
+    int hostp;
     int want_ast, want_sema, want_bir;
     const char *const *incs; int nincs;
     const char *const *defs; int ndefs;
@@ -265,6 +268,14 @@ static int comp_tu(const char *file, const tuc_t *c)
             return BC_ERR_IO;
         }
         pp_init(pp, source_buf, src_len, pp_out_buf, BC_MAX_SOURCE, file);
+
+        if (c->hostp) {
+            pp_host(pp);
+        } else {
+            pp_define(pp, "__CUDA_ARCH__", "1100");
+            pp_define(pp, "__CUDACC__", "1");
+        }
+        pp_define(pp, "CUDART_VERSION", "11020");
 
         if (c->mode_hip) {
             pp_define(pp, "__HIPCC__", "1");
@@ -323,6 +334,9 @@ static int comp_tu(const char *file, const tuc_t *c)
     int rc = lexer_tokenize(&L);
 
     bc_diag(file, lex_src, L.errors, L.num_errors);
+
+    g_ntok = L.num_tokens;
+    g_slen = lex_len;
 
     if (c->mode_lex) {
         dump_tokens(&L);
@@ -415,6 +429,10 @@ static void usage(const char *prog)
         "  --sema        Run semantic analysis and dump types\n"
         "  --pp          Preprocess only and print result\n"
         "  --no-pp       Skip preprocessor\n"
+        "  --cuda-host   Write the host half of the program back out: device\n"
+        "                definitions removed, each <<< >>> through the CUDA\n"
+        "                registration ABI. Pair with --fatbin.\n"
+        "  --fatbin <f>  The fatbin --cuda-host registers from a constructor\n"
         "  -I <dir>      Add include search path\n"
         "  -D <name[=val]> Define a preprocessor macro\n"
         "  --amdgpu      Compile to AMDGCN assembly (default: gfx1100)\n"
@@ -436,9 +454,12 @@ static void usage(const char *prog)
         "  --nvidia-ptx  Compile to NVIDIA PTX (sm_89), for the driver to JIT\n"
         "  --nvidia-sass Compile to a SASS listing (sm_89), no NVIDIA tool involved\n"
         "  --nvidia-cubin Compile to a loadable cubin (sm_89), no NVIDIA tool involved\n"
+        "  --ptx-fallback  kath cuda: when the cubin backend refuses a unit, let\n"
+        "                its fatbin carry PTX alone and say so. On by default\n"
+        "  --no-ptx-fallback  kath cuda: turn that off, so a refused unit is a\n"
+        "                hard failure again and a build lists every gap\n"
         "  --hip         HIP frontend mode (predefines __HIPCC__ and platform macros;\n"
         "                auto-on for .hip files; combine with --amdgpu-bin or --nvidia-ptx)\n"
-        "  --mlir        Read MLIR text. Core dialects only, anything else is refused\n"
         "  --triton      Triton frontend mode (parses Python source). Pair with a target\n"
         "                backend (--cpu, --amdgpu-bin, --nvidia-ptx). tl.dot matmul runs.\n"
         "  --cpu         x86-64 host backend; emits a normal object you can link and run\n"
@@ -478,8 +499,9 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
     int mode_tdf_fission = 0;
     int mode_hip = 0;
     int mode_triton = 0;        /* Triton frontend: see TRITON NOTES below */
-    int mode_mlir = 0;          /* MLIR frontend: see MLIR NOTES below */
     int mode_bir_in = 0;        /* BIR text in: see BIR NOTES below */
+    int mode_chost = 0;
+    const char *fat_file = NULL;
     int no_mem2reg = 0;
     int no_cfold = 0;
     int no_dce = 0;
@@ -519,6 +541,10 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
             mode_pp = 1;
         else if (strcmp(argv[i], "--no-pp") == 0)
             no_pp = 1;
+        else if (strcmp(argv[i], "--cuda-host") == 0)
+            mode_chost = 1;
+        else if (strcmp(argv[i], "--fatbin") == 0 && i + 1 < argc)
+            fat_file = argv[++i];
         /* CDNA 2 (GFX9) */
         /* CDNA 3 (GFX9.4.2) */
         /* RDNA 2 (GFX10.3) */
@@ -529,8 +555,6 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
             mode_hip = 1;
         else if (strcmp(argv[i], "--triton") == 0)
             mode_triton = 1;
-        else if (strcmp(argv[i], "--mlir") == 0)
-            mode_mlir = 1;
         else if (strcmp(argv[i], "--tt-chip") == 0 && i + 1 < argc) {
             if (td_pchip(argv[++i], &tt_chip) != BC_OK) {
                 fprintf(stderr, "unknown Tenstorrent chip: %s "
@@ -615,7 +639,7 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
      * --tdf reached some gates and not others. Triton keeps its own list below;
      * it gates a different frontend and does not accept --rv-elf. */
     int want_bir  = mode_ir || mode_tdf || mode_tdf_fission ||
-                    be_num_on() > 0u;
+                    mode_chost || be_num_on() > 0u;
     int want_sema = mode_sema || want_bir;
 
     if (!mode_pp && !mode_lex && !mode_parse && !want_sema)
@@ -632,8 +656,8 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
     /* Load translation file before any diagnostics fire */
     if (lang_file) bc_eload(lang_file);
 
-    if (nfile > 1 && (mode_bir_in || mode_mlir || mode_triton)) {
-        fprintf(stderr, "only one input file for --bir-in, --mlir "
+    if (nfile > 1 && (mode_bir_in || mode_triton)) {
+        fprintf(stderr, "only one input file for --bir-in "
                         "and --triton (%d given)\n", nfile);
         return 1;
     }
@@ -675,57 +699,6 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
                   ? 0 : 1;
         bb_free(B);
         return brc;
-    }
-
-    /* ---- MLIR NOTES ---------------------------------------------------
-     * MLIR arrives already structured, so there is no lexer, parser or
-     * sema on this path. src/mlir/vendor/ reads the text, src/mlir/lower.c
-     * walks it into BIR, and from there it is the same pipeline CUDA and
-     * Triton use. --pp reprints what was read instead, which is the
-     * quickest way to tell a misreading from a bad file. */
-    if (mode_mlir) {
-        ml_ctx_t *mc = ml_open(64u * 1024u * 1024u);
-        int mrc;
-
-        if (!mc) {
-            fprintf(stderr, "mlir: out of memory\n");
-            return 1;
-        }
-        mrc = ml_parse(mc, source_buf, src_len);
-        if (mrc != 0) {
-            ml_close(mc);
-            return 1;
-        }
-        if (mode_pp) {
-            mrc = ml_echo(mc, stdout);
-            ml_close(mc);
-            return mrc == 0 ? 0 : 1;
-        }
-
-        bir_module = (bir_module_t *)malloc(sizeof(bir_module_t));
-        if (!bir_module) {
-            fprintf(stderr, "error: failed to allocate BIR module\n");
-            ml_close(mc);
-            return 1;
-        }
-        mrc = ml_lowr(mc, (struct bir_module *)bir_module);
-        ml_close(mc);
-
-        if (mrc == 0) {
-            backend_cfg_t cfg = {0};
-            cfg.no_mem2reg = no_mem2reg;
-            cfg.no_cfold   = no_cfold;
-            cfg.no_dce     = no_dce;
-            cfg.no_sched   = no_sched;
-            cfg.no_sroa    = no_sroa;
-            cfg.mode_ir    = mode_ir;
-            cfg.mode_tdf   = mode_tdf;
-            cfg.mode_tdf_fission = mode_tdf_fission;
-            cfg.output_file      = output_file;
-            mrc = (run_bir_backends(bir_module, &cfg) == BC_OK) ? 0 : 1;
-        }
-        free(bir_module);
-        return mrc == 0 ? 0 : 1;
     }
 
     /* ---- TRITON NOTES -------------------------------------------------
@@ -843,6 +816,7 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
     tc.mode_sema  = mode_sema;
     tc.mode_hip   = mode_hip;
     tc.no_pp      = no_pp;
+    tc.hostp      = 0;
     tc.want_ast   = want_ast;
     tc.want_sema  = want_sema;
     tc.want_bir   = want_bir;
@@ -886,6 +860,27 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
     }
 
     if (bir_module) free(bir_module);
+
+    if (rc == BC_OK && mode_chost) {
+        hg_in_t hin;
+
+        tc.hostp     = 1;
+        tc.want_ast  = 0;
+        tc.want_sema = 0;
+        tc.want_bir  = 0;
+        tc.M         = NULL;
+        rc = comp_tu(file, &tc);
+        if (rc != BC_OK) return 1;
+
+        memset(&hin, 0, sizeof hin);
+        hin.file = file;
+        hin.src  = pp_out_buf;
+        hin.slen = g_slen;
+        hin.toks = token_buf;
+        hin.ntok = g_ntok;
+        hin.fat  = fat_file;
+        return hg_emit(&hin, output_file ? output_file : "a_host.cpp");
+    }
 
     return rc != BC_OK ? 1 : 0;
 }

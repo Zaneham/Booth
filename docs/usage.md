@@ -32,6 +32,19 @@ The compiled binary is `kath` (after Kathleen Booth); the project is Booth. They
 ./kath build <file> -o out.o      # compile only
 ./kath doctor                     # report devices and toolchain, then self-test
 
+# Compile a .cu the way nvcc would: device code into a fatbin, host code
+# through your C++ compiler, one object out
+./kath cuda -c -fPIC kernel.cu -o kernel.o
+
+# When the cubin backend refuses a kernel, that unit's fatbin carries PTX
+# alone and the fallback says so on stderr. On by default, and Latimer runs
+# PTX where it finds no SASS.
+./kath cuda -c kernel.cu -o kernel.o --ptx-fallback
+
+# Turn it off and a refused unit is a hard failure again. That is how you
+# enumerate every gap in the SASS backend across a whole build.
+./kath cuda -c kernel.cu -o kernel.o --no-ptx-fallback
+
 # Compile to AMD GPU binary (RDNA 3, default)
 ./kath --amdgpu-bin kernel.cu -o kernel.hsaco
 
@@ -106,7 +119,7 @@ Hand `kath` more than one `.cu` and each is compiled on its own, then linked int
 
 Each file gets a fresh preprocessor, lexer, parser and sema, so a macro, typedef or struct in one cannot reach the next, and two files may each keep their own `static` helper of the same name without either calling the other's. Anything not marked `static` is one symbol the whole program shares, so a `__device__` function, a `__constant__` global, or an `inline` function arriving from a header several files include, all give you one copy rather than one per file. Two files defining the same non-`inline` symbol is E126 rather than a quiet decision about which one wins.
 
-Symbols become visible in the order you list the files, so a `__device__` function has to be defined in a file earlier on the command line than the one calling it. The other way round comes back as E105, unknown function. The other frontends read one document each, so `--triton`, `--mlir` and `--bir-in` still take a single file and will say so if given more.
+Symbols become visible in the order you list the files, so a `__device__` function has to be defined in a file earlier on the command line than the one calling it. The other way round comes back as E105, unknown function. The other frontends read one document each, so `--triton` and `--bir-in` still take a single file and will say so if given more.
 
 ## Runtime Launcher
 
@@ -297,32 +310,3 @@ abstract. Both take a literal, not an expression.
 This is not OCaml running on a GPU. It is OCaml as the language you write the
 kernel in. There is no GC, no closure at runtime, no exception and no
 polymorphism on the device. CUDA C is not C either so it does track (gpu's are weird)..
-
-## MLIR
-
-`--mlir` reads MLIR text. The reader is Ondřej Čertík's, vendored under
-`src/mlir/vendor`, and there is no LLVM in the path.
-
-```bash
-# Lower MLIR and compile it, same as any other frontend
-./kath --mlir kernel.mlir --cpu -o kernel.o
-./kath --mlir kernel.mlir --rv64 -o kernel.o
-
-# Dump the BIR the lowering produced
-./kath --mlir --ir kernel.mlir
-
-# Reprint what was read instead of lowering it, for telling a misreading
-# from a bad file
-./kath --mlir --pp kernel.mlir
-```
-
-Accepted today: `func.func` with named arguments, `return`, `arith.constant`,
-every `arith` integer and float binop, `arith.cmpi` and `arith.cmpf`, and the
-`arith` conversions. Anything else is named on stderr and the whole lowering
-fails, because an op skipped quietly is a kernel that compiles and computes
-something different.
-
-Nothing in MLIR marks a function as a kernel yet, so everything lowers as a
-device function. `--cpu` and `--rv64` give you real code; the GPU backends will
-take the file and then report zero kernels, which is an honest answer until
-the `gpu` dialect arrives.

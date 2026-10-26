@@ -47,12 +47,14 @@ static void render_one(const char *file, const char *src,
                        const bc_error_t *er)
 {
     int c = use_colour();
-    const char *red  = c ? "\033[1;31m" : "";
+    int w = er->sev == BC_SEV_WARN;
+    const char *red  = c ? (w ? "\033[1;33m" : "\033[1;31m") : "";
     const char *blue = c ? "\033[1;34m" : "";
     const char *rst  = c ? "\033[0m"    : "";
 
-    fprintf(stderr, "%serror%s[E%03u]: %s\n",
-            red, rst, (unsigned)er->eid, er->msg);
+    fprintf(stderr, "%s%s%s[E%03u]: %s\n",
+            red, w ? "warning" : "error", rst,
+            (unsigned)er->eid, er->msg);
     fprintf(stderr, "  %s-->%s %s:%u:%u\n",
             blue, rst,
             file ? file : "<input>",

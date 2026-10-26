@@ -27,11 +27,12 @@
 #define MAX_TDSN        1024
 #define MAX_ALIAS       64
 #define MAX_TEMPLATES   256
-#define MAX_PKELM       32
+#define MAX_PKELM       64
 #define MAX_FWPK        64
 #define MAX_FPACKS      4
 #define MAX_INSTS       16384
-#define MAX_TPARM       8
+#define MAX_LNCH        4096
+#define MAX_TPARM       24
 #define MAX_BIND        64
 #define MAX_TDEP        7
 #define MAX_NEST        8
@@ -44,6 +45,8 @@
 #define MAX_CEXPS       512
 #define MAX_CFNS        128
 #define MAX_TLV         8192
+#define MAX_TNS         64
+#define TQ_SEG          8
 #define MAX_CDEP        12
 #define CF_DEEP         24
 #define MAX_CLST        64
@@ -52,6 +55,7 @@
 #define MAX_CNST        24
 #define MAX_VTPL        64
 #define MAX_SDM         512
+#define MAX_MAL         512
 #define MAX_BASE        4
 #define SD_QUE          8
 #define CI_SEP          '$'
@@ -62,6 +66,8 @@
 #define LO_MAXALG       4096
 #define LO_MAX_DIM      4
 #define CE_NEST         16
+#define RF_ELEM         64
+#define MAX_XINS        512
 #define CE_STMT         256
 #define CF_BODY         2048
 #define MAX_CAGF        12
@@ -74,6 +80,9 @@
 #define MAX_LAMS        1024
 #define MAX_TAGS        32
 #define MAX_GLAM        16
+#define MAX_FNAL        32
+#define MAX_FNC         4
+#define MAX_FNT         12
 #define LM_CAP          16
 #define LM_PARM         8
 #define LM_EXCL         64
@@ -89,6 +98,7 @@ typedef struct {
     int         is_alloca;
     int         lam;
     int         wfrg;
+    int         cst;
 } sym_t;
 
 typedef struct {
@@ -165,6 +175,12 @@ typedef struct {
 } sdm_t;
 
 typedef struct {
+    char        cls[64];
+    char        nm[64];
+    uint32_t    type;
+} mal_t;
+
+typedef struct {
     char        name[64];
     uint32_t    bir_type;
     uint16_t    bad;
@@ -175,6 +191,7 @@ typedef struct {
 typedef struct {
     uint32_t    ast;        /* AST_TEMPLATE_DECL node index */
     char        name[64];   /* function name inside */
+    char        ns[64];
 } template_def_t;
 
 typedef struct {
@@ -250,6 +267,17 @@ typedef struct {
 } tgent_t;
 
 typedef struct {
+    uint32_t    ini;
+    tgent_t     tg[MAX_FNT];
+    int         ntg;
+} fnc_t;
+
+typedef struct {
+    int         ei;
+    int         ci;
+} fnh_t;
+
+typedef struct {
     char        name[64];
     uint32_t    ast;
     uint8_t     busy;
@@ -286,6 +314,8 @@ typedef struct {
     int             ncag;
     sdm_t           sdms[MAX_SDM];
     int             nsdm;
+    mal_t           mals[MAX_MAL];
+    int             nmal;
     char            scls[64];
     uint16_t        sdbad;
     uint8_t         sdarr;
@@ -297,6 +327,11 @@ typedef struct {
     struct { char name[64]; uint32_t ast; } cfns[MAX_CFNS];
     int             ncfn;
     uint32_t        tlv[MAX_TLV];
+    uint8_t         tlni[MAX_TLV];
+    char            tnsp[MAX_TNS][64];
+    int             ntnsp;
+    char            cns[64];
+    char            tqns[64];
     int             ntlv;
     int             cdep;
     int             sdep;
@@ -333,11 +368,16 @@ typedef struct {
     binding_t       pnb[MAX_NEST][MAX_TPARM];
     int             pdep;
     binding_t       tnb[MAX_TPARM];
+    binding_t       fnb[MAX_TPARM];
+    int             fdep;
     binding_t       xnb[MAX_NEST][MAX_TPARM];
     int             xdep;
     int             tsc;
     struct { char key[256]; char sym[128]; } inst[MAX_INSTS];
     int             ninst;
+    struct { char key[256]; } xins[MAX_XINS];
+    int             nxins;
+    uint8_t         cmth[BIR_MAX_FUNCS / 8];
     int             tdep;
 
     char            pnms[MAX_PARM][64];
@@ -383,10 +423,14 @@ typedef struct {
 
     tgent_t         tags[MAX_TAGS];
     int             ntags;
+    struct { char name[64]; fnc_t c[MAX_FNC]; int n; } fnal[MAX_FNAL];
+    int             nfnal;
+    uint32_t        scnrt;
     glent_t         glms[MAX_GLAM];
     int             nglm;
 
     int             wpend;
+    int             cpend;
     uint16_t        rtbad;
     int             pkbad;
     int             rtunk;
@@ -403,6 +447,16 @@ typedef struct {
     uint32_t        srdst;
     uint32_t        srdty;
 } lower_t;
+
+typedef struct {
+    char     base[64];
+    char     sym[128];
+    char     targ[256];
+} lnch_t;
+
+static lnch_t   LNCH[MAX_LNCH];
+static uint32_t NLNCH;
+static uint32_t LPEND;
 
 /* ---- Names ---- */
 
@@ -444,6 +498,166 @@ static void get_text(const lower_t *L, uint32_t node, char *buf, int sz)
     if (len >= sz) len = sz - 1;
     memcpy(buf, lw_tptr(L, n->d.text.offset), (size_t)len);
     buf[len] = '\0';
+}
+
+static const char *sname(const lower_t *L, uint32_t ty);
+
+static void lnrec(const lower_t *L, uint32_t callee)
+{
+    lnch_t *e;
+
+    LPEND = 0u;
+    if (NLNCH >= MAX_LNCH) return;
+    e = &LNCH[NLNCH];
+    memset(e, 0, sizeof *e);
+    get_text(L, callee, e->base, (int)sizeof e->base);
+    ncpy(e->sym, sizeof e->sym, e->base);
+    NLNCH++;
+    LPEND = NLNCH;
+}
+
+static void lnsc(const lower_t *L, uint32_t t, char *out, size_t oz)
+{
+    const bir_type_t *y;
+    const char       *s;
+
+    out[0] = '\0';
+    if (L->M == NULL || t >= L->M->num_types) return;
+    y = &L->M->types[t];
+    if (y->kind == BIR_TYPE_INT) {
+        if (y->width == 1u)       ncpy(out, oz, "bool");
+        else if (y->width == 8u)  ncpy(out, oz, "signed char");
+        else if (y->width == 16u) ncpy(out, oz, "short");
+        else if (y->width == 32u) ncpy(out, oz, "int");
+        else if (y->width == 64u) ncpy(out, oz, "int64_t");
+    } else if (y->kind == BIR_TYPE_FLOAT) {
+        if (y->width == 16u)      ncpy(out, oz, "__half");
+        else if (y->width == 32u) ncpy(out, oz, "float");
+        else if (y->width == 64u) ncpy(out, oz, "double");
+    } else if (y->kind == BIR_TYPE_BFLOAT) {
+        ncpy(out, oz, "__nv_bfloat16");
+    } else if (y->kind == BIR_TYPE_VOID) {
+        ncpy(out, oz, "void");
+    } else if (y->kind == BIR_TYPE_STRUCT || y->kind == BIR_TYPE_VECTOR) {
+        s = sname(L, t);
+        if (s != NULL && s[0] != '\0') ncpy(out, oz, s);
+    }
+    if (y->cst && out[0] != 0) {
+        char b[64];
+
+        ncpy(b, sizeof b, out);
+        if (snprintf(out, oz, "const %s", b) < 0) out[0] = 0;
+    }
+}
+
+static void lnspl(const lower_t *L, uint32_t t, char *out, size_t oz)
+{
+    char     in[64];
+    uint32_t np = 0u;
+
+    out[0] = '\0';
+    if (L->M == NULL) return;
+    KA_GUARD(g, 4);
+    while (t < L->M->num_types
+           && L->M->types[t].kind == BIR_TYPE_PTR && g--) {
+        t = L->M->types[t].inner;
+        np++;
+    }
+    lnsc(L, t, in, sizeof in);
+    if (in[0] == '\0' || np > 3u) return;
+    if (np == 0u) { ncpy(out, oz, in); return; }
+    if (snprintf(out, oz, "%s %.*s", in, (int)np, "***") < 0) out[0] = '\0';
+}
+
+#define FSP_MAX 256
+
+static struct {
+    char sym[64];
+    char spl[192];
+} FSPL[FSP_MAX];
+static uint32_t NFSP;
+
+static void fsput(const char *sym, const char *spl)
+{
+    if (NFSP >= FSP_MAX) return;
+    for (uint32_t i = 0; i < NFSP; i++)
+        if (strcmp(FSPL[i].sym, sym) == 0) return;
+    ncpy(FSPL[NFSP].sym, sizeof FSPL[0].sym, sym);
+    ncpy(FSPL[NFSP].spl, sizeof FSPL[0].spl, spl);
+    NFSP++;
+}
+
+static const char *fsget(const char *sym)
+{
+    for (uint32_t i = 0; i < NFSP; i++)
+        if (strcmp(FSPL[i].sym, sym) == 0) return FSPL[i].spl;
+    return NULL;
+}
+
+static int lnone(const lower_t *L, const binding_t *b, int k,
+                 char *one, size_t oz)
+{
+    const char *s;
+
+    if (b->is_pack) {
+        if (b->pk_nt)
+            return snprintf(one, oz, "%lld", (long long)b->pk_v[k]) > 0;
+        lnspl(L, b->pk_t[k], one, oz);
+        return one[0] != '\0';
+    }
+    if (b->is_fn) {
+        if (b->fnm[0] == '\0') return 0;
+        s = fsget(b->fnm);
+        if (s == NULL) s = b->fnm;
+        if (strchr(s, '$') != NULL) return 0;
+        ncpy(one, oz, s);
+        return 1;
+    }
+    if (b->is_type) {
+        if (b->guess) return 0;
+        lnspl(L, b->type, one, oz);
+        return one[0] != '\0';
+    }
+    return snprintf(one, oz, "%lld", (long long)b->ival) > 0;
+}
+
+static void lntarg(const lower_t *L, const binding_t *nb, int ntp,
+                   char *out, size_t oz)
+{
+    size_t n = 0;
+
+    out[0] = '\0';
+    for (int i = 0; i < ntp; i++) {
+        int nk = nb[i].is_pack ? nb[i].npk : 1;
+
+        for (int k = 0; k < nk; k++) {
+            char   one[192];
+            size_t l;
+
+            if (!lnone(L, &nb[i], k, one, sizeof one)) {
+                out[0] = '\0';
+                return;
+            }
+            l = strlen(one);
+            if (n + l + 3u >= oz) { out[0] = '\0'; return; }
+            if (n != 0u) { out[n++] = ','; out[n++] = ' '; }
+            memcpy(out + n, one, l);
+            n += l;
+            out[n] = '\0';
+        }
+    }
+}
+
+static void lnsym(const lower_t *L, const char *sym, const binding_t *nb,
+                  int ntp)
+{
+    lnch_t *e;
+
+    if (LPEND == 0u || LPEND > NLNCH) return;
+    e = &LNCH[LPEND - 1u];
+    ncpy(e->sym, sizeof e->sym, sym);
+    lntarg(L, nb, ntp, e->targ, sizeof e->targ);
+    LPEND = 0u;
 }
 
 static int text_eq(const lower_t *L, uint32_t node, const char *s)
@@ -575,6 +789,8 @@ static void add_sym(lower_t *L, const char *name, uint32_t ref,
     s->lam = 0;
     s->wfrg = L->wpend;
     L->wpend = 0;
+    s->cst = L->cpend;
+    L->cpend = 0;
 }
 
 static sym_t *find_sym(lower_t *L, const char *name)
@@ -627,6 +843,7 @@ static int aggr(const lower_t *L, uint32_t t)
 
 static const char *sname(const lower_t *L, uint32_t ty)
 {
+    ty = bir_tunq(L->M, ty);
     for (int i = 0; i < L->nstructs; i++)
         if (L->structs[i].bir_type == ty) return L->structs[i].name;
     return NULL;
@@ -720,10 +937,79 @@ static void pk_rw(const lower_t *L, char *name, size_t n)
         }
 }
 
+static int tmnsq(const char *ns, const char *q)
+{
+    size_t nl, ql;
+
+    if (!q[0]) return 1;
+    if (strcmp(ns, q) == 0) return 1;
+    nl = strlen(ns);
+    ql = strlen(q);
+    return nl > ql + 2 && ns[nl - ql - 1] == ':' && ns[nl - ql - 2] == ':'
+        && strcmp(ns + nl - ql, q) == 0;
+}
+
+static int tmhit(const lower_t *L, const template_def_t *t, const char *nm)
+{
+    if (strcmp(t->name, nm) != 0) return 0;
+    return tmnsq(t->ns, L->tqns);
+}
+
+static int tqany(const lower_t *L, const char *nm, const char *q)
+{
+    for (int i = 0; i < L->ntemplates; i++)
+        if (strcmp(L->templates[i].name, nm) == 0
+            && tmnsq(L->templates[i].ns, q)) return 1;
+    return 0;
+}
+
+static void tqset(lower_t *L, const char *nm, const char *q)
+{
+    L->tqns[0] = 0;
+    if (q && q[0] && tqany(L, nm, q)) ncpy(L->tqns, sizeof(L->tqns), q);
+}
+
+static uint32_t tqcal(lower_t *L, uint32_t cal, char *nm, size_t nz,
+                      char *q, size_t qz)
+{
+    uint32_t id[TQ_SEG];
+    int n = 0;
+
+    nm[0] = 0;
+    q[0] = 0;
+    if (!cal) return 0;
+    if (ND(L, cal)->type == AST_IDENT) {
+        get_text(L, cal, nm, (int)nz);
+        return cal;
+    }
+    if (ND(L, cal)->type != AST_SCOPE_RES) return 0;
+    for (uint32_t c = ND(L, cal)->first_child; c; c = ND(L, c)->next_sibling) {
+        if (ND(L, c)->type != AST_IDENT || n >= TQ_SEG) return 0;
+        id[n++] = c;
+    }
+    if (n < 2) return 0;
+    get_text(L, id[n - 1], nm, (int)nz);
+    for (int i = 0; i < n - 1; i++) {
+        char part[64];
+        size_t u = strlen(q), pl;
+
+        get_text(L, id[i], part, sizeof(part));
+        pl = strlen(part);
+        if (u && u + 2 < qz) {
+            q[u++] = ':';
+            q[u++] = ':';
+            q[u] = 0;
+        }
+        if (u + pl >= qz) return 0;
+        memcpy(q + u, part, pl + 1);
+    }
+    return id[n - 1];
+}
+
 static template_def_t *find_template(lower_t *L, const char *name)
 {
     for (int i = 0; i < L->ntemplates; i++)
-        if (strcmp(L->templates[i].name, name) == 0)
+        if (tmhit(L, &L->templates[i], name))
             return &L->templates[i];
     return NULL;
 }
@@ -809,6 +1095,7 @@ static uint32_t natal(const lower_t *L, uint32_t t)
            && (L->M->types[e].kind == BIR_TYPE_ARRAY
                || L->M->types[e].kind == BIR_TYPE_VECTOR))
         e = L->M->types[e].inner;
+    e = bir_tunq(L->M, e);
     for (int i = 0; i < L->nstructs; i++)
         if (L->structs[i].bir_type == e && L->structs[i].algn > a)
             a = L->structs[i].algn;
@@ -1196,6 +1483,7 @@ static struct_def_t *vreg(lower_t *L, const vecty_t *v)
     sd->algn = (uint8_t)valgn(v);
     sd->bir_type = vnty(L, v->kind, v->bits, v->lanes);
     if (!sd->bir_type) return NULL;
+    (void)bir_salg(L->M, sd->bir_type, sd->algn);
     for (int fi = 0; fi < v->lanes; fi++) {
         sd->field_types[fi] = et;
         ncpy(sd->field_names[fi], sizeof(sd->field_names[0]), xyzw[fi]);
@@ -1270,6 +1558,10 @@ static int tpdep(const lower_t *L, uint32_t n)
 }
 
 static int altry(lower_t *L, const char *nm, uint32_t ta, uint32_t *out);
+static uint32_t fpty(lower_t *L, uint32_t name_n, uint32_t type_n, int depth,
+                     uint16_t cuda);
+static int malfnd(const lower_t *L, const char *cls, const char *nm,
+                  uint32_t *ty);
 
 static int cgknd(const char *n)
 {
@@ -1346,12 +1638,23 @@ static uint32_t resolve_type(lower_t *L, uint32_t node, int ptr_depth,
             if (ND(L, tc)->type == AST_IDENT && tc != nc)
                 get_text(L, tc, name, sizeof(name));
             if (ND(L, tc)->type == AST_TEMPLATE_ARGS) {
-                char mg[128];
+                char mg[128], mb[64];
+                uint32_t mn = ND(L, tc)->next_sibling;
                 int si = cget(L, node, name, tc, mg, sizeof(mg))
                        ? cslot(L, mg) : -1;
                 L->rtbad = 0;
                 L->rtunk = 0;
                 L->rtalgn = 0;
+                while (mn && ND(L, mn)->type != AST_IDENT)
+                    mn = ND(L, mn)->next_sibling;
+                if (si >= 0 && mn) {
+                    uint32_t mt = 0;
+                    get_text(L, mn, mb, sizeof(mb));
+                    if (malfnd(L, mg, mb, &mt)) return mt;
+                    L->rtbad = BC_E155;
+                    ncpy(L->rtbadn, sizeof(L->rtbadn), mb);
+                    return bir_type_int(L->M, 32);
+                }
                 if (si >= 0) {
                     L->rtalgn = L->structs[si].algn;
                     ncpy(L->rtsnm, sizeof(L->rtsnm), mg);
@@ -1460,6 +1763,9 @@ static uint32_t resolve_type(lower_t *L, uint32_t node, int ptr_depth,
         base = resolve_basic(L, kind);
     }
 
+    if (ptr_depth > 0 && (n->qualifiers & QUAL_CONST))
+        base = bir_tcst(L->M, base);
+
     for (int i = 0; i < ptr_depth; i++) {
         int as = BIR_AS_GLOBAL;
         if (cuda & CUDA_SHARED)   as = BIR_AS_SHARED;
@@ -1487,10 +1793,12 @@ static uint32_t ref_type(const lower_t *L, uint32_t ref)
     if (ref == BIR_VAL_NONE) return 0;
     if (BIR_VAL_IS_CONST(ref)) {
         uint32_t ci = BIR_VAL_INDEX(ref);
-        return ci < L->M->num_consts ? L->M->consts[ci].type : 0;
+        return ci < L->M->num_consts
+             ? bir_tunq(L->M, L->M->consts[ci].type) : 0;
     }
     uint32_t ii = BIR_VAL_INDEX(ref);
-    return ii < L->M->num_insts ? L->M->insts[ii].type : 0;
+    return ii < L->M->num_insts
+         ? bir_tunq(L->M, L->M->insts[ii].type) : 0;
 }
 
 static uint32_t vlane(lower_t *L, uint32_t val, int lane)
@@ -1531,6 +1839,8 @@ static uint32_t vlane(lower_t *L, uint32_t val, int lane)
     return BIR_MAKE_VAL(ld);
 }
 
+static uint32_t stfit(lower_t *L, uint32_t val, uint32_t dt, uint32_t src_n);
+
 static uint32_t vmake(lower_t *L, const struct_def_t *sd,
                       const uint32_t *vals, int n)
 {
@@ -1544,11 +1854,12 @@ static uint32_t vmake(lower_t *L, const struct_def_t *sd,
         uint32_t ci  = BIR_MAKE_CONST(bir_const_int(L->M,
                            bir_type_int(L->M, 32), i));
         uint32_t gep = emit(L, BIR_GEP, fpt, 2, 0);
-        uint32_t sv;
+        uint32_t sv, fv;
         set_op(L, gep, 0, BIR_MAKE_VAL(al));
         set_op(L, gep, 1, ci);
+        fv = stfit(L, vals[i], sd->field_types[i], 0);
         sv = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
-        set_op(L, sv, 0, vals[i]);
+        set_op(L, sv, 0, fv);
         set_op(L, sv, 1, BIR_MAKE_VAL(gep));
     }
     ld = emit(L, BIR_LOAD, st, 1, 0);
@@ -1644,7 +1955,7 @@ static int is_ptr_type(const lower_t *L, uint32_t t)
 
 static uint32_t ptr_inner(const lower_t *L, uint32_t t)
 {
-    if (is_ptr_type(L, t)) return L->M->types[t].inner;
+    if (is_ptr_type(L, t)) return bir_tunq(L->M, L->M->types[t].inner);
     return 0;
 }
 
@@ -1824,6 +2135,18 @@ static void tkeyb(const binding_t *nb, int ntp, const char *cname,
 static int tfind(const lower_t *L, const char *key, char *sym, size_t symz);
 static template_def_t *tmpick(lower_t *L, const char *name,
                               const uint32_t *av, int na);
+
+static template_def_t *tqpick(lower_t *L, const char *nm, const char *q,
+                              const uint32_t *av, int na)
+{
+    template_def_t *t;
+
+    tqset(L, nm, q);
+    t = na >= 0 ? tmpick(L, nm, av, na) : find_template(L, nm);
+    L->tqns[0] = 0;
+    return t;
+}
+
 static void tkfn(lower_t *L, const char *cname, uint32_t func_n,
                  char *key, size_t keyz);
 static int qtsym(lower_t *L, char *cnm, size_t cz, uint32_t cal);
@@ -1899,8 +2222,9 @@ static int altry(lower_t *L, const char *nm, uint32_t ta, uint32_t *out)
         for (int i = 0; i < ntp; i++) L->bindings[L->nbindings++] = nb[i];
         L->nbbase = onb;
         if (ty && ND(L, ty)->type == AST_TYPE_SPEC)
-            *out = resolve_type(L, ty, ND(L, al->use)->d.oper.flags,
-                                ND(L, al->use)->cuda_flags);
+            *out = fpty(L, ND(L, al->use)->first_child, ty,
+                        ND(L, al->use)->d.oper.flags,
+                        ND(L, al->use)->cuda_flags);
         else
             ok = 0;
         if (ok && (L->rtbad || L->rtunk)) ok = 0;
@@ -2356,6 +2680,7 @@ static int tamb(const lower_t *L, uint32_t ty)
 {
     int n = 0;
 
+    ty = bir_tunq(L->M, ty);
     for (int i = 0; i < L->nstructs; i++)
         if (L->structs[i].bir_type == ty) n++;
     return n;
@@ -2413,6 +2738,15 @@ static int tnorm(lower_t *L, uint32_t n, uint32_t *ty, uint16_t *qm)
     if (bguess(L, n)) return 0;
     *ty = resolve_type(L, n, tpdep(L, n), 0);
     if (L->rtbad || L->rtunk) return 0;
+    if (ND(L, n)->arrx) {
+        int64_t ex = 0;
+
+        if (ND(L, n)->arrx == TS_AUNS) return 0;
+        if (!cival(L, ND(L, n)->arrx, &ex)) return 0;
+        if (ex <= 0 || ex > CE_MAXDIM) return 0;
+        *ty = bir_type_array(L->M, *ty, (uint32_t)ex);
+        if (!*ty) return 0;
+    }
     *qm = (uint16_t)(ND(L, n)->qualifiers & km);
     return 1;
 }
@@ -2429,8 +2763,16 @@ static int tsame(lower_t *L, uint32_t ta, uint32_t tb, int *out)
         *out = 0;
         return 1;
     }
-    if (ra < L->M->num_types && L->M->types[ra].kind == BIR_TYPE_STRUCT
-        && tamb(L, ra) > 1) return 0;
+    {
+        uint32_t el = ra;
+
+        KA_GUARD(g, LO_MAX_DIM);
+        while (g-- && el < L->M->num_types
+               && L->M->types[el].kind == BIR_TYPE_ARRAY)
+            el = L->M->types[el].inner;
+        if (el < L->M->num_types && L->M->types[el].kind == BIR_TYPE_STRUCT
+            && tamb(L, el) > 1) return 0;
+    }
     *out = 1;
     return 1;
 }
@@ -2847,7 +3189,19 @@ static uint32_t cfsee(lower_t *L, uint32_t cn, char *nm, size_t nz, int *mem,
         if (cqfnd(L, cn, nm, nz, &ce) == 0 && !nm[0]) return 0;
         *mem = 1;
     } else if (ND(L, cn)->type == AST_IDENT) {
+        uint32_t f;
+        char q[CE_NAMEZ];
+
         get_text(L, cn, nm, (int)nz);
+        f = cffnd(L, nm, na);
+        if (f || !L->scls[0]) return f;
+        if (snprintf(q, sizeof q, "%s::%s", L->scls, nm) < 0) return 0;
+        f = cffnd(L, q, na);
+        if (f) {
+            ncpy(nm, nz, q);
+            *mem = 1;
+        }
+        return f;
     } else {
         return 0;
     }
@@ -3360,7 +3714,7 @@ static int vtbnd(lower_t *L, uint32_t ta, binding_t *nb, int ntp)
 
 static int vteval(lower_t *L, uint32_t node, cval_t *out)
 {
-    binding_t nb[MAX_TPARM];
+    binding_t *nb;
     char nm[CE_NAMEZ];
     uint32_t ta, ty;
     int vi, ntp, onb, obs, ok;
@@ -3375,12 +3729,15 @@ static int vteval(lower_t *L, uint32_t node, cval_t *out)
     if (vi < 0) return 0;
     ta = targs(L, node);
     if (!ta || L->cdep >= MAX_CDEP) return 0;
+    if (L->xdep >= MAX_NEST) return 0;
 
+    nb  = L->xnb[L->xdep++];
     ntp = tparm(L, L->vtpl[vi].tdcl, nb);
-    if (ntp <= 0) return 0;
-    if (!vtbnd(L, ta, nb, ntp)) return 0;
+    if (ntp <= 0) { L->xdep--; return 0; }
+    if (!vtbnd(L, ta, nb, ntp)) { L->xdep--; return 0; }
     if (ntp > MAX_BIND - L->nbindings) {
         lower_error(L, node, BC_E340, L->vtpl[vi].name, MAX_BIND);
+        L->xdep--;
         return 0;
     }
 
@@ -3397,6 +3754,7 @@ static int vteval(lower_t *L, uint32_t node, cval_t *out)
     L->cdep--;
     L->nbindings = onb;
     L->nbbase = obs;
+    L->xdep--;
     return ok;
 }
 
@@ -4026,15 +4384,50 @@ static int ptr_t(const lower_t *L, uint32_t t)
     return t < L->M->num_types && L->M->types[t].kind == BIR_TYPE_PTR;
 }
 
+/* Ollama was producing garbage tokens cuz p += n stepped a pointer by bytes, not elements. */
+static uint32_t pstep(lower_t *L, uint32_t node, int base, uint32_t slot,
+                      uint32_t pt, uint32_t old, uint32_t n)
+{
+    uint32_t it = ref_type(L, n), g, st;
+
+    if ((base != TOK_PLUS && base != TOK_MINUS) || it >= L->M->num_types
+        || L->M->types[it].kind != BIR_TYPE_INT) {
+        lower_error(L, node, BC_E102);
+        return BIR_VAL_NONE;
+    }
+    if (base == TOK_MINUS) {
+        uint32_t ng = emit(L, BIR_SUB, it, 2, 0);
+
+        set_op(L, ng, 0, BIR_MAKE_CONST(bir_const_int(L->M, it, 0)));
+        set_op(L, ng, 1, n);
+        n = BIR_MAKE_VAL(ng);
+    }
+    g = emit(L, BIR_GEP, pt, 2, 0);
+    set_op(L, g, 0, BIR_MAKE_VAL(old));
+    set_op(L, g, 1, n);
+    st = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
+    set_op(L, st, 0, BIR_MAKE_VAL(g));
+    set_op(L, st, 1, slot);
+    return BIR_MAKE_VAL(g);
+}
+
+static void iprom(lower_t *L, uint32_t *v, uint32_t *t, uint32_t n)
+{
+    uint32_t t32 = bir_type_int(L->M, 32);
+    if (*t >= L->M->num_types || L->M->types[*t].kind != BIR_TYPE_INT
+        || L->M->types[*t].width >= 32) return;
+    *v = coerce_to(L, *v, t32, is_i1(L, *t) || node_is_unsigned(L, n));
+    *t = t32;
+}
+
 static uint32_t bin_val(lower_t *L, uint32_t node, int op,
                         uint32_t lhs, uint32_t lhs_n,
                         uint32_t rhs, uint32_t rhs_n)
 {
     uint32_t lt = ref_type(L, lhs), rt = ref_type(L, rhs);
 
-    uint32_t t32 = bir_type_int(L->M, 32);
-    if (is_i1(L, lt)) { lhs = coerce_to(L, lhs, t32, 1); lt = t32; }
-    if (is_i1(L, rt)) { rhs = coerce_to(L, rhs, t32, 1); rt = t32; }
+    iprom(L, &lhs, &lt, lhs_n);
+    iprom(L, &rhs, &rt, rhs_n);
 
     uint32_t res_t = lt;
     int lf = is_float_type(L, lt), rf = is_float_type(L, rt);
@@ -4053,6 +4446,16 @@ static uint32_t bin_val(lower_t *L, uint32_t node, int op,
                    && L->M->types[lt].width > L->M->types[rt].width) {
             rhs = coerce_to(L, rhs, lt, 0);
             res_t = lt;
+        }
+    } else if (op != TOK_SHL && op != TOK_SHR
+               && lt < L->M->num_types && rt < L->M->num_types
+               && L->M->types[lt].kind == BIR_TYPE_INT
+               && L->M->types[rt].kind == BIR_TYPE_INT) {
+        if (L->M->types[rt].width > L->M->types[lt].width) {
+            lhs = coerce_to(L, lhs, rt, node_is_unsigned(L, lhs_n));
+            res_t = rt;
+        } else if (L->M->types[lt].width > L->M->types[rt].width) {
+            rhs = coerce_to(L, rhs, lt, node_is_unsigned(L, rhs_n));
         }
     }
     int fp  = is_float_type(L, res_t);
@@ -4077,6 +4480,7 @@ static uint32_t bin_val(lower_t *L, uint32_t node, int op,
 
 static struct_def_t *sdbyt(lower_t *L, uint32_t t)
 {
+    t = bir_tunq(L->M, t);
     for (int i = 0; i < L->nstructs; i++)
         if (L->structs[i].bir_type == t) return &L->structs[i];
     return NULL;
@@ -4112,7 +4516,7 @@ static uint32_t stof(lower_t *L, uint32_t ref, uint32_t node)
     if (L->M->types[t].kind == BIR_TYPE_STRUCT) return t;
     if (L->M->types[t].kind != BIR_TYPE_PTR
         || !(agglv(L, node) || aggv(L, node))) return 0;
-    t = L->M->types[t].inner;
+    t = ptr_inner(L, t);
     return (t < L->M->num_types
             && L->M->types[t].kind == BIR_TYPE_STRUCT) ? t : 0;
 }
@@ -4848,6 +5252,35 @@ static int fdflt(lower_t *L, const char *nm, int have, uint32_t *out, int max)
     return 0;
 }
 
+static void mcset(lower_t *L, uint32_t lo, const char *nm)
+{
+    for (uint32_t i = lo; i < L->M->num_funcs; i++) {
+        if (L->M->funcs[i].name >= L->M->string_len) continue;
+        if (strcmp(&L->M->strings[L->M->funcs[i].name], nm) != 0) continue;
+        L->cmth[i >> 3] = (uint8_t)(L->cmth[i >> 3] | (1u << (i & 7u)));
+        return;
+    }
+}
+
+static int mcget(const lower_t *L, uint32_t fi)
+{
+    return fi < BIR_MAX_FUNCS
+        && (L->cmth[fi >> 3] & (1u << (fi & 7u))) != 0;
+}
+
+static int ocfil(const lower_t *L, uint32_t *cd, int nc, int cst)
+{
+    int nk = 0, ncst = 0;
+
+    for (int i = 0; i < nc; i++)
+        if (mcget(L, cd[i])) ncst++;
+    if (ncst == 0 || ncst == nc) return nc;
+    if (cst < 0) return -1;
+    for (int i = 0; i < nc; i++)
+        if (mcget(L, cd[i]) == cst) cd[nk++] = cd[i];
+    return nk ? nk : nc;
+}
+
 static int fcand(lower_t *L, const char *nm, int np, uint32_t *out, int cap)
 {
     char mng[BIR_SYM_MAX];
@@ -4925,18 +5358,27 @@ static uint32_t fpick(lower_t *L, const uint32_t *cd, int nc,
     for (int i = 0; i < nc; i++) {
         uint32_t fty = L->M->funcs[cd[i]].type;
         uint32_t rm  = L->M->funcs[cd[i]].refm;
-        int sc = 0;
+        uint32_t rq  = L->M->funcs[cd[i]].refq;
+        int sc = 0, viab = 1;
 
-        for (int a = 0; a < na; a++) {
+        for (int a = 0; a < na && viab; a++) {
             uint32_t pt = ftpar(L, fty, a);
             uint32_t ta = at[a];
-            if (a < 32 && (rm & (1u << a))) pt = ptr_inner(L, pt);
+            if (a < 32 && (rm & (1u << a))) {
+                uint32_t pin = ptr_inner(L, pt);
+                uint32_t ain = ptr_inner(L, ta);
+
+                if (ain && pin && ain != pin && !((rq >> a) & 1u))
+                    viab = 0;
+                pt = pin;
+            }
             if (an && aggv(L, an[a])) {
                 if (ptr_inner(L, ta)) ta = ptr_inner(L, ta);
                 if (aggt(L, ptr_inner(L, pt))) pt = ptr_inner(L, pt);
             }
             sc += acost(L, ta, pt);
         }
+        if (!viab) continue;
         if (sc > best) { best = sc; bi = cd[i]; *amb = 0; }
         else if (sc == best) *amb = 1;
     }
@@ -5167,10 +5609,12 @@ static int lwalk(lower_t *L, uint32_t root, int excl, lam_t *m,
 
         if (n->type == AST_IDENT) {
             sym_t *s;
+            int64_t bv;
             if (excl) continue;
             get_text(L, nd, nm, sizeof nm);
             if (lhas(ex, *nex, nm)) continue;
             if (lhas(m->cnm, m->ncap, nm)) continue;
+            if (find_binding_int(L, nm, &bv)) continue;
             s = find_sym(L, nm);
             if (!s || lglob(L, s, nm)) continue;
             if (m->ncap >= LM_CAP) return 0;
@@ -5526,6 +5970,13 @@ static int lfind(lower_t *L, uint32_t node, uint32_t *cptr)
         if (s && s->lam > 0 && s->is_alloca) {
             *cptr = BIR_MAKE_VAL(s->ref);
             return s->lam - 1;
+        }
+        if (s && s->is_alloca && s->type) {
+            for (int i = 0; i < L->nlam; i++)
+                if (!L->lams[i].gen && L->lams[i].cst == s->type) {
+                    *cptr = BIR_MAKE_VAL(s->ref);
+                    return i;
+                }
         }
     }
     return -1;
@@ -5959,7 +6410,8 @@ static uint32_t mtmp(lower_t *L, uint32_t node)
 {
     uint32_t rv, rt, rp, al, sv;
 
-    if (ND(L, node)->type != AST_CALL) return lower_lvalue(L, node);
+    if (ND(L, node)->type != AST_CALL && ND(L, node)->type != AST_CAST)
+        return lower_lvalue(L, node);
     rv = lower_expr(L, node);
     if (rv == BIR_VAL_NONE) return BIR_VAL_NONE;
     rt = ref_type(L, rv);
@@ -5971,6 +6423,79 @@ static uint32_t mtmp(lower_t *L, uint32_t node)
     set_op(L, sv, 0, rv);
     set_op(L, sv, 1, BIR_MAKE_VAL(al));
     return BIR_MAKE_VAL(al);
+}
+
+static int ocobj(lower_t *L, uint32_t cal)
+{
+    char nm[128];
+
+    if (ND(L, cal)->type == AST_CAST) {
+        uint32_t t = ND(L, cal)->first_child;
+        uint32_t e = t ? ND(L, t)->next_sibling : 0;
+
+        return e && ND(L, e)->type == AST_INIT_LIST;
+    }
+    if (ND(L, cal)->type != AST_IDENT || ND(L, cal)->first_child) return 0;
+    get_text(L, cal, nm, sizeof nm);
+    if (!find_sym(L, nm) || find_template(L, nm)) return 0;
+    return bir_fsym(L->M, nm, L->tu, -1) == BIR_SYM_NONE;
+}
+
+static int ocnst(lower_t *L, uint32_t cal)
+{
+    char nm[128];
+    const sym_t *s;
+
+    if (ND(L, cal)->type == AST_CAST) return 0;
+    if (ND(L, cal)->type != AST_IDENT) return -1;
+    get_text(L, cal, nm, sizeof nm);
+    s = find_sym(L, nm);
+    return s ? s->cst : -1;
+}
+
+static int omtpl(lower_t *L, int si)
+{
+    uint32_t tn, m;
+    char raw[96], nm[96];
+
+    if (si < 0 || si >= L->nstructs || !L->structs[si].node) return 0;
+    tn = ND(L, L->structs[si].node)->first_child;
+    if (!tn) return 0;
+    for (m = ND(L, tn)->next_sibling; m; m = ND(L, m)->next_sibling) {
+        if (ND(L, m)->type != AST_TEMPLATE_DECL) continue;
+        for (uint32_t f = ND(L, m)->first_child; f;
+             f = ND(L, f)->next_sibling) {
+            uint32_t nn;
+
+            if (ND(L, f)->type != AST_FUNC_DEF
+                && ND(L, f)->type != AST_FUNC_DECL) continue;
+            nn = child_at(L, f, 1);
+            if (!nn || ND(L, nn)->type != AST_IDENT) continue;
+            get_text(L, nn, raw, sizeof raw);
+            normalize_op_name(raw, nm, (int)sizeof nm);
+            if (strcmp(nm, "operator()") == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+static int ocall(lower_t *L, uint32_t cal, char *cnm, size_t cz,
+                 uint32_t *slf)
+{
+    uint32_t op, st;
+    int si;
+
+    if (!ocobj(L, cal)) return 0;
+    op = mtmp(L, cal);
+    if (op == BIR_VAL_NONE) return 0;
+    st = ptr_inner(L, ref_type(L, op));
+    si = sfind(L, st);
+    if (si < 0) return 0;
+    if (snprintf(cnm, cz, "%s$operator()", L->structs[si].name) < 0) return 0;
+    if (bir_fsym(L->M, cnm, L->tu, -1) == BIR_SYM_NONE && omtpl(L, si))
+        return -1;
+    *slf = op;
+    return 1;
 }
 
 #define AC_DEEP 8
@@ -6408,6 +6933,116 @@ static int wmcall(lower_t *L, uint32_t node, uint32_t cal, const char *nm,
     return 1;
 }
 
+static int tpure(const lower_t *L, uint32_t node)
+{
+    uint32_t wk[64];
+    int wn = 0;
+
+    if (!node) return 1;
+    wk[wn++] = node;
+
+    KA_GUARD(g, 4096);
+    while (wn > 0 && g--) {
+        const ast_node_t *p = ND(L, wk[--wn]);
+        uint32_t c = p->first_child;
+
+        switch (p->type) {
+        case AST_INT_LIT:  case AST_FLOAT_LIT: case AST_CHAR_LIT:
+        case AST_BOOL_LIT: case AST_NULL_LIT:  case AST_STRING_LIT:
+        case AST_IDENT:    case AST_SCOPE_RES: case AST_SIZEOF:
+        case AST_PACK_SIZE:
+            continue;
+
+        case AST_CAST:
+            c = c ? ND(L, c)->next_sibling : 0;
+            break;
+
+        case AST_BINARY:
+            if (p->d.oper.op == TOK_ASSIGN
+                || is_compound_assign(p->d.oper.op)) return 0;
+            break;
+
+        case AST_UNARY_PREFIX:
+        case AST_UNARY_POSTFIX:
+            if (p->d.oper.op == TOK_INC || p->d.oper.op == TOK_DEC
+                || p->d.oper.op == TOK_STAR) return 0;
+            break;
+
+        case AST_MEMBER:
+            if (p->d.member.is_arrow) return 0;
+            break;
+
+        case AST_PAREN: case AST_TERNARY:
+            break;
+
+        default:
+            return 0;
+        }
+
+        while (c) {
+            if (wn >= (int)(sizeof wk / sizeof wk[0])) return 0;
+            wk[wn++] = c;
+            c = ND(L, c)->next_sibling;
+        }
+    }
+    return wn == 0;
+}
+
+static uint32_t tbrnc(lower_t *L, uint32_t cnd_n, uint32_t thn_n,
+                      uint32_t els_n)
+{
+    uint32_t vd = bir_type_void(L->M);
+    uint32_t cnd = lower_expr(L, cnd_n);
+    uint32_t tb = new_block(L, "tern.then");
+    uint32_t eb = new_block(L, "tern.else");
+    uint32_t jb = new_block(L, "tern.end");
+    uint32_t br, j, tv, ev, tp = 0, ep = 0, phi, rt;
+    int tr = 0, er = 0;
+
+    br = emit(L, BIR_BR_COND, vd, 4, 0);
+    set_op(L, br, 0, cnd);
+    set_op(L, br, 1, tb);
+    set_op(L, br, 2, eb);
+    set_op(L, br, 3, jb);
+
+    set_block(L, tb);
+    tv = lower_expr(L, thn_n);
+    if (!block_terminated(L)) {
+        j = emit(L, BIR_BR, vd, 1, 0);
+        set_op(L, j, 0, jb);
+        tp = L->cur_block;
+        tr = 1;
+    }
+
+    set_block(L, eb);
+    ev = lower_expr(L, els_n);
+    if (!block_terminated(L)) {
+        j = emit(L, BIR_BR, vd, 1, 0);
+        set_op(L, j, 0, jb);
+        ep = L->cur_block;
+        er = 1;
+    }
+
+    set_block(L, jb);
+    if (!tr && !er) {
+        emit(L, BIR_UNREACHABLE, vd, 0, 0);
+        return BIR_VAL_NONE;
+    }
+    if (!tr) return ev;
+    if (!er) return tv;
+    if (tv == BIR_VAL_NONE || ev == BIR_VAL_NONE) return BIR_VAL_NONE;
+
+    rt = ref_type(L, tv);
+    if (!rt || rt == vd || ref_type(L, ev) == vd) return BIR_VAL_NONE;
+
+    phi = emit(L, BIR_PHI, rt, 4, 0);
+    set_op(L, phi, 0, tp);
+    set_op(L, phi, 1, tv);
+    set_op(L, phi, 2, ep);
+    set_op(L, phi, 3, ev);
+    return BIR_MAKE_VAL(phi);
+}
+
 static uint32_t lower_expr(lower_t *L, uint32_t node)
 {
     if (!node) return BIR_VAL_NONE;
@@ -6555,10 +7190,6 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
                 return BIR_MAKE_VAL(r);
             }
             lower_error(L, node, BC_E101);
-            return BIR_VAL_NONE;
-        }
-        if (s->lam > 0) {
-            lower_error(L, node, BC_E170, "a closure used as a value");
             return BIR_VAL_NONE;
         }
         if (s->is_alloca) {
@@ -6760,6 +7391,7 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             set_op(L, old, 0, ptr);
             uint32_t rhs = lower_expr(L, rhs_n);
 
+            if (ptr_t(L, et)) return pstep(L, node, base, ptr, et, old, rhs);
             if (base != TOK_SHL && base != TOK_SHR)
                 rhs = stfit(L, rhs, et, rhs_n);
             int fp   = is_float_type(L, et);
@@ -6984,6 +7616,10 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             if (is_float_type(L, et)) {
                 one = BIR_MAKE_CONST(bir_const_float(L->M, et, 1.0));
                 res = emit(L, op==TOK_INC ? BIR_FADD : BIR_FSUB, et, 2, 0);
+            } else if (ptr_t(L, et)) {
+                one = BIR_MAKE_CONST(bir_const_int(L->M, bir_type_int(L->M, 32),
+                                                   op == TOK_INC ? 1 : -1));
+                res = emit(L, BIR_GEP, et, 2, 0);
             } else {
                 one = BIR_MAKE_CONST(bir_const_int(L->M, et, 1));
                 res = emit(L, op==TOK_INC ? BIR_ADD : BIR_SUB, et, 2, 0);
@@ -7024,6 +7660,10 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             if (is_float_type(L, et)) {
                 one = BIR_MAKE_CONST(bir_const_float(L->M, et, 1.0));
                 res = emit(L, op==TOK_INC ? BIR_FADD : BIR_FSUB, et, 2, 0);
+            } else if (ptr_t(L, et)) {
+                one = BIR_MAKE_CONST(bir_const_int(L->M, bir_type_int(L->M, 32),
+                                                   op == TOK_INC ? 1 : -1));
+                res = emit(L, BIR_GEP, et, 2, 0);
             } else {
                 one = BIR_MAKE_CONST(bir_const_int(L->M, et, 1));
                 res = emit(L, op==TOK_INC ? BIR_ADD : BIR_SUB, et, 2, 0);
@@ -7044,6 +7684,9 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
         uint32_t cond_n = n->first_child;
         uint32_t then_n = ND(L, cond_n)->next_sibling;
         uint32_t else_n = ND(L, then_n)->next_sibling;
+
+        if (!tpure(L, then_n) || !tpure(L, else_n))
+            return tbrnc(L, cond_n, then_n, else_n);
 
         uint32_t cond = lower_expr(L, cond_n);
         uint32_t tv   = lower_expr(L, then_n);
@@ -7127,7 +7770,7 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
         }
 
         char cname[128];
-        int fbc = 0;
+        int fbc = 0, ocf = 0;
         uint32_t self = BIR_VAL_NONE;
         uint32_t hdst = L->srdst, hdty = L->srdty;
         L->srdst = BIR_VAL_NONE;
@@ -7161,6 +7804,12 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
                 if (!smth(L, si, mn)) self = op;
             }
         }
+        ocf = ocall(L, callee_n, cname, sizeof(cname), &self);
+        if (ocf < 0) {
+            lower_error(L, node, BC_E030,
+                        "operator() as a member template");
+            return BIR_VAL_NONE;
+        }
         {
             const char *fb = fbfn(L, cname);
             cexp_t *ce = NULL;
@@ -7180,7 +7829,7 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             }
         }
         if (ND(L, callee_n)->type == AST_SCOPE_RES) {
-            char qn[144], cd[144];
+            char qn[144], cd[144], nrm[144];
             char *sep;
             qtxt(L, callee_n, qn, sizeof(qn));
             sep = strstr(qn, "::");
@@ -7194,7 +7843,10 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
                     base = sn && strchr(sn, CI_SEP) && tamb(L, bt) > 1
                          ? NULL : sn;
                 } else if (!base) {
-                    base = qn;
+                    uint16_t sv = L->sdbad;
+
+                    base = sdnrm(L, qn, nrm, sizeof(nrm)) ? nrm : qn;
+                    L->sdbad = sv;
                 }
                 lst = strrchr(tail, ':');
                 if (lst) tail = lst + 1;
@@ -7219,6 +7871,19 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
         if (strcmp(cname, "__syncthreads") == 0) {
             uint32_t inst = emit(L, BIR_BARRIER, bir_type_void(L->M), 0, 0);
             return BIR_MAKE_VAL(inst);
+        }
+        if (strcmp(cname, "__syncwarp") == 0) {
+            uint32_t an = ND(L, callee_n)->next_sibling;
+            int64_t msk = 0;
+
+            if (an && (!cival(L, an, &msk)
+                       || (uint64_t)msk != 0xffffffffu)) {
+                lower_error(L, node, BC_E030,
+                            "__syncwarp with a mask short of every lane");
+                return BIR_VAL_NONE;
+            }
+            return BIR_MAKE_VAL(emit(L, BIR_BARRIER,
+                                     bir_type_void(L->M), 0, 1));
         }
         {
             static const struct { const char *n; uint8_t sc; } ftab[] = {
@@ -7525,8 +8190,9 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
                     uint32_t gep = emit(L, BIR_GEP, fpt, 2, 0);
                     set_op(L, gep, 0, BIR_MAKE_VAL(al));
                     set_op(L, gep, 1, ci);
+                    uint32_t fv = stfit(L, val, vsd->field_types[fi], an);
                     uint32_t sv = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
-                    set_op(L, sv, 0, val);
+                    set_op(L, sv, 0, fv);
                     set_op(L, sv, 1, BIR_MAKE_VAL(gep));
                     an = ND(L, an)->next_sibling;
                 }
@@ -8078,31 +8744,6 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             return BIR_MAKE_VAL(inst);
         }
 
-        if (strcmp(cname, "assert") == 0) {
-            uint32_t an = ND(L, callee_n)->next_sibling;
-            uint32_t cv, okb, bad, br;
-            if (!an) {
-                lower_error(L, node, BC_E143, cname);
-                return BIR_VAL_NONE;
-            }
-            cv  = lower_expr(L, an);
-            okb = new_block(L, "asrt.ok");
-            bad = new_block(L, "asrt.bad");
-            br  = emit(L, BIR_BR_COND, bir_type_void(L->M), 4, 0);
-            set_op(L, br, 0, cv);
-            set_op(L, br, 1, okb);
-            set_op(L, br, 2, bad);
-            set_op(L, br, 3, okb);
-            set_block(L, bad);
-            emit(L, BIR_TRAP, bir_type_void(L->M), 0, 0);
-            if (!block_terminated(L)) {
-                uint32_t j = emit(L, BIR_BR, bir_type_void(L->M), 1, 0);
-                set_op(L, j, 0, okb);
-            }
-            set_block(L, okb);
-            return BIR_VAL_NONE;
-        }
-
         if (strcmp(cname, "printf") == 0)
             return prntf(L, node, callee_n);
 
@@ -8613,6 +9254,13 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
             nargs++;
         }
         if (!haspk) ncand = fcand(L, cname, nargs, cand, OV_CAND);
+        if (ocf && ncand > 1) {
+            ncand = ocfil(L, cand, ncand, ocnst(L, callee_n));
+            if (ncand < 0) {
+                lower_error(L, node, BC_E156, cname);
+                return BIR_VAL_NONE;
+            }
+        }
         if (!haspk && ncand == 0 && nargs < BC_MAX_ARGS) {
             ndef = fdflt(L, cname, nargs, defs, BC_MAX_ARGS - nargs);
             if (ndef > 0)
@@ -8951,6 +9599,7 @@ static uint32_t lower_expr(lower_t *L, uint32_t node)
 
 static int sfind(const lower_t *L, uint32_t st)
 {
+    st = bir_tunq(L->M, st);
     for (int si = 0; si < L->nstructs; si++)
         if (L->structs[si].bir_type == st) return si;
     return -1;
@@ -9036,7 +9685,7 @@ static uint32_t dcty(lower_t *L, uint32_t node)
         return 0;
 
     sdres(L, nd, &dv);
-    if (L->sdty && !L->sdarr) {
+    if (L->sdty && L->sdarr != 2) {
         L->sdbad = 0;
         return L->sdty;
     }
@@ -9483,6 +10132,7 @@ static void lower_var_decl(lower_t *L, uint32_t node)
     uint32_t type_n = child_at(L, node, 0);
     uint32_t name_n = child_at(L, node, 1);
     if (!name_n || ND(L, name_n)->type != AST_IDENT) return;
+    L->cpend = (n->qualifiers & QUAL_CONST) != 0;
 
     /* Embedded anonymous struct/union def? Register before resolve. */
     uint32_t andef = ND(L, name_n)->next_sibling;
@@ -9537,6 +10187,9 @@ static void lower_var_decl(lower_t *L, uint32_t node)
         return;
     }
 
+    int cxok = 0;
+    uint32_t cxv = BIR_VAL_NONE;
+
     if ((n->qualifiers & (QUAL_CONSTEXPR | QUAL_CONST)) && n->d.oper.op == 0) {
         uint32_t ci = ND(L, name_n)->next_sibling;
         int n0 = L->ncag;
@@ -9553,6 +10206,10 @@ static void lower_var_decl(lower_t *L, uint32_t node)
             if ((n->qualifiers & QUAL_CONSTEXPR) && cv.fnd) {
                 L->ncag = n0;
                 return;
+            }
+            if (!cv.agg && !cv.fnd) {
+                cxv  = sdemv(L, &cv, elem_t);
+                cxok = 1;
             }
         }
         L->ncag = n0;
@@ -9640,6 +10297,11 @@ static void lower_var_decl(lower_t *L, uint32_t node)
             L->nzst = 0;
             ainit(L, node, BIR_MAKE_VAL(alloca), elem_t, init_n, 0, name);
         }
+    } else if (cxok) {
+        uint32_t st = emit(L, BIR_STORE, bir_type_void(L->M), 2, 0);
+
+        set_op(L, st, 0, cxv);
+        set_op(L, st, 1, BIR_MAKE_VAL(alloca));
     } else if (init_n && ND(L, init_n)->type != AST_NONE) {
         uint32_t init_v;
         uint32_t vt;
@@ -10216,9 +10878,135 @@ static void lower_stmt(lower_t *L, uint32_t node)
         break;
     }
 
-    case AST_RANGE_FOR:
-        lower_error(L, node, BC_E135);
+    case AST_RANGE_FOR: {
+        uint32_t kid[8], ts = 0, idn = 0, rng = 0, body = 0;
+        uint32_t i32 = bir_type_int(L->M, 32);
+        uint32_t et = 0, arr, vsl, isl, ept;
+        uint32_t cond_b, body_b, inc_b, end_b;
+        int nk = 0, nid = 0, ne = 0, i, bad = 0;
+        char vn[128];
+
+        for (uint32_t c = n->first_child; c; c = ND(L, c)->next_sibling) {
+            if (nk >= 8) { bad = 1; break; }
+            kid[nk++] = c;
+        }
+        if (bad || nk < 3) { lower_error(L, node, BC_E135); break; }
+        body = kid[nk - 1];
+        rng  = kid[nk - 2];
+        for (i = 0; i < nk - 2; i++) {
+            if (ND(L, kid[i])->type == AST_TYPE_SPEC) ts = kid[i];
+            else if (ND(L, kid[i])->type == AST_IDENT) { idn = kid[i]; nid++; }
+        }
+        if (nid != 1 || ND(L, rng)->type != AST_INIT_LIST) {
+            lower_error(L, node, BC_E135);
+            break;
+        }
+        for (uint32_t c = ND(L, rng)->first_child; c;
+             c = ND(L, c)->next_sibling) {
+            if (ne >= RF_ELEM) { bad = 1; break; }
+            ne++;
+        }
+        if (bad || ne == 0) { lower_error(L, node, BC_E135); break; }
+        if (ts && ND(L, ts)->d.btype.kind != TYPE_AUTO) {
+            et = resolve_type(L, ts, n->d.oper.flags, n->cuda_flags);
+            if (L->rtbad || L->rtunk) et = 0;
+            L->rtbad = 0;
+            L->rtunk = 0;
+        }
+        if (!et) et = arg_type(L, ND(L, rng)->first_child);
+        if (!et || et >= L->M->num_types) {
+            lower_error(L, node, BC_E135);
+            break;
+        }
+
+        get_text(L, idn, vn, sizeof(vn));
+        ept = bir_type_ptr(L->M, et, BIR_AS_PRIVATE);
+        push_scope(L);
+
+        arr = BIR_MAKE_VAL(emalc(L, BIR_ALLOCA,
+                  bir_type_ptr(L->M, bir_type_array(L->M, et, (uint32_t)ne),
+                               BIR_AS_PRIVATE), 0));
+        i = 0;
+        for (uint32_t c = ND(L, rng)->first_child; c;
+             c = ND(L, c)->next_sibling) {
+            astor(L, stfit(L, lower_expr(L, c), et, c),
+                  agep(L, arr, et, i));
+            i++;
+        }
+        vsl = BIR_MAKE_VAL(emalc(L, BIR_ALLOCA, ept, 0));
+        isl = BIR_MAKE_VAL(emalc(L, BIR_ALLOCA,
+                  bir_type_ptr(L->M, i32, BIR_AS_PRIVATE), 0));
+        astor(L, BIR_MAKE_CONST(bir_const_int(L->M, i32, 0)), isl);
+
+        cond_b = new_block(L, "rfor.cond");
+        body_b = new_block(L, "rfor.body");
+        inc_b  = new_block(L, "rfor.inc");
+        end_b  = new_block(L, "rfor.end");
+        {
+            uint32_t br = emit(L, BIR_BR, bir_type_void(L->M), 1, 0);
+            set_op(L, br, 0, cond_b);
+        }
+
+        set_block(L, cond_b);
+        {
+            uint32_t ld = emit(L, BIR_LOAD, i32, 1, 0);
+            uint32_t cl, br;
+
+            set_op(L, ld, 0, isl);
+            cl = emit(L, BIR_ICMP, bir_type_int(L->M, 1), 2, BIR_ICMP_SLT);
+            set_op(L, cl, 0, BIR_MAKE_VAL(ld));
+            set_op(L, cl, 1, BIR_MAKE_CONST(bir_const_int(L->M, i32, ne)));
+            br = emit(L, BIR_BR_COND, bir_type_void(L->M), 4, 0);
+            set_op(L, br, 0, BIR_MAKE_VAL(cl));
+            set_op(L, br, 1, body_b);
+            set_op(L, br, 2, end_b);
+            set_op(L, br, 3, end_b);
+        }
+
+        set_block(L, body_b);
+        {
+            uint32_t ld = emit(L, BIR_LOAD, i32, 1, 0);
+            uint32_t g, lv;
+
+            set_op(L, ld, 0, isl);
+            g = emit(L, BIR_GEP, ept, 2, 0);
+            set_op(L, g, 0, arr);
+            set_op(L, g, 1, BIR_MAKE_VAL(ld));
+            lv = emit(L, BIR_LOAD, et, 1, 0);
+            set_op(L, lv, 0, BIR_MAKE_VAL(g));
+            astor(L, BIR_MAKE_VAL(lv), vsl);
+        }
+        add_sym(L, vn, vsl, et, 1);
+        if (L->loop_depth < MAX_LOOPS) {
+            L->break_tgt[L->loop_depth] = end_b;
+            L->cont_tgt[L->loop_depth]  = inc_b;
+            L->loop_depth++;
+        }
+        lower_stmt(L, body);
+        if (L->loop_depth > 0) L->loop_depth--;
+        if (!block_terminated(L)) {
+            uint32_t br = emit(L, BIR_BR, bir_type_void(L->M), 1, 0);
+            set_op(L, br, 0, inc_b);
+        }
+
+        set_block(L, inc_b);
+        {
+            uint32_t ld = emit(L, BIR_LOAD, i32, 1, 0);
+            uint32_t ad, br;
+
+            set_op(L, ld, 0, isl);
+            ad = emit(L, BIR_ADD, i32, 2, 0);
+            set_op(L, ad, 0, BIR_MAKE_VAL(ld));
+            set_op(L, ad, 1, BIR_MAKE_CONST(bir_const_int(L->M, i32, 1)));
+            astor(L, BIR_MAKE_VAL(ad), isl);
+            br = emit(L, BIR_BR, bir_type_void(L->M), 1, 0);
+            set_op(L, br, 0, cond_b);
+        }
+
+        set_block(L, end_b);
+        pop_scope(L);
         break;
+    }
 
     case AST_PP_DIRECTIVE:
         /* Preprocessor directives skipped */
@@ -10281,6 +11069,44 @@ static int collect_params(const lower_t *L, uint32_t func_def,
 
 static void lfbody(lower_t *L, uint32_t func_def,
                    uint16_t cuda_flags, const char *name_override);
+static int ureg(lower_t *L, uint32_t node);
+
+static int ustmt(int t)
+{
+    return t == AST_BLOCK || t == AST_IF || t == AST_FOR
+        || t == AST_RANGE_FOR || t == AST_WHILE || t == AST_DO_WHILE
+        || t == AST_SWITCH || t == AST_CASE || t == AST_DEFAULT;
+}
+
+static void uscan(lower_t *L, uint32_t fd)
+{
+    uint32_t wk[UC_NEST];
+    int wn = 0;
+    uint32_t bd = find_func_body(L, fd);
+
+    if (!bd) return;
+    wk[wn++] = bd;
+    KA_GUARD(g, 4096);
+    while (wn > 0 && g--) {
+        uint32_t nd = wk[--wn], c;
+        int n0 = wn, i, j;
+
+        for (c = ND(L, nd)->first_child; c; c = ND(L, c)->next_sibling) {
+            if (ND(L, c)->type == AST_USING) {
+                if (!ureg(L, c)) lower_error(L, c, BC_E140, MAX_TYPEDEFS);
+                continue;
+            }
+            if (!ustmt(ND(L, c)->type)) continue;
+            if (wn >= UC_NEST) break;
+            wk[wn++] = c;
+        }
+        for (i = n0, j = wn - 1; i < j; i++, j--) {
+            uint32_t t = wk[i];
+            wk[i] = wk[j];
+            wk[j] = t;
+        }
+    }
+}
 
 static void lower_func_body(lower_t *L, uint32_t func_def,
                             uint16_t cuda_flags, const char *name_override)
@@ -10291,6 +11117,7 @@ static void lower_func_body(lower_t *L, uint32_t func_def,
     L->tsc = 0;
     L->clow = 1;
     L->ntdf = L->ntypedefs;
+    uscan(L, func_def);
     lfbody(L, func_def, cuda_flags, name_override);
     ldrain(L);
     L->ntdf = fsv;
@@ -10568,7 +11395,7 @@ static void cstat(lower_t *L, uint32_t node, const char *ovr)
     for (uint32_t m = ND(L, type_n)->next_sibling; m;
          m = ND(L, m)->next_sibling) {
         char fn[64], full[144];
-        uint32_t fnn, rt = 0;
+        uint32_t fnn, rt = 0, nf0;
         uint16_t cu;
         if (ND(L, m)->type != AST_FUNC_DEF) continue;
         cu = ND(L, m)->cuda_flags;
@@ -10588,7 +11415,9 @@ static void cstat(lower_t *L, uint32_t node, const char *ovr)
         L->mrec = rt;
         ncpy(L->scls, sizeof(L->scls), sn);
         tscan(L, m);
+        nf0 = L->M->num_funcs;
         lower_func_body(L, m, cu, full);
+        if (ND(L, m)->qualifiers & QUAL_CONST) mcset(L, nf0, full);
         L->scls[0] = 0;
         L->mrec = 0;
     }
@@ -10649,8 +11478,52 @@ static void salgn(lower_t *L, struct_def_t *sd, uint32_t node)
         onat += sz;
         ocud += sz;
     }
-    if (want > bir_balg(L->M, sd->bir_type, 8))
+    if (want > bir_balg(L->M, sd->bir_type, 8)) {
         sd->algn = (uint16_t)want;
+        (void)bir_salg(L->M, sd->bir_type, want);
+    }
+}
+
+static int malfnd(const lower_t *L, const char *cls, const char *nm,
+                  uint32_t *ty)
+{
+    for (int i = L->nmal - 1; i >= 0; i--)
+        if (strcmp(L->mals[i].cls, cls) == 0
+         && strcmp(L->mals[i].nm, nm) == 0) {
+            *ty = L->mals[i].type;
+            return 1;
+        }
+    return 0;
+}
+
+static int malad(lower_t *L, uint32_t mem, struct_def_t *sd)
+{
+    uint32_t nn = ND(L, mem)->first_child;
+    uint32_t ty = nn ? ND(L, nn)->next_sibling : 0;
+    char an[64];
+    uint32_t t;
+    mal_t *e = NULL;
+
+    if (!nn || ND(L, nn)->type != AST_IDENT) return 1;
+    if (!ty || ND(L, ty)->type != AST_TYPE_SPEC) return 1;
+    if (!sd->name[0]) return 1;
+    t = resolve_type(L, ty, ND(L, mem)->d.oper.flags, ND(L, mem)->cuda_flags);
+    L->rtbad = 0;
+    L->rtunk = 0;
+    if (!t) return 1;
+    get_text(L, nn, an, sizeof(an));
+    for (int i = 0; i < L->nmal; i++)
+        if (strcmp(L->mals[i].cls, sd->name) == 0
+         && strcmp(L->mals[i].nm, an) == 0) { e = &L->mals[i]; break; }
+    if (!e) {
+        if (L->nmal >= MAX_MAL) return 0;
+        e = &L->mals[L->nmal++];
+    }
+    memset(e, 0, sizeof(*e));
+    ncpy(e->cls, sizeof(e->cls), sd->name);
+    ncpy(e->nm, sizeof(e->nm), an);
+    e->type = t;
+    return 1;
 }
 
 static int sdreg(lower_t *L, uint32_t mem, struct_def_t *sd)
@@ -10668,7 +11541,16 @@ static int sdreg(lower_t *L, uint32_t mem, struct_def_t *sd)
     ncpy(e->cls, sizeof(e->cls), sd->name);
     get_text(L, nn, e->nm, sizeof(e->nm));
     e->type = resolve_type(L, ft, ND(L, mem)->d.oper.flags, 0);
-    e->arr  = ND(L, mem)->d.oper.op != 0;
+    if (ND(L, mem)->d.oper.op < 0) {
+        e->arr = 2;
+    } else if (ND(L, mem)->d.oper.op > 0) {
+        uint32_t aft = 0, abn = 0, at;
+        int abad = 0;
+
+        at = farr(L, e->type, mem, nn, &aft, &abad, &abn);
+        e->arr = abad ? 2 : 1;
+        if (!abad) e->type = at;
+    }
     L->rtbad = 0;
     memset(&v, 0, sizeof(v));
     if (!(q & (QUAL_CONST | QUAL_CONSTEXPR))) e->bad = 2;
@@ -10749,6 +11631,12 @@ static void collect_struct(lower_t *L, uint32_t node)
     int over = 0;
     while (member) {
         if (sd->num_fields >= MAX_FIELDS) { over = 1; break; }
+        if (ND(L, member)->type == AST_USING) {
+            if (!malad(L, member, sd))
+                lower_error(L, member, BC_E340, sd->name, MAX_MAL);
+            member = ND(L, member)->next_sibling;
+            continue;
+        }
         if (ND(L, member)->type == AST_FUNC_DEF
             && (ND(L, member)->qualifiers & QUAL_CONSTEXPR)) {
             uint32_t mid = child_at(L, member, 1);
@@ -11008,6 +11896,32 @@ static void tdbad(lower_t *L, typedef_def_t *td)
     ncpy(td->snm, sizeof(td->snm), L->rtsnm);
 }
 
+static uint32_t fpty(lower_t *L, uint32_t name_n, uint32_t type_n, int depth,
+                     uint16_t cuda)
+{
+    uint32_t pv[MAX_PARM], pt[MAX_PARM], ret, t;
+    int      np = collect_params(L, name_n, pv, MAX_PARM);
+
+    if (np <= 0) return resolve_type(L, type_n, depth, cuda);
+    ret = resolve_type(L, type_n, 0, 0);
+    if (L->rtbad || L->rtunk) { L->rtbad = 0; L->rtunk = 0; return 0; }
+    for (int i = 0; i < np; i++) {
+        const ast_node_t *pn = ND(L, pv[i]);
+
+        if (pn->d.oper.op == PRM_VARG || pn->d.oper.op == PRM_PACK) return 0;
+        pt[i] = resolve_type(L, pn->first_child, pn->d.oper.flags,
+                             pn->cuda_flags);
+        if (L->rtbad || L->rtunk || !pt[i]) {
+            L->rtbad = 0;
+            L->rtunk = 0;
+            return 0;
+        }
+    }
+    t = bir_type_func(L->M, ret, pt, np);
+    for (int i = 0; i < depth; i++) t = bir_type_ptr(L->M, t, BIR_AS_GLOBAL);
+    return t;
+}
+
 static void collect_typedef(lower_t *L, uint32_t node)
 {
     /* typedef TYPE NAME;
@@ -11064,7 +11978,7 @@ static void collect_typedef(lower_t *L, uint32_t node)
     typedef_def_t *td = &L->typedefs[L->ntypedefs++];
     memset(td, 0, sizeof(*td));
     get_text(L, name_n, td->name, sizeof(td->name));
-    td->bir_type = resolve_type(L, type_n, ND(L, node)->d.oper.flags, 0);
+    td->bir_type = fpty(L, name_n, type_n, ND(L, node)->d.oper.flags, 0);
     tdbad(L, td);
 }
 
@@ -11088,8 +12002,8 @@ static int ureg(lower_t *L, uint32_t node)
     }
     memset(td, 0, sizeof(*td));
     ncpy(td->name, sizeof(td->name), nm);
-    td->bir_type = resolve_type(L, ty_n, ND(L, node)->d.oper.flags,
-                                ND(L, node)->cuda_flags);
+    td->bir_type = fpty(L, nm_n, ty_n, ND(L, node)->d.oper.flags,
+                        ND(L, node)->cuda_flags);
     tdbad(L, td);
     L->rtbad = 0;
     return 1;
@@ -11270,6 +12184,7 @@ static void collect_template(lower_t *L, uint32_t node)
     template_def_t *td = &L->templates[L->ntemplates++];
     td->ast = node;
     get_text(L, fn_name, td->name, sizeof(td->name));
+    ncpy(td->ns, sizeof(td->ns), L->cns);
 }
 
 /* ---- Template Instantiation ---- */
@@ -11280,6 +12195,21 @@ static void collect_template(lower_t *L, uint32_t node)
  *   - callee = "scale"
  *   - Deduce T from literal arguments
  */
+static uint32_t apointee(lower_t *L, uint32_t base)
+{
+    uint32_t bt;
+
+    L->atdp++;
+    bt = arg_type(L, base);
+    L->atdp--;
+    if (bt < L->M->num_types
+        && (L->M->types[bt].kind == BIR_TYPE_ARRAY
+            || L->M->types[bt].kind == BIR_TYPE_PTR)
+        && L->M->types[bt].inner)
+        return bir_tunq(L->M, L->M->types[bt].inner);
+    return 0;
+}
+
 static uint32_t arg_type(lower_t *L, uint32_t arg)
 {
     const ast_node_t *a;
@@ -11304,19 +12234,14 @@ static uint32_t arg_type(lower_t *L, uint32_t arg)
 
         get_text(L, arg, nm, (int)sizeof nm);
         sy = find_sym(L, nm);
-        if (sy && sy->type && !sy->lam) return sy->type;
+        if (sy && sy->type) return sy->type;
     }
-    if (a->type == AST_SUBSCRIPT && a->first_child && L->atdp < MAX_CDEP) {
-        uint32_t bt;
+    if ((a->type == AST_SUBSCRIPT
+         || (a->type == AST_UNARY_PREFIX && a->d.oper.op == TOK_STAR))
+        && a->first_child && L->atdp < MAX_CDEP) {
+        uint32_t et = apointee(L, a->first_child);
 
-        L->atdp++;
-        bt = arg_type(L, a->first_child);
-        L->atdp--;
-        if (bt < L->M->num_types
-            && (L->M->types[bt].kind == BIR_TYPE_ARRAY
-                || L->M->types[bt].kind == BIR_TYPE_PTR)
-            && L->M->types[bt].inner)
-            return L->M->types[bt].inner;
+        if (et) return et;
     }
     if (a->type == AST_MEMBER && a->first_child && L->atdp < MAX_CDEP) {
         uint32_t obj = a->first_child;
@@ -11349,7 +12274,7 @@ static uint32_t tpeel(const lower_t *L, uint32_t t, int dep)
             return 0;
         t = L->M->types[t].inner;
     }
-    return t;
+    return bir_tunq(L->M, t);
 }
 
 static int tfarg(lower_t *L, uint32_t a, const char *vn,
@@ -11357,9 +12282,11 @@ static int tfarg(lower_t *L, uint32_t a, const char *vn,
 {
     template_def_t *tm = find_template(L, vn);
     binding_t *nb2;
-    char key[256];
+    char key[256], ta[192], spl[224];
     int ntp = 0, ok;
     uint32_t fn2 = 0;
+
+    uint32_t lp = LPEND;
 
     if (!tm || L->xdep >= MAX_NEST) return 0;
     nb2 = L->xnb[L->xdep];
@@ -11373,6 +12300,13 @@ static int tfarg(lower_t *L, uint32_t a, const char *vn,
                         && tfind(L, key, out, oz);
         }
     }
+    if (ok) {
+        lntarg(L, nb2, ntp, ta, sizeof ta);
+        if (ta[0] != '\0'
+            && snprintf(spl, sizeof spl, "%s<%s>", vn, ta) > 0)
+            fsput(out, spl);
+    }
+    LPEND = lp;
     L->xdep--;
     return ok;
 }
@@ -11596,9 +12530,10 @@ static int tparm(lower_t *L, uint32_t tnode, binding_t *nb)
     int ntp = 0;
 
     for (uint32_t tp = ND(L, tnode)->first_child;
-         tp && ND(L, tp)->type == AST_TEMPLATE_PARAM && ntp < MAX_TPARM;
+         tp && ND(L, tp)->type == AST_TEMPLATE_PARAM;
          tp = ND(L, tp)->next_sibling) {
         int fl = ND(L, tp)->d.oper.flags;
+        if (ntp >= MAX_TPARM) return -1;
         memset(&nb[ntp], 0, sizeof(nb[0]));
         nb[ntp].is_type = !(fl & TP_NTYP);
         if (fl & TP_PACK) {
@@ -12229,7 +13164,8 @@ static int tdeduc(lower_t *L, uint32_t tnode, uint32_t cal,
 {
     int ntp = tparm(L, tnode, nb);
     int ai = 0;
-    *ntpo = ntp;
+    *ntpo = ntp < 0 ? 0 : ntp;
+    if (ntp < 0) return 0;
 
     uint32_t func_n = 0;
     for (uint32_t fc = ND(L, tnode)->first_child; fc;
@@ -12323,17 +13259,39 @@ static int tmang(lower_t *L, const char *cname, int slot,
     }
 }
 
+static int xkey(const lower_t *L, const char *key)
+{
+    for (int i = 0; i < L->nxins; i++)
+        if (strcmp(L->xins[i].key, key) == 0) return 1;
+    return 0;
+}
+
+static int xhit(lower_t *L, const char *cname, const binding_t *nb,
+                int ntp, uint32_t func_n)
+{
+    char key[256];
+
+    if (L->nxins <= 0) return 0;
+    tkeyb(nb, ntp, cname, key, sizeof key);
+    tkfn(L, cname, func_n, key, sizeof key);
+    return xkey(L, key);
+}
+
 static int tinst(lower_t *L, uint32_t node, const char *cname,
                  const binding_t *nb, int ntp, uint32_t func_n)
 {
     char key[256];
     tkeyb(nb, ntp, cname, key, sizeof(key));
     tkfn(L, cname, func_n, key, sizeof(key));
+    if (xkey(L, key)) return 0;
 
     int nsame = 0;
     size_t cl = strlen(cname);
     for (int i = 0; i < L->ninst; i++) {
-        if (strcmp(L->inst[i].key, key) == 0) return 0;
+        if (strcmp(L->inst[i].key, key) == 0) {
+            lnsym(L, L->inst[i].sym, nb, ntp);
+            return 0;
+        }
         if (strncmp(L->inst[i].key, cname, cl) == 0
             && L->inst[i].key[cl] == '|')
             nsame++;
@@ -12346,6 +13304,7 @@ static int tinst(lower_t *L, uint32_t node, const char *cname,
     char mangled[128];
 
     if (!tmang(L, cname, nsame, mangled, sizeof(mangled))) return -1;
+    lnsym(L, mangled, nb, ntp);
     if (snprintf(L->inst[L->ninst].key, sizeof(L->inst[0].key), "%s", key) < 0
         || snprintf(L->inst[L->ninst].sym, sizeof(L->inst[0].sym), "%s",
                     mangled) < 0) return -1;
@@ -12415,7 +13374,21 @@ static int tguess(const binding_t *nb, int ntp)
 static int tsym(lower_t *L, char *cname, size_t cz, uint32_t cal,
                 uint32_t arg)
 {
-    template_def_t *tm = find_template(L, cname);
+    char bare[128], q[128];
+    uint32_t idn = 0;
+    template_def_t *tm;
+
+    q[0] = 0;
+    if (cal && ND(L, cal)->type == AST_SCOPE_RES) {
+        idn = tqcal(L, cal, bare, sizeof(bare), q, sizeof(q));
+        if (idn && strcmp(bare, cname) != 0) {
+            idn = 0;
+            q[0] = 0;
+        }
+    }
+    if (!idn) idn = cal;
+
+    tm = tqpick(L, cname, q, NULL, -1);
     if (!tm) return 0;
 
     uint32_t av[BC_MAX_ARGS];
@@ -12425,9 +13398,9 @@ static int tsym(lower_t *L, char *cname, size_t cz, uint32_t cal,
     uint32_t func_n = 0;
     char key[256], sym[128];
 
-    if (na >= 0) tm = tmpick(L, cname, av, na);
+    if (na >= 0) tm = tqpick(L, cname, q, av, na);
     if (!tm) return 0;
-    if (na >= 0 && tdeduc(L, tm->ast, cal, av, na, nb, &ntp, &func_n)
+    if (na >= 0 && tdeduc(L, tm->ast, idn, av, na, nb, &ntp, &func_n)
         && !tguess(nb, ntp)) {
         tkeyb(nb, ntp, cname, key, sizeof(key));
         tkfn(L, cname, func_n, key, sizeof(key));
@@ -12450,7 +13423,8 @@ static void vscn(lower_t *L, uint32_t vd)
     if (!nn || ND(L, nn)->type != AST_IDENT) return;
     get_text(L, nn, vn, (int)sizeof vn);
     if (!vn[0]) return;
-    t = rtype(L, n->first_child, n->d.oper.flags, n->cuda_flags);
+    t = resolve_type(L, n->first_child, n->d.oper.flags, n->cuda_flags);
+    if (L->rtbad || L->rtunk) { L->rtbad = 0; L->rtunk = 0; return; }
     if (t) {
         uint32_t aft = 0;
         int bad = 0;
@@ -12461,10 +13435,23 @@ static void vscn(lower_t *L, uint32_t vd)
     }
 }
 
+static int psdup(const lower_t *L, int base, const char *nm)
+{
+    for (int k = base; k < L->nsyms; k++)
+        if (strcmp(L->syms[k].name, nm) == 0) return 1;
+    return 0;
+}
+
+/* A parameter shadows whatever the enclosing scan had in scope. The kernel
+   is instantiated from inside its launcher's own scan, so the launcher's
+   locals are still live here, and ggml names several of them exactly as the
+   kernel names its parameters at a different width. Only a repeat inside
+   this one parameter list is a duplicate. */
 static void pscn(lower_t *L, uint32_t fd)
 {
     uint32_t pv[MAX_PARM];
     int np = collect_params(L, fd, pv, MAX_PARM);
+    int base = L->nsyms;
 
     for (int i = 0; i < np; i++) {
         const ast_node_t *pn = ND(L, pv[i]);
@@ -12478,7 +13465,7 @@ static void pscn(lower_t *L, uint32_t fd)
                 get_text(L, pc, pnm, (int)sizeof pnm);
                 break;
             }
-        if (!pnm[0] || find_sym(L, pnm)) continue;
+        if (!pnm[0] || psdup(L, base, pnm)) continue;
         t = rtype(L, pn->first_child, pn->d.oper.flags, pn->cuda_flags);
         if (t) add_sym(L, pnm, BIR_VAL_NONE, t, 0);
     }
@@ -12488,26 +13475,35 @@ static void tscall(lower_t *L, uint32_t node)
 {
     uint32_t cn = ND(L, node)->first_child;
     template_def_t *tm;
-    char cname[128];
+    char cname[128], q[128];
     const char *fb;
-    uint32_t av[BC_MAX_ARGS], func_n = 0;
+    uint32_t av[BC_MAX_ARGS], func_n = 0, idn;
     int na, ntp = 0;
 
-    if (!cn || ND(L, cn)->type != AST_IDENT) return;
-    get_text(L, cn, cname, sizeof(cname));
+    if (!cn) return;
+    {
+        char fwm[32];
+
+        if (fwstd(L, cn, fwm, (int)sizeof fwm)) return;
+    }
+    idn = tqcal(L, cn, cname, sizeof(cname), q, sizeof(q));
+    if (!idn) return;
     fb = fbfn(L, cname);
-    if (fb) ncpy(cname, sizeof(cname), fb);
+    if (fb) {
+        ncpy(cname, sizeof(cname), fb);
+        q[0] = 0;
+    }
     tm = fb && bir_fsym(L->M, cname, L->tu, -1) != BIR_SYM_NONE
-       ? NULL : find_template(L, cname);
+       ? NULL : tqpick(L, cname, q, NULL, -1);
     if (!tm) return;
     na = alist(L, ND(L, cn)->next_sibling, av, BC_MAX_ARGS);
     if (na < 0 || L->xdep >= MAX_NEST) return;
-    tm = tmpick(L, cname, av, na);
+    tm = tqpick(L, cname, q, av, na);
     if (!tm) return;
     {
         binding_t *nb = L->xnb[L->xdep++];
 
-        if (tdeduc(L, tm->ast, cn, av, na, nb, &ntp, &func_n))
+        if (tdeduc(L, tm->ast, idn, av, na, nb, &ntp, &func_n))
             tinst(L, node, cname, nb, ntp, func_n);
         L->xdep--;
     }
@@ -12681,21 +13677,62 @@ static void tscan(lower_t *L, uint32_t node)
             vscn(L, node);
         }
     }
+    if (n->type == AST_USING && !ureg(L, node))
+        lower_error(L, node, BC_E140, MAX_TYPEDEFS);
     if (psv >= 0) L->nsyms = psv;
     if (tsv >= 0) L->ntypedefs = tsv;
     if (csv >= 0) ccomp(L, csv);
 }
 
-static uint32_t fwlk(const lower_t *L, uint32_t nd)
+static uint32_t fwlkn(const lower_t *L, uint32_t nd, int k, int *nc, fnh_t *h)
 {
+    if (nc) *nc = 1;
+    if (h) { h->ei = -1; h->ci = -1; }
     nd = unfw(L, nd);
     if (L->nfwf <= 0 || !nd || ND(L, nd)->type != AST_IDENT) return nd;
-    const fwfr_t *f = &L->fwf[L->nfwf - 1];
-    char nm[64];
-    get_text(L, nd, nm, sizeof(nm));
-    for (int i = 0; i < f->nb; i++)
-        if (strcmp(f->b[i].name, nm) == 0) return f->b[i].arg;
+    for (int fi = L->nfwf - 1; fi >= 0; fi--) {
+        const fwfr_t *f = &L->fwf[fi];
+        char nm[64];
+
+        if (!nd || ND(L, nd)->type != AST_IDENT) break;
+        get_text(L, nd, nm, sizeof(nm));
+        for (int i = 0; i < f->nb; i++)
+            if (strcmp(f->b[i].name, nm) == 0) {
+                nd = unfw(L, f->b[i].arg);
+                break;
+            }
+    }
+
+    KA_GUARD(g, MAX_FNAL);
+    while (g-- && nd && ND(L, nd)->type == AST_IDENT) {
+        char nm[64];
+        int hit = 0;
+
+        get_text(L, nd, nm, sizeof(nm));
+        for (int i = L->nfnal - 1; i >= 0; i--)
+            if (strcmp(L->fnal[i].name, nm) == 0) {
+                int c = L->fnal[i].n, j;
+
+                if (c <= 0) return nd;
+                j = k % c;
+                if (nc && *nc <= MAX_FNC * MAX_FNC) *nc *= c;
+                if (h) { h->ei = i; h->ci = j; }
+                nd = unfw(L, L->fnal[i].c[j].ini);
+                k /= c;
+                hit = 1;
+                break;
+            }
+        if (!hit) break;
+    }
     return nd;
+}
+
+static int fwnc(const lower_t *L, uint32_t nd)
+{
+    int nc = 1;
+
+    (void)fwlkn(L, nd, 0, &nc, NULL);
+    return nc > 0 ? nc : 1;
 }
 
 static int fwmen(const lower_t *L, uint32_t nd, int depth)
@@ -12756,7 +13793,12 @@ static int subav(lower_t *L, uint32_t first, uint32_t *av, int max)
             continue;
         }
         if (n >= max) return -1;
-        av[n++] = fwlk(L, c);
+        {
+            int nci = 1;
+            uint32_t rv = fwlkn(L, c, 0, &nci, NULL);
+
+            av[n++] = (nci > 1) ? unfw(L, c) : rv;
+        }
     }
     return n;
 }
@@ -12788,7 +13830,7 @@ static template_def_t *ftmpl(lower_t *L, const char *name, int na)
         uint32_t fn, pv[MAX_PARM];
         int np, nrq = 0, vg = 0;
 
-        if (strcmp(t->name, name) != 0) continue;
+        if (!tmhit(L, t, name)) continue;
         if (!first) first = t;
         if (na < 0) return t;
         fn = tfunc(L, t);
@@ -12902,7 +13944,7 @@ static template_def_t *tmpick(lower_t *L, const char *name,
         uint32_t fn, pv[MAX_PARM];
         int np, ntb, ok = 1, sure = 0;
 
-        if (strcmp(t->name, name) != 0) continue;
+        if (!tmhit(L, t, name)) continue;
         fn = tfunc(L, t);
         if (!fn) continue;
         np = collect_params(L, fn, pv, MAX_PARM);
@@ -12941,6 +13983,12 @@ static int hasl(lower_t *L, uint32_t nd, int depth, int hop)
     if (ND(L, nd)->type == AST_LAUNCH) return 1;
     if (ND(L, nd)->type == AST_CALL && hop > 0) {
         uint32_t cn = ND(L, nd)->first_child;
+        if (cn && ND(L, cn)->type == AST_CAST) {
+            uint32_t t = ND(L, cn)->first_child;
+            uint32_t e = t ? ND(L, t)->next_sibling : 0;
+
+            if (e && ND(L, e)->type == AST_INIT_LIST) return 1;
+        }
         if (cn && ND(L, cn)->type == AST_IDENT) {
             char nm[128];
             get_text(L, cn, nm, sizeof(nm));
@@ -13008,9 +14056,9 @@ static int fwpush(lower_t *L, uint32_t func_n, const uint32_t *av, int na)
     return 1;
 }
 
-static int slnch(lower_t *L, uint32_t node)
+static int slnch(lower_t *L, uint32_t node, int k)
 {
-    uint32_t callee_n = fwlk(L, ND(L, node)->first_child);
+    uint32_t callee_n = fwlkn(L, ND(L, node)->first_child, k, NULL, NULL);
     if (!callee_n || ND(L, callee_n)->type != AST_IDENT) return 0;
 
     char cname[128];
@@ -13083,6 +14131,8 @@ static int swrap(lower_t *L, uint32_t node)
     uint32_t dfn = 0;
     int have = tdeduc(L, tmpl->ast, cn, av, na, nb, &ntp, &dfn);
 
+    if (have && xhit(L, cname, nb, ntp, dfn)) return 1;
+
     int old_nb = L->nbindings, old_bs = L->nbbase;
     if (have && ntp > MAX_BIND - old_nb) {
         lower_error(L, node, BC_E157, cname);
@@ -13104,6 +14154,182 @@ static int swrap(lower_t *L, uint32_t node)
     L->nbbase = old_bs;
     L->nbindings = old_nb;
     return 1;
+}
+
+static int clsf(const char *key, int k, char *mk, char *val, size_t vz)
+{
+    const char *p = key;
+    size_t      n = 0;
+
+    for (int i = 0; i <= k; i++) {
+        p = strchr(p, '|');
+        if (p == NULL) return 0;
+        p++;
+    }
+    if (*p == '\0') return 0;
+    *mk = *p++;
+    while (*p != '\0' && *p != '|' && n + 1u < vz) val[n++] = *p++;
+    val[n] = '\0';
+    return 1;
+}
+
+static int clsb(lower_t *L, uint32_t ty, binding_t *nb, int *ntpo)
+{
+    const char *h;
+    char        key[256];
+    int         ci, ntp;
+
+    *ntpo = 0;
+    if (!ckey(L, ty, key, sizeof key)) return 0;
+    h = strchr(key, '#');
+    if (!h) return 0;
+    ci = (int)strtol(h + 1, NULL, 10);
+    if (ci < 0 || ci >= L->nclss || !L->clss[ci].ast) return 0;
+    ntp = tparm(L, L->clss[ci].ast, nb);
+    if (ntp < 0) return 0;
+    for (int k = 0; k < ntp; k++) {
+        char mk = 0, val[96];
+
+        if (nb[k].is_pack || !clsf(key, k, &mk, val, sizeof val)) return 0;
+        if (mk == 't') {
+            nb[k].is_type = 1;
+            nb[k].type = (uint32_t)strtoul(val, NULL, 10);
+        } else if (mk == 'n') {
+            nb[k].is_type = 0;
+            nb[k].ival = (int64_t)strtoll(val, NULL, 10);
+        } else if (mk == 'f') {
+            nb[k].is_type = 0;
+            nb[k].is_fn = 1;
+            ncpy(nb[k].fnm, sizeof nb[k].fnm, val);
+        } else {
+            return 0;
+        }
+        nb[k].fixed = 1;
+    }
+    *ntpo = ntp;
+    return 1;
+}
+
+static uint32_t fcty(lower_t *L, uint32_t cal)
+{
+    uint32_t ty = 0, ts, nm;
+    char     n[64];
+
+    if (ND(L, cal)->type == AST_CAST) {
+        uint16_t sb;
+        int      su;
+
+        ts = ND(L, cal)->first_child;
+        nm = ts ? ND(L, ts)->next_sibling : 0;
+        if (!ts || !nm || ND(L, nm)->type != AST_INIT_LIST) return 0;
+        if (ND(L, ts)->type != AST_TYPE_SPEC
+            || ND(L, ts)->d.btype.kind != TYPE_NAME) return 0;
+        nm = ND(L, ts)->first_child;
+        if (!nm || ND(L, nm)->type != AST_IDENT) return 0;
+        get_text(L, nm, n, sizeof n);
+        if (find_binding(L, n, &ty)) return ty;
+        sb = L->rtbad;
+        su = L->rtunk;
+        ty = resolve_type(L, ts, 0, 0);
+        if (L->rtbad || L->rtunk) ty = 0;
+        L->rtbad = sb;
+        L->rtunk = su;
+        return ty;
+    }
+    if (ND(L, cal)->type == AST_IDENT && !ND(L, cal)->first_child) {
+        const sym_t *s;
+
+        get_text(L, cal, n, sizeof n);
+        s = find_sym(L, n);
+        return s ? s->type : 0;
+    }
+    return 0;
+}
+
+static uint32_t fopm(lower_t *L, uint32_t sd, int *tpl)
+{
+    uint32_t tn, m;
+    char     raw[96], nm[96];
+
+    *tpl = 0;
+    tn = sd ? ND(L, sd)->first_child : 0;
+    if (!tn) return 0;
+    for (m = ND(L, tn)->next_sibling; m; m = ND(L, m)->next_sibling) {
+        uint32_t f = m, nn;
+
+        if (ND(L, m)->type == AST_TEMPLATE_DECL) {
+            for (f = ND(L, m)->first_child; f; f = ND(L, f)->next_sibling)
+                if (ND(L, f)->type == AST_FUNC_DEF) break;
+            if (!f) continue;
+        } else if (ND(L, m)->type != AST_FUNC_DEF) {
+            continue;
+        }
+        nn = child_at(L, f, 1);
+        if (!nn || ND(L, nn)->type != AST_IDENT) continue;
+        get_text(L, nn, raw, sizeof raw);
+        normalize_op_name(raw, nm, (int)sizeof nm);
+        if (strcmp(nm, "operator()") != 0) continue;
+        *tpl = ND(L, m)->type == AST_TEMPLATE_DECL;
+        return m;
+    }
+    return 0;
+}
+
+static int sfun(lower_t *L, uint32_t node)
+{
+    uint32_t    cal = ND(L, node)->first_child;
+    uint32_t    ty, sd, mem, body, fn2 = 0;
+    uint32_t    av[BC_MAX_ARGS];
+    const char *sn;
+    int         si, tpl = 0, ntp = 0, nt2 = 0, na, onb, obs, hit = 0;
+
+    if (!cal || L->fdep >= MAX_FWD) return 0;
+    ty = fcty(L, cal);
+    if (!ty) return 0;
+    sn = sname(L, ty);
+    if (!sn) return 0;
+    si = cslot(L, sn);
+    if (si < 0) return 0;
+    sd = L->structs[si].node;
+    mem = fopm(L, sd, &tpl);
+    if (!mem) return 0;
+    if (!clsb(L, ty, L->fnb, &ntp)) return 0;
+
+    onb = L->nbindings;
+    obs = L->nbbase;
+    if (ntp > MAX_BIND - onb) return 0;
+    for (int i = 0; i < ntp; i++) L->bindings[L->nbindings++] = L->fnb[i];
+    L->fdep++;
+
+    if (!tpl) {
+        body = find_func_body(L, mem);
+        if (body && hasl(L, body, 0, MAX_FWD)) {
+            scan_launches(L, body);
+            hit = 1;
+        }
+    } else {
+        L->pkbad = 0;
+        na = subav(L, ND(L, cal)->next_sibling, av, BC_MAX_ARGS);
+        if (na >= 0
+            && tdeduc(L, mem, cal, av, na, L->fnb, &nt2, &fn2) && fn2
+            && nt2 <= MAX_BIND - L->nbindings) {
+            body = find_func_body(L, fn2);
+            if (body && hasl(L, body, 0, MAX_FWD)) {
+                for (int i = 0; i < nt2; i++)
+                    L->bindings[L->nbindings++] = L->fnb[i];
+                if (fwpush(L, fn2, av, na)) {
+                    scan_launches(L, body);
+                    L->nfwf--;
+                    hit = 1;
+                }
+            }
+        }
+    }
+
+    L->fdep--;
+    L->nbbase = obs;
+    L->nbindings = onb;
+    return hit;
 }
 
 static int lgen(const lower_t *L, uint32_t lam)
@@ -13140,6 +14366,95 @@ static uint32_t lbody(const lower_t *L, uint32_t lam)
     for (uint32_t c = ND(L, lam)->first_child; c; c = ND(L, c)->next_sibling)
         if (ND(L, c)->type == AST_BLOCK) body = c;
     return body;
+}
+
+static void tdtgt(lower_t *L, uint32_t fn, binding_t *nb, int ntp, uint32_t tt)
+{
+    const bir_type_t *ft;
+    uint32_t          fpn[MAX_PARM];
+    int               nfp;
+
+    if (tt && tt < L->M->num_types && L->M->types[tt].kind == BIR_TYPE_PTR)
+        tt = L->M->types[tt].inner;
+    if (!tt || tt >= L->M->num_types || L->M->types[tt].kind != BIR_TYPE_FUNC)
+        return;
+    ft = &L->M->types[tt];
+    nfp = collect_params(L, fn, fpn, MAX_PARM);
+    for (int i = 0; i < nfp && i < (int)ft->num_fields; i++) {
+        const ast_node_t *pn = ND(L, fpn[i]);
+        uint32_t          ts = pn->first_child, at;
+        char              tname[64];
+
+        if (!ts || ND(L, ts)->type != AST_TYPE_SPEC
+            || ND(L, ts)->d.btype.kind != TYPE_NAME
+            || !ND(L, ts)->first_child) continue;
+        get_text(L, ND(L, ts)->first_child, tname, sizeof tname);
+        at = tpeel(L, L->M->type_fields[ft->count + (uint32_t)i],
+                   pn->d.oper.flags);
+        if (at) tdty(L, nb, ntp, tname, at);
+    }
+}
+
+static int tdfp(lower_t *L, const template_def_t *t, uint32_t cal, uint32_t tt,
+                binding_t *nb, int *ntpo, uint32_t *fno)
+{
+    int ntp = tparm(L, t->ast, nb);
+
+    *ntpo = ntp < 0 ? 0 : ntp;
+    *fno = tfunc(L, t);
+    if (ntp < 0 || !*fno || !texpl(L, cal, nb, ntp)) return 0;
+    tdtgt(L, *fno, nb, ntp, tt);
+    for (int i = 0; i < ntp; i++)
+        if (nb[i].is_type && !nb[i].fixed && nb[i].type == 0 && !nb[i].dflt)
+            return 0;
+    return tdflt(L, nb, ntp);
+}
+
+static int sfval(lower_t *L, uint32_t node, uint32_t tt)
+{
+    uint32_t ta = ND(L, node)->first_child;
+    char     cname[128];
+    int      hit = 0;
+
+    if (!ta || ND(L, ta)->type != AST_TEMPLATE_ARGS) return 0;
+    if (L->fdep >= MAX_FWD) return 0;
+    get_text(L, node, cname, sizeof cname);
+    if (!find_template(L, cname)) return 0;
+    for (int i = 0; i < L->ntemplates; i++) {
+        template_def_t *t = &L->templates[i];
+        binding_t      *nb = L->tnb;
+        uint32_t        fn = 0, body;
+        int             ntp = 0, onb = L->nbindings, obs = L->nbbase;
+
+        if (!tmhit(L, t, cname)) continue;
+        if (!tdfp(L, t, node, tt, nb, &ntp, &fn)) continue;
+        body = find_func_body(L, fn);
+        if (!body || !hasl(L, body, 0, MAX_FWD)) continue;
+        if (ntp > MAX_BIND - onb) continue;
+        for (int k = 0; k < ntp; k++) L->bindings[L->nbindings++] = nb[k];
+        L->fdep++;
+        push_scope(L);
+        pscn(L, fn);
+        scan_launches(L, body);
+        pop_scope(L);
+        L->fdep--;
+        L->nbbase = obs;
+        L->nbindings = onb;
+        hit = 1;
+    }
+    return hit;
+}
+
+static uint32_t fnret(lower_t *L, uint32_t fd)
+{
+    uint32_t ts = ND(L, fd)->first_child, t;
+
+    if (!ts || ND(L, ts)->type != AST_TYPE_SPEC) return 0;
+    t = resolve_type(L, ts, ND(L, fd)->d.oper.flags, ND(L, fd)->cuda_flags);
+    if (L->rtbad || L->rtunk) t = 0;
+    L->rtbad = 0;
+    L->rtunk = 0;
+    return t;
 }
 
 static int sglc(lower_t *L, uint32_t node)
@@ -13240,23 +14555,167 @@ static void slcx(lower_t *L, uint32_t c)
           (n->qualifiers & QUAL_CONSTEXPR) != 0);
 }
 
+static void fncap(lower_t *L, uint32_t r, fnc_t *fc)
+{
+    uint32_t ta = ND(L, r)->first_child;
+
+    fc->ntg = 0;
+    if (!ta || ND(L, ta)->type != AST_TEMPLATE_ARGS) return;
+    for (uint32_t a = ND(L, ta)->first_child; a; a = ND(L, a)->next_sibling) {
+        cval_t v;
+
+        if (ND(L, a)->type != AST_IDENT || fc->ntg >= MAX_FNT) continue;
+        if (!cfold(L, a, &v) || v.isf) continue;
+        get_text(L, a, fc->tg[fc->ntg].name, sizeof(fc->tg[0].name));
+        fc->tg[fc->ntg].val = v.ival;
+        fc->ntg++;
+    }
+}
+
+static void fnadd(lower_t *L, const char *nm, uint32_t rhs)
+{
+    int e = -1;
+
+    for (int i = L->nfnal - 1; i >= 0; i--)
+        if (strcmp(L->fnal[i].name, nm) == 0) { e = i; break; }
+    if (e < 0) {
+        if (L->nfnal >= MAX_FNAL) return;
+        e = L->nfnal++;
+        ncpy(L->fnal[e].name, sizeof(L->fnal[0].name), nm);
+        L->fnal[e].n = 0;
+    }
+    for (int j = 0; j < L->fnal[e].n; j++)
+        if (L->fnal[e].c[j].ini == rhs) return;
+    if (L->fnal[e].n >= MAX_FNC) return;
+    L->fnal[e].c[L->fnal[e].n].ini = rhs;
+    fncap(L, rhs, &L->fnal[e].c[L->fnal[e].n]);
+    L->fnal[e].n++;
+}
+
+static void fnpsh(lower_t *L, const fnc_t *fc)
+{
+    for (int i = 0; i < fc->ntg; i++)
+        (void)tgadd(L, fc->tg[i].name, fc->tg[i].val);
+}
+
+static void fnasg(lower_t *L, uint32_t nd, int depth)
+{
+    const ast_node_t *n;
+    uint32_t l, r;
+
+    if (!nd || depth > CE_NEST) return;
+    n = ND(L, nd);
+    l = (n->type == AST_BINARY && n->d.oper.op == TOK_ASSIGN)
+        ? n->first_child : 0;
+    r = l ? ND(L, l)->next_sibling : 0;
+    if (r && !ND(L, r)->next_sibling && ND(L, l)->type == AST_IDENT
+        && ND(L, r)->type == AST_IDENT) {
+        char nm[64], rn[128];
+
+        get_text(L, r, rn, sizeof(rn));
+        if (find_template(L, rn)) {
+            get_text(L, l, nm, sizeof(nm));
+            fnadd(L, nm, r);
+        }
+    }
+    for (uint32_t c = n->first_child; c; c = ND(L, c)->next_sibling)
+        fnasg(L, c, depth + 1);
+}
+
+static void fnreg(lower_t *L, uint32_t c)
+{
+    const ast_node_t *n = ND(L, c);
+    uint32_t nm_n, in_n;
+    char nm[64];
+
+    if (n->type != AST_VAR_DECL || (n->qualifiers & QUAL_TYPEDEF)) return;
+    nm_n = child_at(L, c, 1);
+    if (!nm_n || ND(L, nm_n)->type != AST_IDENT) return;
+    in_n = ND(L, nm_n)->next_sibling;
+    if (in_n && ND(L, in_n)->type == AST_STRUCT_DEF)
+        in_n = ND(L, in_n)->next_sibling;
+    if (!in_n || ND(L, in_n)->type != AST_IDENT) return;
+    get_text(L, nm_n, nm, sizeof(nm));
+    fnadd(L, nm, in_n);
+}
+
+static void fnfil(lower_t *L, uint32_t nd)
+{
+    const ast_node_t *n = ND(L, nd);
+    uint32_t l = n->first_child;
+    uint32_t r = l ? ND(L, l)->next_sibling : 0;
+    char nm[64];
+
+    if (!r || ND(L, r)->next_sibling) return;
+    if (ND(L, l)->type != AST_IDENT || ND(L, r)->type != AST_IDENT) return;
+    get_text(L, l, nm, sizeof(nm));
+    for (int i = L->nfnal - 1; i >= 0; i--)
+        if (strcmp(L->fnal[i].name, nm) == 0) {
+            for (int j = 0; j < L->fnal[i].n; j++)
+                if (L->fnal[i].c[j].ini == r)
+                    fncap(L, r, &L->fnal[i].c[j]);
+            return;
+        }
+}
+
+static int slnal(lower_t *L, uint32_t node)
+{
+    uint32_t cal = ND(L, node)->first_child;
+    int nc = fwnc(L, cal), hit = 0;
+
+    if (nc > MAX_FNC * MAX_FNC) {
+        lower_error(L, node, BC_E030,
+                    "more kernels behind one launch pointer than Booth tracks");
+        return 1;
+    }
+    for (int k = 0; k < nc; k++) {
+        fnh_t h;
+        uint32_t c = fwlkn(L, cal, k, NULL, &h);
+        int tsv = L->ntags;
+
+        if (h.ei >= 0) fnpsh(L, &L->fnal[h.ei].c[h.ci]);
+        if (c && ND(L, c)->type == AST_IDENT) lnrec(L, c);
+        if (slnch(L, node, k)) hit = 1;
+        L->ntags = tsv;
+    }
+    return hit;
+}
+
 static void scan_launches(lower_t *L, uint32_t node)
 {
     if (!node) return;
     const ast_node_t *n = ND(L, node);
 
+    if (n->type == AST_IF && (n->d.oper.flags & IF_CEXP)) {
+        uint32_t arm = 0;
+
+        if (cxarm(L, node, &arm)) {
+            scan_launches(L, child_at(L, node, 0));
+            if (arm) scan_launches(L, arm);
+            return;
+        }
+    }
+
     if (n->type == AST_LAMBDA && lgen(L, node)) return;
     if (n->type == AST_FOLD && sfld(L, node)) return;
-    if (n->type == AST_LAUNCH && slnch(L, node)) return;
+    if (n->type == AST_BINARY && n->d.oper.op == TOK_ASSIGN) fnfil(L, node);
+    if (n->type == AST_LAUNCH && slnal(L, node)) return;
     if (n->type == AST_CALL && sglc(L, node)) return;
     if (n->type == AST_CALL && swrap(L, node)) return;
+    if (n->type == AST_CALL && sfun(L, node)) return;
+    if (n->type == AST_IDENT && sfval(L, node, 0)) return;
+    if (n->type == AST_RETURN && n->first_child
+        && ND(L, n->first_child)->type == AST_IDENT
+        && sfval(L, n->first_child, L->scnrt)) return;
 
     if (n->type == AST_BLOCK) {
-        int gsv = L->nglm;
+        int gsv = L->nglm, fsv = L->nfnal;
         push_scope(L);
         for (uint32_t c = n->first_child; c; c = ND(L, c)->next_sibling) {
             uint32_t lm = lvlam(L, c);
             slcx(L, c);
+            fnreg(L, c);
+            fnasg(L, c, 0);
             if (lm && lgen(L, lm) && L->nglm < MAX_GLAM) {
                 get_text(L, child_at(L, c, 1), L->glms[L->nglm].name,
                          (int)sizeof(L->glms[0].name));
@@ -13266,14 +14725,138 @@ static void scan_launches(lower_t *L, uint32_t node)
                 continue;
             }
             scan_launches(L, c);
+            if (ND(L, c)->type == AST_VAR_DECL) vscn(L, c);
         }
         pop_scope(L);
         L->nglm = gsv;
+        L->nfnal = fsv;
         return;
     }
 
     for (uint32_t c = n->first_child; c; c = ND(L, c)->next_sibling)
         scan_launches(L, c);
+}
+
+static uint32_t tixnm(const lower_t *L, uint32_t node, uint32_t *ta,
+                      uint32_t *fdn)
+{
+    uint32_t fd = ND(L, node)->first_child, nm, c;
+
+    *ta = 0;
+    *fdn = 0;
+    if (!fd) return 0;
+    if (ND(L, fd)->type != AST_FUNC_DECL && ND(L, fd)->type != AST_FUNC_DEF)
+        return 0;
+    nm = child_at(L, fd, 1);
+    if (!nm || ND(L, nm)->type != AST_IDENT) return 0;
+    for (c = ND(L, nm)->first_child; c; c = ND(L, c)->next_sibling)
+        if (ND(L, c)->type == AST_TEMPLATE_ARGS) { *ta = c; break; }
+    if (!*ta) return 0;
+    *fdn = fd;
+    return nm;
+}
+
+static void tixx(lower_t *L, uint32_t node)
+{
+    uint32_t ta, nm, fd, func_n, pv[MAX_PARM];
+    binding_t *nb = L->tnb;
+    template_def_t *tm;
+    char cname[128], key[256];
+    int ntp, np;
+
+    if (!(ND(L, node)->qualifiers & QUAL_EXTERN)) return;
+    if (L->nxins >= MAX_XINS) return;
+    nm = tixnm(L, node, &ta, &fd);
+    if (!nm) return;
+    get_text(L, nm, cname, sizeof(cname));
+    np = collect_params(L, fd, pv, MAX_PARM);
+    tm = ftmpl(L, cname, np);
+    if (!tm) return;
+    func_n = tfunc(L, tm);
+    if (!func_n) return;
+    ntp = tparm(L, tm->ast, nb);
+    if (ntp < 0) return;
+    if (!texpl(L, nm, nb, ntp) || !tdflt(L, nb, ntp)) return;
+    tkeyb(nb, ntp, cname, key, sizeof(key));
+    tkfn(L, cname, func_n, key, sizeof(key));
+    ncpy(L->xins[L->nxins].key, sizeof(L->xins[0].key), key);
+    L->nxins++;
+}
+
+static void tixd(lower_t *L, uint32_t node)
+{
+    uint32_t ta, nm, fd, func_n, pv[MAX_PARM];
+    binding_t *nb = L->tnb;
+    template_def_t *tm;
+    char cname[128], key[256];
+    int ntp, np, w = 0;
+
+    if (ND(L, node)->qualifiers & QUAL_EXTERN) return;
+    if (L->nxins <= 0) return;
+    nm = tixnm(L, node, &ta, &fd);
+    if (!nm) return;
+    get_text(L, nm, cname, sizeof(cname));
+    np = collect_params(L, fd, pv, MAX_PARM);
+    tm = ftmpl(L, cname, np);
+    if (!tm) return;
+    func_n = tfunc(L, tm);
+    if (!func_n) return;
+    ntp = tparm(L, tm->ast, nb);
+    if (ntp < 0) return;
+    if (!texpl(L, nm, nb, ntp) || !tdflt(L, nb, ntp)) return;
+    tkeyb(nb, ntp, cname, key, sizeof(key));
+    tkfn(L, cname, func_n, key, sizeof(key));
+    for (int i = 0; i < L->nxins; i++)
+        if (strcmp(L->xins[i].key, key) != 0)
+            L->xins[w++] = L->xins[i];
+    L->nxins = w;
+}
+
+static void tixp(lower_t *L, uint32_t node)
+{
+    uint32_t ta, nm, fd, func_n, body, pv[MAX_PARM];
+    binding_t *nb = L->tnb;
+    template_def_t *tm;
+    char cname[128];
+    int ntp, np, onb, obs;
+
+    if (ND(L, node)->qualifiers & QUAL_EXTERN) return;
+    nm = tixnm(L, node, &ta, &fd);
+    if (!nm) { lower_error(L, node, BC_E175); return; }
+    get_text(L, nm, cname, sizeof(cname));
+
+    np = collect_params(L, fd, pv, MAX_PARM);
+    tm = ftmpl(L, cname, np);
+    if (!tm) { lower_error(L, node, BC_E175); return; }
+    func_n = tfunc(L, tm);
+    if (!func_n) { lower_error(L, node, BC_E175); return; }
+
+    ntp = tparm(L, tm->ast, nb);
+    if (!texpl(L, nm, nb, ntp) || !tdflt(L, nb, ntp)) {
+        lower_error(L, node, BC_E175);
+        return;
+    }
+
+    if (ND(L, func_n)->cuda_flags & (CUDA_GLOBAL | CUDA_DEVICE)) {
+        tinst(L, node, cname, nb, ntp, func_n);
+        return;
+    }
+
+    body = find_func_body(L, func_n);
+    if (!body) return;
+
+    onb = L->nbindings;
+    obs = L->nbbase;
+    if (ntp > MAX_BIND - onb) {
+        lower_error(L, node, BC_E157, cname);
+        return;
+    }
+    for (int i = 0; i < ntp; i++)
+        L->bindings[L->nbindings++] = nb[i];
+    L->nbbase = onb;
+    scan_launches(L, body);
+    L->nbbase = obs;
+    L->nbindings = onb;
 }
 
 static void cscan(lower_t *L, uint32_t root)
@@ -13328,59 +14911,133 @@ static void cscan(lower_t *L, uint32_t root)
     }
 }
 
+static int cfadd(lower_t *L, const char *nm, uint32_t ast)
+{
+    if (L->ncfn >= MAX_CFNS) return 0;
+    ncpy(L->cfns[L->ncfn].name, sizeof(L->cfns[0].name), nm);
+    L->cfns[L->ncfn].ast = ast;
+    L->ncfn++;
+    return 1;
+}
+
 static int cfcol(lower_t *L, uint32_t root)
 {
     uint32_t wk[CE_NEST];
+    char pf[CE_NEST][64];
     int wn = 1;
 
     wk[0] = root;
+    pf[0][0] = 0;
     KA_GUARD(g, 4096);
     while (wn > 0 && g--) {
         uint32_t nd = wk[--wn];
+        char cur[64];
 
+        ncpy(cur, sizeof cur, pf[wn]);
         for (uint32_t c = ND(L, nd)->first_child; c;
              c = ND(L, c)->next_sibling) {
             const ast_node_t *n = ND(L, c);
+            char bare[64], qual[64];
             uint32_t id;
 
             if (n->type == AST_NAMESPACE) {
-                if (wn < CE_NEST) wk[wn++] = c;
+                uint32_t nn = ND(L, c)->first_child;
+
+                if (wn >= CE_NEST) continue;
+                wk[wn] = c;
+                pf[wn][0] = 0;
+                if (nn && ND(L, nn)->type == AST_IDENT) {
+                    char one[64];
+
+                    get_text(L, nn, one, sizeof one);
+                    if (!cur[0])
+                        ncpy(pf[wn], sizeof pf[0], one);
+                    else if (snprintf(pf[wn], sizeof pf[0], "%s::%s",
+                                      cur, one) < 0)
+                        pf[wn][0] = 0;
+                } else {
+                    ncpy(pf[wn], sizeof pf[0], cur);
+                }
+                wn++;
                 continue;
             }
             if (n->type != AST_FUNC_DEF) continue;
             if (!(n->qualifiers & QUAL_CONSTEXPR)) continue;
             id = child_at(L, c, 1);
             if (!id || ND(L, id)->type != AST_IDENT) continue;
-            if (L->ncfn >= MAX_CFNS) return 0;
-            get_text(L, id, L->cfns[L->ncfn].name, sizeof(L->cfns[0].name));
-            L->cfns[L->ncfn].ast = c;
-            L->ncfn++;
+            get_text(L, id, bare, sizeof bare);
+            if (!cfadd(L, bare, c)) return 0;
+            if (cur[0]
+                && snprintf(qual, sizeof qual, "%s::%s", cur, bare) > 0
+                && !cfadd(L, qual, c)) return 0;
         }
     }
     return 1;
 }
 
+static uint8_t tnsadd(lower_t *L, uint8_t par, uint32_t nsn)
+{
+    char nm[64], full[64];
+    uint32_t id = ND(L, nsn)->first_child;
+    size_t pl, ml;
+
+    if (!id || ND(L, id)->type != AST_IDENT) return par;
+    get_text(L, id, nm, sizeof(nm));
+    if (!nm[0]) return par;
+    ncpy(full, sizeof(full), L->tnsp[par]);
+    pl = strlen(full);
+    ml = strlen(nm);
+    if (pl && pl + 2 < sizeof(full)) {
+        full[pl++] = ':';
+        full[pl++] = ':';
+        full[pl] = 0;
+    }
+    if (pl + ml >= sizeof(full)) return par;
+    memcpy(full + pl, nm, ml + 1);
+    for (int i = 0; i < L->ntnsp; i++)
+        if (strcmp(L->tnsp[i], full) == 0) return (uint8_t)i;
+    if (L->ntnsp >= MAX_TNS) return par;
+    ncpy(L->tnsp[L->ntnsp], sizeof(L->tnsp[0]), full);
+    return (uint8_t)L->ntnsp++;
+}
+
+static const char *tnsof(const lower_t *L, int ti)
+{
+    uint8_t i = L->tlni[ti];
+
+    return i < MAX_TNS ? L->tnsp[i] : L->tnsp[0];
+}
+
 static int tlcol(lower_t *L, uint32_t root)
 {
     uint32_t st[CE_NEST];
+    uint8_t  pi[CE_NEST];
     uint32_t c = ND(L, root)->first_child;
     int sp = 0;
+    uint8_t cur = 0;
 
     L->ntlv = 0;
+    L->ntnsp = 1;
+    L->tnsp[0][0] = 0;
     KA_GUARD(g, 1 << 17);
     while (g--) {
         if (!c) {
             if (sp == 0) return 1;
-            c = ND(L, st[--sp])->next_sibling;
+            cur = pi[--sp];
+            c = ND(L, st[sp])->next_sibling;
             continue;
         }
         if (ND(L, c)->type == AST_NAMESPACE) {
             if (sp >= CE_NEST) return 0;
-            st[sp++] = c;
+            st[sp] = c;
+            pi[sp] = cur;
+            sp++;
+            cur = tnsadd(L, cur, c);
             c = ND(L, c)->first_child;
             continue;
         }
         if (L->ntlv >= MAX_TLV) return 0;
+        L->tlni[L->ntlv] = cur;
         L->tlv[L->ntlv++] = c;
         c = ND(L, c)->next_sibling;
     }
@@ -13388,6 +15045,21 @@ static int tlcol(lower_t *L, uint32_t root)
 }
 
 /* ---- Top-Level Entry Point ---- */
+
+uint32_t bir_nlnch(void)
+{
+    return NLNCH;
+}
+
+int bir_lnch(uint32_t i, const char **base, const char **sym,
+             const char **targ)
+{
+    if (i >= NLNCH) return 0;
+    if (base) *base = LNCH[i].base;
+    if (sym)  *sym  = LNCH[i].sym;
+    if (targ) *targ = LNCH[i].targ;
+    return 1;
+}
 
 int bir_lower(const parser_t *P, uint32_t ast_root, bir_module_t *M,
               const sema_ctx_t *sema,
@@ -13411,6 +15083,8 @@ int bir_ltu(const parser_t *P, uint32_t ast_root, bir_module_t *M,
     L->tu   = tu;
     L->tsc  = 1;
     L->srdst = BIR_VAL_NONE;
+    NLNCH = 0u;
+    LPEND = 0u;
 
     if (!cfcol(L, ast_root))
         lower_error(L, 0, BC_E030, "too many constexpr functions");
@@ -13428,6 +15102,7 @@ int bir_ltu(const parser_t *P, uint32_t ast_root, bir_module_t *M,
     for (int ti = 0; ti < L->ntlv; ti++) {
         uint32_t c = L->tlv[ti];
         const ast_node_t *n = &P->nodes[c];
+        ncpy(L->cns, sizeof(L->cns), tnsof(L, ti));
         switch (n->type) {
         case AST_STRUCT_DEF:
             scoll(L, c);
@@ -13450,6 +15125,13 @@ int bir_ltu(const parser_t *P, uint32_t ast_root, bir_module_t *M,
     ucoll(L, ast_root);
     L->ncexp = csv;
     cscan(L, ast_root);
+
+    for (int ti = 0; ti < L->ntlv; ti++)
+        if (P->nodes[L->tlv[ti]].type == AST_TEMPLATE_INST)
+            tixx(L, L->tlv[ti]);
+    for (int ti = 0; ti < L->ntlv; ti++)
+        if (P->nodes[L->tlv[ti]].type == AST_TEMPLATE_INST)
+            tixd(L, L->tlv[ti]);
 
     for (int ti = 0; ti < L->ntlv; ti++) {
         uint32_t c = L->tlv[ti];
@@ -13487,8 +15169,11 @@ int bir_ltu(const parser_t *P, uint32_t ast_root, bir_module_t *M,
         if (n->type == AST_FUNC_DEF && !(n->cuda_flags & (CUDA_GLOBAL|CUDA_DEVICE))) {
             /* Host function — scan for launches */
             uint32_t body = find_func_body(L, c);
+            L->scnrt = fnret(L, c);
             if (body) scan_launches(L, body);
+            L->scnrt = 0;
         }
+        if (n->type == AST_TEMPLATE_INST) tixp(L, c);
     }
 
     if (M->pool_full) {

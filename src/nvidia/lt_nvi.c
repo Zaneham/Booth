@@ -486,6 +486,73 @@ lt_nvsts(uint64_t *w, uint32_t ra, uint32_t rb, uint32_t off, uint32_t ty)
     lt_nvput(w, 75u, 73u, ty);
 }
 
+void
+lt_nvldsm(uint64_t *w, uint32_t d, uint32_t ra, uint32_t off,
+          uint32_t n, uint32_t tr)
+{
+    assert(w != NULL);
+    assert(d < 256u && ra < 256u && off < (1u << 24));
+    assert(n == 1u || n == 2u || n == 4u);
+    assert(tr < 2u);
+
+    head(w, 0x83Bu, 0u);   /* per nak-mesa-90320e12 sm70_encode.rs:4622 */
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 63u, 40u, off);
+    lt_nvput(w, 73u, 72u, (n == 4u) ? 2u : ((n == 2u) ? 1u : 0u));
+    lt_nvput(w, 79u, 78u, tr);
+}
+
+/* The matrix shape sits in two pieces, a low bit at 75 and the rest at 78,
+   which is why it reads as a field nothing records if you look in one
+   place. m16n8k16 is the low bit on its own. dty picks the accumulator,
+   f16 or f32, and sty picks the source, f16 or bf16. */
+void
+lt_nvhmma(uint64_t *w, uint32_t d, uint32_t ra, uint32_t rb, uint32_t rc,
+          uint32_t msz, uint32_t dty, uint32_t sty)
+{
+    assert(w != NULL);
+    assert(d < 256u && ra < 256u && rb < 256u && rc < 256u);
+    assert(msz < 4u && dty < 2u && sty < 4u);
+
+    /* per nak-mesa-90320e12 sm70_encode.rs, differenced against nv_isa_sm89.
+       msz is the shape in its two pieces, 0 for m16n8k8 and 1 for m16n8k16,
+       and sty names the source, 0 f16, 1 bf16, 2 tf32. */
+    head(w, 0x23Cu, 0u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 39u, 32u, rb);
+    lt_nvput(w, 71u, 64u, rc);
+    lt_nvput(w, 75u, 75u, msz & 1u);
+    lt_nvput(w, 76u, 76u, dty);
+    lt_nvput(w, 78u, 78u, (msz >> 1) & 1u);
+    lt_nvput(w, 83u, 82u, sty);
+}
+
+/* imma spells its shape the same way but wider, and signs each side on its
+   own. Both sources signed and b transposed is the only form ptxas emits
+   for the s8 mma the corpus carries. */
+void
+lt_nvimma(uint64_t *w, uint32_t d, uint32_t ra, uint32_t rb, uint32_t rc,
+          uint32_t k32)
+{
+    assert(w != NULL);
+    assert(d < 256u && ra < 256u && rb < 256u && rc < 256u);
+    assert(k32 < 2u);
+
+    /* per nak-mesa-90320e12 sm70_encode.rs, differenced against nv_isa_sm89 */
+    head(w, 0x237u, 0u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 39u, 32u, rb);
+    lt_nvput(w, 71u, 64u, rc);
+    lt_nvput(w, 74u, 74u, 1u);
+    lt_nvput(w, 75u, 75u, k32 ? 0u : 1u);
+    lt_nvput(w, 76u, 76u, 1u);
+    lt_nvput(w, 78u, 78u, 1u);
+    lt_nvput(w, 86u, 85u, 2u);
+}
+
 /* ---- Lanes ---- */
 
 void
@@ -628,6 +695,18 @@ lt_nvsyn(uint64_t *w)
 }
 
 void
+lt_nvnsl(uint64_t *w, uint32_t s)
+{
+    assert(w != NULL);
+    assert(s < 256u);
+
+    head(w, 0x15Du, 1u);
+    lt_nvput(w, 39u, 32u, s);
+    lt_nvput(w, 89u, 87u, LT_NV_PT);
+    lt_nvput(w, 109u, 109u, 1u);
+}
+
+void
 lt_nvbrs(uint64_t *w, uint32_t rb, uint32_t cnt)
 {
     assert(w != NULL);
@@ -688,6 +767,28 @@ lt_nvnop(uint64_t *w)
     assert(w != NULL);
 
     head(w, 0x918u, 0u);
+}
+
+void
+lt_nvcall(uint64_t *w)
+{
+    assert(w != NULL);
+
+    head(w, 0x143u, 4u);
+    lt_nvput(w, 86u, 86u, 1u);
+    lt_nvput(w, 89u, 87u, LT_NV_PT);
+}
+
+void
+lt_nvret(uint64_t *w, uint32_t ra)
+{
+    assert(w != NULL);
+    assert(ra < 256u);
+
+    head(w, 0x150u, 4u);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 86u, 85u, 3u);
+    lt_nvput(w, 89u, 87u, LT_NV_PT);
 }
 
 /* ---- Convergence ---- */
@@ -896,6 +997,33 @@ lt_nvf2f(uint64_t *w, uint32_t d, uint32_t s, uint32_t dsz, uint32_t ssz,
     lt_nvput(w, 76u, 75u, dsz);
     lt_nvput(w, 79u, 78u, rnd);
     lt_nvput(w, 85u, 84u, ssz);
+}
+
+void
+lt_nvh2f(uint64_t *w, uint32_t d, uint32_t s)
+{
+    assert(d < 256u && s < 256u);
+
+    head(w, 0x030u, 1u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, LT_NV_RZ);
+    lt_nvput(w, 39u, 32u, s);
+    lt_nvput(w, 61u, 60u, 2u);
+    lt_nvput(w, 72u, 72u, 1u);
+    lt_nvput(w, 78u, 78u, 1u);
+}
+
+void
+lt_nvf2h(uint64_t *w, uint32_t d, uint32_t s, uint32_t bf)
+{
+    assert(d < 256u && s < 256u && bf < 2u);
+
+    head(w, 0x03Eu, 1u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, LT_NV_RZ);
+    lt_nvput(w, 39u, 32u, s);
+    lt_nvput(w, 71u, 64u, LT_NV_RZ);
+    lt_nvput(w, 76u, 76u, bf);
 }
 
 void

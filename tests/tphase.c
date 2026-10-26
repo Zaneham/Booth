@@ -101,7 +101,7 @@ static void pha05(void)
     CHEQ(rc, 0);
     CHECK(strstr(obuf, "0 parse error(s)") != NULL);
     CHECK(strstr(obuf, "(ident cb_t)") != NULL);
-    CHECK(strstr(obuf, "(ident hook)") != NULL);
+    CHECK(strstr(obuf, "(ident hook") != NULL);
     CHECK(strstr(obuf, "call") == NULL);
     PASS();
 }

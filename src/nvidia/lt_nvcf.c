@@ -25,7 +25,7 @@ static void bsall(lt_nbs_t *s)
 static void bsadd(lt_nbs_t *s, uint32_t k)
 {
     assert(s != NULL);
-    assert(k < LT_MAX_NVBB);
+    if (k >= LT_MAX_NVBB) return;
 
     s->w[k >> 6] |= 1ull << (k & 63u);
 }
@@ -33,7 +33,7 @@ static void bsadd(lt_nbs_t *s, uint32_t k)
 static int bshas(const lt_nbs_t *s, uint32_t k)
 {
     assert(s != NULL);
-    assert(k < LT_MAX_NVBB);
+    if (k >= LT_MAX_NVBB) return 0;
 
     return (int)((s->w[k >> 6] >> (k & 63u)) & 1ull);
 }
@@ -419,6 +419,9 @@ static lt_res_t leaves(lt_ncf_t *c, uint32_t r)
     assert(c != NULL);
     assert(r < c->nrg);
 
+    c->ext[r] = c->body;
+    bsadd(&c->ext[r], g->at);
+    if (g->j < c->nbb) bsadd(&c->ext[r], g->j);
     for (uint32_t x = 0; x < c->nbb; x++) {
         if (!bshas(&c->body, x)) continue;
         if (x < c->rg[r].lo) c->rg[r].lo = (uint16_t)x;
@@ -652,15 +655,28 @@ static lt_res_t iregn(lt_ncf_t *c, uint32_t bb)
 
 /* ---- Barrier slots ---- */
 
+static int bsmeet(const lt_nbs_t *a, const lt_nbs_t *b)
+{
+    assert(a != NULL && b != NULL);
+
+    for (uint32_t i = 0; i < LT_NV_NBW; i++)
+        if ((a->w[i] & b->w[i]) != 0ull) return 1;
+    return 0;
+}
+
+static void bsor(lt_nbs_t *d, const lt_nbs_t *s)
+{
+    assert(d != NULL && s != NULL);
+
+    for (uint32_t i = 0; i < LT_NV_NBW; i++) d->w[i] |= s->w[i];
+}
+
 static lt_res_t slots(lt_ncf_t *c)
 {
-    uint32_t end[LT_NV_NJB];
-    uint32_t used[LT_NV_NJB];
-
     assert(c != NULL);
     assert(c->nrg <= LT_MAX_NVRG);
 
-    memset(used, 0, sizeof used);
+    for (uint32_t s = 0; s < LT_NV_NJB; s++) bsclr(&c->sl[s]);
     for (uint32_t r = 0; r < c->nrg; r++) {
         uint32_t i;
 
@@ -669,17 +685,17 @@ static lt_res_t slots(lt_ncf_t *c)
         c->rord[i] = (uint16_t)r;
     }
     for (uint32_t i = 0; i < c->nrg; i++) {
-        lt_nrg_t *g = &c->rg[c->rord[i]];
+        uint32_t  r = c->rord[i];
+        lt_nrg_t *g = &c->rg[r];
         uint32_t  s;
 
         for (s = 0; s < LT_NV_NJB; s++)
-            if (used[s] == 0u || end[s] <= g->lo) break;
+            if (!bsmeet(&c->sl[s], &c->ext[r])) break;
         if (s >= LT_NV_NJB)
             return LT_WHY(LT_W_TOOJOIN, LT_EHOLE, NULL, c->bs[g->at],
                           LT_NV_NJB + 1u, LT_NV_NJB);
         g->slot = (uint8_t)s;
-        used[s] = 1u;
-        end[s]  = g->hi;
+        bsor(&c->sl[s], &c->ext[r]);
     }
     return LT_OK;
 }

@@ -23,6 +23,7 @@ typedef struct {
     uint32_t dead[BIR_MAX_INSTS / 32];
     uint32_t use_count[BIR_MAX_INSTS];
     uint32_t inst_renum[BIR_MAX_INSTS];
+    uint8_t  rch[BIR_MAX_BLOCKS];
 } opt_t;
 
 static opt_t G;
@@ -250,6 +251,144 @@ static void compact(opt_t *S)
     }
 }
 
+static uint32_t nsuc(const bir_module_t *M, const bir_block_t *B)
+{
+    const bir_inst_t *I;
+
+    if (B->num_insts == 0u || B->first_inst >= M->num_insts) return 0u;
+    I = &M->insts[B->first_inst + B->num_insts - 1u];
+    if (I->op == BIR_BR)      return 1u;
+    if (I->op == BIR_BR_COND) return 2u;
+    if (I->op != BIR_SWITCH)  return 0u;
+    if (I->num_operands != BIR_OPERANDS_OVERFLOW) return 1u;
+    if (I->operands[1] < 2u) return 0u;
+    return 1u + (I->operands[1] - 2u) / 2u;
+}
+
+static uint32_t suc(const bir_module_t *M, const bir_block_t *B, uint32_t k)
+{
+    const bir_inst_t *I = &M->insts[B->first_inst + B->num_insts - 1u];
+
+    if (I->op == BIR_BR)      return bir_oper(M, I, 0u);
+    if (I->op == BIR_BR_COND) return bir_oper(M, I, 1u + k);
+    if (I->num_operands != BIR_OPERANDS_OVERFLOW) return bir_oper(M, I, 1u);
+    return (k == 0u) ? bir_oper(M, I, 1u) : bir_oper(M, I, 2u * k + 1u);
+}
+
+static int plive(const opt_t *S, uint32_t p, uint32_t b)
+{
+    const bir_module_t *M = S->M;
+    uint32_t lp, ns, k;
+
+    if (p < S->base_block) return 1;
+    lp = p - S->base_block;
+    if (lp >= S->num_blocks) return 1;
+    if (!S->rch[lp]) return 0;
+    ns = nsuc(M, &M->blocks[p]);
+    for (k = 0u; k < ns; k++)
+        if (suc(M, &M->blocks[p], k) == b) return 1;
+    return 0;
+}
+
+static int phix(opt_t *S, uint32_t b, bir_inst_t *I)
+{
+    bir_module_t *M = S->M;
+    uint32_t w = 0u, k, n;
+    int drop = 0;
+
+    if (I->num_operands == BIR_OPERANDS_OVERFLOW) {
+        uint32_t st = I->operands[0];
+        n = I->operands[1];
+        for (k = 0u; k + 1u < n; k += 2u) {
+            if (st + k + 1u >= M->num_extra_ops) break;
+            if (!plive(S, M->extra_operands[st + k], b)) { drop = 1; continue; }
+            M->extra_operands[st + w]      = M->extra_operands[st + k];
+            M->extra_operands[st + w + 1u] = M->extra_operands[st + k + 1u];
+            w += 2u;
+        }
+        I->operands[1] = w;
+        return drop;
+    }
+
+    n = I->num_operands;
+    for (k = 0u; k + 1u < n; k += 2u) {
+        if (!plive(S, I->operands[k], b)) { drop = 1; continue; }
+        I->operands[w]      = I->operands[k];
+        I->operands[w + 1u] = I->operands[k + 1u];
+        w += 2u;
+    }
+    I->num_operands = (uint8_t)w;
+    return drop;
+}
+
+static void rmark(opt_t *S)
+{
+    bir_module_t *M = S->M;
+    uint32_t nb = S->num_blocks, i, k;
+    int chg = 1, g = (int)nb + 1;
+
+    for (i = 0u; i < nb; i++) S->rch[i] = 0u;
+    S->rch[0] = 1u;
+
+    while (chg && g-- > 0) {
+        chg = 0;
+        for (i = 0u; i < nb; i++) {
+            const bir_block_t *B = &M->blocks[S->base_block + i];
+            uint32_t ns;
+            if (!S->rch[i]) continue;
+            ns = nsuc(M, B);
+            for (k = 0u; k < ns; k++) {
+                uint32_t t = suc(M, B, k);
+                if (t < S->base_block) continue;
+                t -= S->base_block;
+                if (t >= nb || S->rch[t]) continue;
+                S->rch[t] = 1u;
+                chg = 1;
+            }
+        }
+    }
+}
+
+static int rchk(opt_t *S)
+{
+    bir_module_t *M = S->M;
+    uint32_t nb = S->num_blocks, i, k;
+    int n = 0;
+
+    rmark(S);
+
+    for (i = 1u; i < nb; i++) {
+        bir_block_t *B = &M->blocks[S->base_block + i];
+        bir_inst_t *I;
+        if (S->rch[i] || B->num_insts == 0u) continue;
+        for (k = 1u; k < B->num_insts; k++) {
+            uint32_t ii = B->first_inst + k;
+            S->dead[ii / 32] |= 1u << (ii % 32);
+            n++;
+        }
+        I = &M->insts[B->first_inst];
+        if (I->op == BIR_UNREACHABLE) continue;
+        I->op = BIR_UNREACHABLE;
+        I->subop = 0;
+        I->num_operands = 0;
+        I->type = bir_type_void(M);
+        n++;
+    }
+
+    for (i = 0u; i < nb; i++) {
+        const bir_block_t *B = &M->blocks[S->base_block + i];
+        if (!S->rch[i]) continue;
+        for (k = 0u; k < B->num_insts; k++) {
+            uint32_t ii = B->first_inst + k;
+            if (M->insts[ii].op != BIR_PHI) continue;
+            if ((S->dead[ii / 32] >> (ii % 32)) & 1u) continue;
+            n += phix(S, S->base_block + i, &M->insts[ii]);
+        }
+    }
+
+    return n;
+}
+
 /* ---- Per-Function Driver ---- */
 
 static int opt_run_func(opt_t *S, uint32_t fi)
@@ -269,7 +408,9 @@ static int opt_run_func(opt_t *S, uint32_t fi)
         memset(S->dead + lo, 0, (hi - lo) * sizeof(uint32_t));
     }
 
-    int changes = dce_pass(S);
+    int changes = rchk(S);
+
+    changes += dce_pass(S);
 
     if (changes > 0)
         compact(S);

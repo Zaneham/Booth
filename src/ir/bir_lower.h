@@ -22,4 +22,8 @@ int bir_ltu(const struct parser_s *P, uint32_t ast_root, bir_module_t *M,
             const struct sema_ctx_s *sema, uint16_t tu,
             bc_error_t *out_errs, int *out_nerrs);
 
+uint32_t bir_nlnch(void);
+int      bir_lnch(uint32_t i, const char **base, const char **sym,
+                  const char **targ);
+
 #endif /* BARRACUDA_BIR_LOWER_H */

@@ -230,3 +230,133 @@ static void asm16(void)
     PASS();
 }
 TH_REG("asm", 16, "a PTX template is refused on an AMD target", asm16)
+
+static int acub(const char *src)
+{
+    remove("build/tasm.cubin");
+    return arun(src, "--nvidia-cubin -o build/tasm.cubin");
+}
+
+static const char *const ldm2 =
+    "__global__ void k(int *o) {\n"
+    "    __shared__ int s[256];\n"
+    "    s[threadIdx.x] = (int)threadIdx.x;\n"
+    "    __syncthreads();\n"
+    "    int a = 0, b = 0;\n"
+    "    const int *p = s + (threadIdx.x & 7) * 2;\n"
+    "    asm volatile(\"ldmatrix.sync.aligned.m8n8.x2.b16 {%0, %1}, [%2];\"\n"
+    "        : \"=r\"(a), \"=r\"(b) : \"l\"(p));\n"
+    "    o[threadIdx.x] = a + b;\n"
+    "}\n";
+
+static const char *const ldm4 =
+    "__global__ void k(int *o) {\n"
+    "    __shared__ int s[256];\n"
+    "    s[threadIdx.x] = (int)threadIdx.x;\n"
+    "    __syncthreads();\n"
+    "    int a = 0, b = 0, c = 0, d = 0;\n"
+    "    const int *p = s + (threadIdx.x & 7) * 4;\n"
+    "    asm volatile(\"ldmatrix.sync.aligned.m8n8.x4.b16\"\n"
+    "        \" {%0, %1, %2, %3}, [%4];\"\n"
+    "        : \"=r\"(a), \"=r\"(b), \"=r\"(c), \"=r\"(d) : \"l\"(p));\n"
+    "    o[threadIdx.x] = a + b + c + d;\n"
+    "}\n";
+
+static void asm17(void)
+{
+    CHEQ(acub(ldm2), 0);
+    PASS();
+}
+TH_REG("asm", 17, "ldmatrix x2 reaches SASS as LDSM", asm17)
+
+static void asm18(void)
+{
+    CHEQ(acub(ldm4), 0);
+    PASS();
+}
+TH_REG("asm", 18, "ldmatrix x4 reaches SASS as LDSM", asm18)
+
+static void asm19(void)
+{
+    CHEQ(acub(
+        "__global__ void k(int *o) {\n"
+        "    int d0 = 0, d1 = 0, a0 = 1, a1 = 2, a2 = 3, a3 = 4;\n"
+        "    int b0 = 5, b1 = 6;\n"
+        "    asm(\"mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16\"\n"
+        "        \" {%0, %1}, {%2, %3, %4, %5}, {%6, %7}, {%0, %1};\"\n"
+        "        : \"+r\"(d0), \"+r\"(d1)\n"
+        "        : \"r\"(a0), \"r\"(a1), \"r\"(a2), \"r\"(a3),\n"
+        "          \"r\"(b0), \"r\"(b1));\n"
+        "    o[threadIdx.x] = d0 + d1;\n"
+        "}\n"), 0);
+
+    PASS();
+}
+TH_REG("asm", 19, "mma m16n8k16 into f16 reaches SASS as HMMA", asm19)
+
+static void asm20(void)
+{
+    CHNE(acub(
+        "__global__ void k(int *o) {\n"
+        "    printf(\"%d\", (int)threadIdx.x);\n"
+        "    o[threadIdx.x] = 1;\n"
+        "}\n"), 0);
+    CHNE(strstr(obuf, "vprintf"), NULL);
+    PASS();
+}
+TH_REG("asm", 20, "a device printf refuses by name in SASS", asm20)
+
+static const char *const mmaf =
+    "__global__ void k(const int *a, const int *b, int *d) {\n"
+    "    int A0=a[0],A1=a[1],A2=a[2],A3=a[3],B0=b[0],B1=b[1];\n"
+    "    int D0=d[0],D1=d[1],D2=d[2],D3=d[3];\n"
+    "    asm(\"mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32\"\n"
+    "        \" {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\"\n"
+    "        : \"+r\"(D0), \"+r\"(D1), \"+r\"(D2), \"+r\"(D3)\n"
+    "        : \"r\"(A0),\"r\"(A1),\"r\"(A2),\"r\"(A3),\"r\"(B0),\"r\"(B1));\n"
+    "    d[0]=D0; d[1]=D1; d[2]=D2; d[3]=D3;\n"
+    "}\n";
+
+static const char *const mmai =
+    "__global__ void k(const int *a, const int *b, int *d) {\n"
+    "    int A0=a[0],A1=a[1],B0=b[0];\n"
+    "    int D0=d[0],D1=d[1],D2=d[2],D3=d[3];\n"
+    "    asm(\"mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32\"\n"
+    "        \" {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\"\n"
+    "        : \"+r\"(D0), \"+r\"(D1), \"+r\"(D2), \"+r\"(D3)\n"
+    "        : \"r\"(A0),\"r\"(A1),\"r\"(B0));\n"
+    "    d[0]=D0; d[1]=D1; d[2]=D2; d[3]=D3;\n"
+    "}\n";
+
+static const char *const mmatf =
+    "__global__ void k(const int *a, const int *b, int *d) {\n"
+    "    int A0=a[0],A1=a[1],A2=a[2],A3=a[3],B0=b[0],B1=b[1];\n"
+    "    int D0=d[0],D1=d[1],D2=d[2],D3=d[3];\n"
+    "    asm(\"mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32\""
+        " \" {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\""
+        " \n"
+    "        : \"+r\"(D0), \"+r\"(D1), \"+r\"(D2), \"+r\"(D3)\n"
+    "        : \"r\"(A0),\"r\"(A1),\"r\"(A2),\"r\"(A3),\"r\"(B0),\"r\"(B1));\n"
+    "    d[0]=D0; d[1]=D1; d[2]=D2; d[3]=D3;\n"
+    "}\n";
+
+static void asm21(void)
+{
+    CHEQ(acub(mmaf), 0);
+    PASS();
+}
+TH_REG("asm", 21, "mma m16n8k16 f16 into f32 reaches SASS as HMMA", asm21)
+
+static void asm22(void)
+{
+    CHEQ(acub(mmai), 0);
+    PASS();
+}
+TH_REG("asm", 22, "mma m16n8k16 s8 into s32 reaches SASS as IMMA", asm22)
+
+static void asm23(void)
+{
+    CHEQ(acub(mmatf), 0);
+    PASS();
+}
+TH_REG("asm", 23, "m16n8k8 tf32 reaches SASS as HMMA", asm23)

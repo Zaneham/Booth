@@ -4,6 +4,8 @@
 #include "exec.h"
 #include "booth_run.h"
 #include "backend.h"
+#include "bc_err.h"
+#include "hgen.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,18 @@
 
 #define MAXPASS 24
 #define PATHN   512
+#define MAXINC  16
+#define MAXDEF  64
+#define MAXFWD  16
+
+typedef struct {
+    const char *file, *out;
+    const char *inc[MAXINC];
+    const char *def[MAXDEF];
+    const char *fwd[MAXFWD];
+    int ninc, ndef, nfwd;
+    int obj, pic, fb;
+} cuo_t;
 
 static const char VADD_SRC[] =
     "__global__ void vadd(int *out, int *a, int *b)\n"
@@ -102,7 +116,7 @@ static int is_source(const char *file)
 {
     const char *e = ext_of(file);
     return streq(e, "cu") || streq(e, "hip") || streq(e, "py")
-        || streq(e, "mlir") || streq(e, "bir") || streq(e, "ml")
+        || streq(e, "bir") || streq(e, "ml")
         || streq(e, "f90");
 }
 
@@ -235,7 +249,6 @@ static int build_source(const char *file, const char *bflag,
     }
     const char *ffe = NULL;
     if (streq(e, "py"))   ffe = "--triton";
-    else if (streq(e, "mlir")) ffe = "--mlir";
     else if (streq(e, "bir"))  ffe = "--bir-in";
     else if (streq(e, "hip"))  ffe = "--hip";
     return compile3(ffe, bflag, file, out, ko);
@@ -377,7 +390,6 @@ static int verb_build(int argc, char **argv)
     if (streq(e, "f90")) { if (cvt_f90(file, conv, sizeof conv) != 0) return 1; src = conv; }
     else if (streq(e, "ml")) { if (cvt_ml(file, conv, sizeof conv) != 0) return 1; src = conv; ffe = "--bir-in"; }
     else if (streq(e, "py"))   ffe = "--triton";
-    else if (streq(e, "mlir")) ffe = "--mlir";
     else if (streq(e, "bir"))  ffe = "--bir-in";
 
     char *av[MAXPASS + 8]; int n = 0;
@@ -495,9 +507,196 @@ static int verb_doctor(void)
 
 /* ---- dispatch ---- */
 
+static int cuda1(const char *flag, const char *file, const char *out,
+                 const char *fat, const cuo_t *F)
+{
+    char *av[12 + 2 * MAXINC + 2 * MAXDEF + MAXFWD];
+    int   n = 0;
+
+    av[n++] = (char *)"kath";
+    av[n++] = (char *)flag;
+    if (fat != NULL) { av[n++] = (char *)"--fatbin"; av[n++] = (char *)fat; }
+    for (int i = 0; i < F->ninc; i++) {
+        av[n++] = (char *)"-I";
+        av[n++] = (char *)F->inc[i];
+    }
+    for (int i = 0; i < F->ndef; i++) {
+        av[n++] = (char *)"-D";
+        av[n++] = (char *)F->def[i];
+    }
+    for (int i = 0; i < F->nfwd; i++)
+        av[n++] = (char *)F->fwd[i];
+    av[n++] = (char *)file;
+    av[n++] = (char *)"-o";
+    av[n++] = (char *)out;
+    av[n] = NULL;
+    return kath_compile(n, av, NULL);
+}
+
+static int oapp(char *b, size_t n, size_t *u, const char *s)
+{
+    size_t l = strlen(s);
+
+    if (*u + l >= n) return 0;
+    memcpy(b + *u, s, l);
+    *u += l;
+    b[*u] = '\0';
+    return 1;
+}
+
+static int oinc(char *b, size_t n, size_t *u, const char *d)
+{
+    return oapp(b, n, u, " -I\"") && oapp(b, n, u, d) && oapp(b, n, u, "\"");
+}
+
+static int odef(char *b, size_t n, size_t *u, const char *d)
+{
+    return oapp(b, n, u, " -D\"") && oapp(b, n, u, d) && oapp(b, n, u, "\"");
+}
+
+static int cc_obj(const char *src, const char *out, const cuo_t *F, int pic)
+{
+    char        cmd[4096], own[512];
+    const char *cc = getenv("BOOTH_CXX");
+    size_t      u = 0u;
+    int         ok;
+
+    if (cc == NULL || cc[0] == '\0') cc = "g++";
+    cmd[0] = '\0';
+    ok = oapp(cmd, sizeof cmd, &u, cc)
+      && oapp(cmd, sizeof cmd, &u, " -std=c++17 -O2");
+    if (ok && pic) ok = oapp(cmd, sizeof cmd, &u, " -fPIC");
+    for (int i = 0; ok && i < F->ndef; i++)
+        ok = odef(cmd, sizeof cmd, &u, F->def[i]);
+    for (int i = 0; ok && i < F->ninc; i++)
+        ok = oinc(cmd, sizeof cmd, &u, F->inc[i]);
+    if (ok && hg_binc(own, sizeof own))
+        ok = oinc(cmd, sizeof cmd, &u, own);
+    ok = ok && oapp(cmd, sizeof cmd, &u, " -c \"")
+            && oapp(cmd, sizeof cmd, &u, src)
+            && oapp(cmd, sizeof cmd, &u, "\" -o \"")
+            && oapp(cmd, sizeof cmd, &u, out)
+            && oapp(cmd, sizeof cmd, &u, "\"");
+    if (!ok) return 1;
+    return ok_status(system(cmd)) ? 0 : 1;
+}
+
+static int cutoo(const char *what, int max)
+{
+    fprintf(stderr, "kath cuda: too many %s (max %d)\n", what, max);
+    return 2;
+}
+
+static int cufull(const char *s)
+{
+    return streq(s, "--no-cfold") || streq(s, "--no-dce")
+        || streq(s, "--no-mem2reg") || streq(s, "--no-sroa")
+        || streq(s, "--no-sched");
+}
+
+static int cuparse(int argc, char **argv, cuo_t *O)
+{
+    for (int i = 2; i < argc; i++) {
+        if (streq(argv[i], "-c")) { O->obj = 1; continue; }
+        if (streq(argv[i], "-fPIC")) { O->pic = 1; continue; }
+        if (streq(argv[i], "--ptx-fallback")) { O->fb = 1; continue; }
+        if (streq(argv[i], "--no-ptx-fallback")) { O->fb = 0; continue; }
+        if (streq(argv[i], "-o") && i + 1 < argc) { O->out = argv[++i]; continue; }
+        if (streq(argv[i], "-I") && i + 1 < argc) {
+            if (O->ninc >= MAXINC) return cutoo("-I", MAXINC);
+            O->inc[O->ninc++] = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "-I", 2) == 0 && argv[i][2] != '\0') {
+            if (O->ninc >= MAXINC) return cutoo("-I", MAXINC);
+            O->inc[O->ninc++] = argv[i] + 2;
+            continue;
+        }
+        if (streq(argv[i], "-D") && i + 1 < argc) {
+            if (O->ndef >= MAXDEF) return cutoo("-D", MAXDEF);
+            O->def[O->ndef++] = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "-D", 2) == 0 && argv[i][2] != '\0') {
+            if (O->ndef >= MAXDEF) return cutoo("-D", MAXDEF);
+            O->def[O->ndef++] = argv[i] + 2;
+            continue;
+        }
+        if (streq(argv[i], "--lang") && i + 1 < argc) {
+            if (O->nfwd + 1 >= MAXFWD) return cutoo("--lang", MAXFWD);
+            O->fwd[O->nfwd++] = argv[i];
+            O->fwd[O->nfwd++] = argv[++i];
+            continue;
+        }
+        if (cufull(argv[i])) {
+            if (O->nfwd >= MAXFWD) return cutoo(argv[i], MAXFWD);
+            O->fwd[O->nfwd++] = argv[i];
+            continue;
+        }
+        if (argv[i][0] == '-') {
+            fprintf(stderr, "kath cuda: unknown option %s\n", argv[i]);
+            return 2;
+        }
+        if (O->file == NULL) O->file = argv[i];
+    }
+    return 0;
+}
+
+static int verb_cuda(int argc, char **argv)
+{
+    char cub[PATHN], ptx[PATHN], fat[PATHN], cpp[PATHN], obuf[PATHN];
+    const char *file, *out;
+    int  rc, nocub = 0;
+    cuo_t O;
+
+    memset(&O, 0, sizeof O);
+    O.fb = 1;
+    rc = cuparse(argc, argv, &O);
+    if (rc != 0) return rc;
+    if (O.file == NULL) {
+        fprintf(stderr, "usage: kath cuda <file.cu> [-c] [-fPIC] [-o out]"
+                " [-I dir] [-D name[=val]] [--lang file]"
+                " [--ptx-fallback|--no-ptx-fallback]\n");
+        return 2;
+    }
+    file = O.file;
+    if (O.out == NULL) {
+        repl_ext(obuf, sizeof obuf, file, O.obj ? "o" : "exe");
+        O.out = obuf;
+    }
+    out = O.out;
+
+    tmppath(cub, sizeof cub, "cuda", "cubin");
+    tmppath(ptx, sizeof ptx, "cuda", "ptx");
+    tmppath(fat, sizeof fat, "cuda", "fatbin");
+    tmppath(cpp, sizeof cpp, "cuda", "cpp");
+
+    rc = cuda1("--nvidia-cubin", file, cub, NULL, &O);
+    if (rc != 0 && O.fb) { nocub = 1; rc = 0; }
+    else if (rc != 0)
+        fprintf(stderr, "kath cuda: %s: SASS refused this unit and "
+                "--no-ptx-fallback is set, so this is a hard failure\n", file);
+    if (rc == 0) rc = cuda1("--nvidia-ptx", file, ptx, NULL, &O);
+    if (rc == 0 && nocub)
+        fprintf(stderr, "kath cuda: ==== PTX FALLBACK ==== %s\n"
+                "kath cuda: SASS refused a kernel here, see the refusals above; "
+                "PTX carries this unit and no SASS is in its fatbin\n", file);
+    if (rc == 0) rc = hg_fat(nocub ? NULL : cub, ptx, 89u, fat);
+    if (rc == 0) rc = cuda1("--cuda-host", file, cpp, fat, &O);
+    if (rc == 0) {
+        rc = O.obj ? cc_obj(cpp, out, &O, O.pic)
+                   : hg_cc(cpp, out, O.inc, O.ninc, O.def, O.ndef);
+        if (rc != 0) (void)be_fail(BC_E623, file, rc);
+    }
+    remove(cub); remove(ptx); remove(fat);
+    if (rc == 0) { remove(cpp); printf("kath cuda: wrote %s\n", out); }
+    return rc == 0 ? 0 : 1;
+}
+
 int booth_is_verb(const char *s)
 {
-    return streq(s, "run") || streq(s, "build") || streq(s, "doctor");
+    return streq(s, "run") || streq(s, "build") || streq(s, "doctor")
+        || streq(s, "cuda");
 }
 
 int booth_verb(int argc, char *argv[])
@@ -505,5 +704,6 @@ int booth_verb(int argc, char *argv[])
     if (streq(argv[1], "run"))    return verb_run(argc, argv);
     if (streq(argv[1], "build"))  return verb_build(argc, argv);
     if (streq(argv[1], "doctor")) return verb_doctor();
+    if (streq(argv[1], "cuda"))   return verb_cuda(argc, argv);
     return 2;
 }

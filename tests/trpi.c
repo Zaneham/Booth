@@ -624,6 +624,33 @@ static const char *rpi_ptx(const char *src, const char *stem)
     return ptx;
 }
 
+static const char *rpi_pti(const char *src, const char *stem,
+                           const char *xtra)
+{
+    static char ptx[1 << 16];
+    char cmd[512], cu[128], out[128];
+    FILE *f, *g;
+    size_t n;
+
+    ptx[0] = '\0';
+    snprintf(cu, sizeof cu, "build/%s.cu", stem);
+    snprintf(out, sizeof out, "build/%s.ptx", stem);
+    f = fopen(cu, "w");
+    if (!f) return NULL;
+    fputs(src, f);
+    fclose(f);
+    remove(out);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s %s -o %s",
+             BC_BIN, xtra, cu, out);
+    if (th_run(cmd, obuf, (int)sizeof obuf) != 0) return NULL;
+    g = fopen(out, "rb");
+    if (!g) return NULL;
+    n = fread(ptx, 1, sizeof ptx - 1, g);
+    fclose(g);
+    ptx[n] = '\0';
+    return ptx;
+}
+
 static void rpi17(void)
 {
     const char *p = rpi_ptx(
@@ -688,12 +715,12 @@ static void rpi19(void)
 }
 TH_REG("rpi", 19, "a member of an anonymous union resolves", rpi19)
 
-/* assert in device code traps and loses its message */
 static void rpi20(void)
 {
-    const char *p = rpi_ptx(
+    const char *p = rpi_pti(
+        "#include <cassert>\n"
         "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n",
-        "rpi20");
+        "rpi20", "-Iruntime/include");
 
     CHNE(p, NULL);
     CHEQ(strstr(obuf, "E143"), NULL);
@@ -701,7 +728,7 @@ static void rpi20(void)
     CHNE(strstr(p, "trap;"), NULL);
     PASS();
 }
-TH_REG("rpi", 20, "assert becomes a conditional trap", rpi20)
+TH_REG("rpi", 20, "assert from <cassert> is a conditional trap", rpi20)
 
 /* BIR_GLOBAL_REF reaches a __device__ table on PTX */
 static void rpi21(void)
@@ -2175,36 +2202,40 @@ TH_REG("rpi", 81, "a divergent if gets its bssy and bsync", rpi81)
 
 static void rpi82(void)
 {
-    const char *path = scratch("rpi82.cu",
+    const char *p = rpi_sass(
         "__global__ void k(const double *a, double *o, int n){\n"
-        "  int i = threadIdx.x; if (i < n) o[i] = a[i] / a[0]; }\n");
-    char cmd[512];
+        "  int i = threadIdx.x; if (i < n) o[i] = a[i] / a[0]; }\n", "rpi82");
 
-    CHNE(path, NULL);
-    snprintf(cmd, sizeof cmd, "%s --nvidia-cubin %s -o build/rpi82.cubin",
-             BC_BIN, path);
-    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
-    CHNE(strstr(obuf, "E601"), NULL);
-    CHNE(strstr(obuf, "NV_DIV_F64"), NULL);
+    CHNE(p, NULL);
+    CHNE(strstr(p, "NV_DIV_F64"), NULL);
     PASS();
 }
-TH_REG("rpi", 82, "a double divide names its SASS refusal", rpi82)
+TH_REG("rpi", 82, "a double divide lowers to SASS", rpi82)
 
 static void rpi83(void)
 {
     const char *path = scratch("rpi83.cu",
         "__global__ void k1(int *o){ o[0] = 1; }\n"
         "__global__ void k2(int *o){ o[1] = 2; }\n");
+    unsigned char hdr[64];
     char cmd[512];
+    FILE *f;
 
     CHNE(path, NULL);
+    remove("build/rpi83.cubin");
     snprintf(cmd, sizeof cmd, "%s --nvidia-cubin %s -o build/rpi83.cubin",
              BC_BIN, path);
-    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
-    CHNE(strstr(obuf, "E600"), NULL);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "2 kernels"), NULL);
+    f = fopen("build/rpi83.cubin", "rb");
+    CHNE(f, NULL);
+    if (!f) return;
+    CHEQ(fread(hdr, 1, sizeof hdr, f), sizeof hdr);
+    fclose(f);
+    CHEQ(hdr[60] | (hdr[61] << 8), 14);
     PASS();
 }
-TH_REG("rpi", 83, "a cubin holds one kernel, not two", rpi83)
+TH_REG("rpi", 83, "a cubin holds every kernel in the module", rpi83)
 
 static void rpi84(void)
 {
@@ -5953,3 +5984,605 @@ static void rpi299(void)
     PASS();
 }
 TH_REG("rpi", 299, "a bfloat widen shifts, not movrelsd", rpi299)
+
+static void rpi300(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const float *a, float *o, int n){\n"
+        "  int i = threadIdx.x; float t[8];\n"
+        "  for (int j = 0; j < 8; j++) t[j] = a[i] * (float)j;\n"
+        "  if (i < n) o[i] = t[i % 8]; }\n", "rpi300");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "NV_ST_LOC_F32"), NULL);
+        CHNE(strstr(p, "7387 "), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 300, "a local array store reaches stl", rpi300)
+
+static void rpi301(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const float *a, const half *h, half *o, float *g){\n"
+        "  int i = threadIdx.x;\n"
+        "  o[i] = __float2half(a[i]); g[i] = __half2float(h[i]); }\n",
+        "rpi301");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHNE(strstr(p, "723e "), NULL);
+        CHNE(strstr(p, "7230 "), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 301, "half conversions take f2fp and hadd2", rpi301)
+
+static void rpi302(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const long long *a, long long *o, int n){\n"
+        "  int i = threadIdx.x; if (i < n) o[i] = a[i] / 3; }\n", "rpi302");
+
+    CHNE(p, NULL);
+    if (p) CHNE(strstr(p, "NV_DIV_S64"), NULL);
+    PASS();
+}
+TH_REG("rpi", 302, "a 64-bit divide by a constant lowers", rpi302)
+
+static void rpi303(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k1(const long long *a, long long *o, int n){\n"
+        "  int i = threadIdx.x; long long s = a[0];\n"
+        "  if (i < n && a[i] > s) o[i] = a[i] * s + (a[i] >> 3); }\n"
+        "__global__ void k2(int *o){ o[threadIdx.x] = 1; }\n", "rpi303");
+
+    CHNE(p, NULL);
+    PASS();
+}
+TH_REG("rpi", 303, "each kernel sizes its own registers", rpi303)
+
+static void rpi304(void)
+{
+    const char *p = rpi_sass(
+        "namespace cooperative_groups { }\n"
+        "namespace cg = cooperative_groups;\n"
+        "__global__ void k(int *d, int n){\n"
+        "  cg::grid_group g = cg::this_grid();\n"
+        "  int i = threadIdx.x; d[i] = i;\n"
+        "  g.sync();\n"
+        "  if (i < n) d[i] = d[0] + 1; }\n", "rpi304");
+
+    CHNE(p, NULL);
+    if (p) {
+        CHEQ(strstr(p, "NV_GBAR"), NULL);
+        CHNE(strstr(p, "NV_ATOM_ADD_U32"), NULL);
+        CHNE(strstr(p, "NV_BAR_SYNC"), NULL);
+        CHNE(strstr(p, "NV_MEMBAR"), NULL);
+    }
+    PASS();
+}
+TH_REG("rpi", 304, "a grid barrier lowers to blocks, not one op", rpi304)
+
+static long rpi_fsz(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    long n;
+
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fclose(f);
+    return n;
+}
+
+static void rpi305(void)
+{
+    const char *path = scratch("rpi305.cu",
+        "#include <no_such_header_anywhere.h>\n"
+        "__global__ void k(int *o){ o[0] = 1; }\n");
+    char cmd[512];
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s -o build/rpi305.ptx",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "E054"), NULL);
+    CHNE(strstr(obuf, "no_such_header_anywhere.h"), NULL);
+    PASS();
+}
+TH_REG("rpi", 305, "a header Booth cannot find is named", rpi305)
+
+static void rpi306(void)
+{
+    const char *path = scratch("rpi306.cu",
+        "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n");
+    char cmd[512];
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-ptx %s -o build/rpi306.ptx",
+             BC_BIN, path);
+    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "E105"), NULL);
+    PASS();
+}
+TH_REG("rpi", 306, "assert with no declaration refuses by name", rpi306)
+
+static void rpi307(void)
+{
+    const char *p = rpi_pti(
+        "#include <cassert>\n"
+        "__global__ void k(int *o, int n){\n"
+        "  assert((128 <= 1024) && (128 % 32) == 0); o[0] = n; }\n",
+        "rpi307", "-Iruntime/include");
+
+    CHNE(p, NULL);
+    if (p) CHEQ(strstr(p, "trap;"), NULL);
+    PASS();
+}
+TH_REG("rpi", 307, "a literal assert guard leaves no trap", rpi307)
+
+static void rpi308(void)
+{
+    static const char *const src =
+        "#include <cassert>\n"
+        "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n";
+    const char *p = rpi_pti(src, "rpi308a", "-Iruntime/include");
+
+    CHNE(p, NULL);
+    if (p) CHNE(strstr(p, "trap;"), NULL);
+    p = rpi_pti(src, "rpi308b", "-Iruntime/include -DNDEBUG");
+    CHNE(p, NULL);
+    if (p) CHEQ(strstr(p, "trap;"), NULL);
+    PASS();
+}
+TH_REG("rpi", 308, "NDEBUG reaches the device compile", rpi308)
+
+static void rpi309(void)
+{
+    const char *path = scratch("rpi309.cu",
+        "#include <cassert>\n"
+        "__global__ void k(int *o, int n){ assert(n > 0); o[0] = n; }\n");
+    char cmd[512];
+    long a, b;
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd,
+             "%s cuda -c %s -o build/rpi309a.o -Iruntime/include",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    snprintf(cmd, sizeof cmd,
+             "%s cuda -c %s -o build/rpi309b.o -Iruntime/include -DNDEBUG",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    a = rpi_fsz("build/rpi309a.o");
+    b = rpi_fsz("build/rpi309b.o");
+    CHECK(a > 0);
+    CHECK(b > 0);
+    CHECK(a != b);
+    PASS();
+}
+TH_REG("rpi", 309, "kath cuda forwards -D to its sub-compiles", rpi309)
+
+static void rpi310(void)
+{
+    const char *path = scratch("rpi310.cu",
+        "__global__ void k(int *o){ o[0] = 1; }\n");
+    char cmd[512];
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s cuda -c %s -o build/rpi310.o --bogus-flag",
+             BC_BIN, path);
+    CHNE(th_run(cmd, obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "unknown option"), NULL);
+    PASS();
+}
+TH_REG("rpi", 310, "kath cuda refuses a flag it would ignore", rpi310)
+
+static uint32_t rpi_r16(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+}
+
+static uint32_t rpi_r32(const uint8_t *p)
+{
+    return rpi_r16(p) | (rpi_r16(p + 2) << 16);
+}
+
+static void rpi311(void)
+{
+    static uint8_t cub[1 << 18];
+    const char *path = scratch("rpi311.cu",
+        "__global__ void k(int *o){\n"
+        "    __shared__ int s[256];\n"
+        "    s[threadIdx.x] = (int)threadIdx.x;\n"
+        "    __syncthreads();\n"
+        "    o[threadIdx.x] = s[255 - threadIdx.x];\n"
+        "}\n");
+    char     cmd[512];
+    FILE    *f;
+    size_t   n;
+    uint32_t sho, nse, sxi, sto, got = 0u, zsh = 0u, tsh = 0u;
+
+    CHNE(path, NULL);
+    snprintf(cmd, sizeof cmd, "%s --nvidia-cubin -o build/rpi311.cubin %s",
+             BC_BIN, path);
+    CHEQ(th_run(cmd, obuf, (int)sizeof obuf), 0);
+
+    f = fopen("build/rpi311.cubin", "rb");
+    CHNE(f, NULL);
+    n = fread(cub, 1u, sizeof cub, f);
+    fclose(f);
+    CHECK(n > 64u);
+
+    sho = rpi_r32(cub + 40);
+    nse = rpi_r16(cub + 60);
+    sxi = rpi_r16(cub + 62);
+    CHECK(nse != 0u && sxi < nse);
+    CHECK(sho + (size_t)nse * 64u <= n);
+
+    sto = rpi_r32(cub + sho + (size_t)sxi * 64u + 24u);
+    CHECK(sto < n);
+
+    for (uint32_t i = 0; i < nse; i++) {
+        const uint8_t *s = cub + sho + (size_t)i * 64u;
+        uint32_t       nm = sto + rpi_r32(s);
+
+        if (nm >= n) continue;
+        if (strcmp((const char *)cub + nm, ".nv.shared.k") == 0) {
+            got = 1u;
+            tsh = rpi_r32(s + 4u);
+            zsh = rpi_r32(s + 32u);
+        }
+    }
+
+    CHEQ(got, 1u);
+    CHEQ(tsh, 8u);
+    CHEQ(zsh, 1024u);
+    PASS();
+}
+TH_REG("rpi", 311, "a __shared__ kernel declares its size", rpi311)
+
+
+static void rpi312(void)
+{
+    const char *b, *t;
+
+    CHNE(scratch("rpi312.cu",
+        "#define assert(e) ((e) ? (void)0 : __trap())\n"
+        "__global__ void k(int *o, int n) {\n"
+        "  int i = threadIdx.x; assert(i < n); o[i] = i; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi312.cu", obuf, (int)sizeof obuf), 0);
+
+    b = strstr(obuf, "br_cond");
+    t = strstr(obuf, "trap");
+    CHNE(b, NULL);
+    CHNE(t, NULL);
+    CHEQ(t > b, 1);
+    CHNE(strstr(obuf, "tern.else"), NULL);
+    PASS();
+}
+TH_REG("rpi", 312, "a void ternary keeps its test", rpi312)
+
+static void rpi313(void)
+{
+    CHNE(scratch("rpi313.cu",
+        "__device__ int f(int a) { return a + 1; }\n"
+        "__device__ int g(int a) { return a + 2; }\n"
+        "__global__ void k(int *o, int n) {\n"
+        "  int i = threadIdx.x; o[i] = (i < n) ? f(1) : g(2); }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi313.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "phi i32"), NULL);
+    CHNE(strstr(obuf, "tern.then"), NULL);
+    CHEQ(strstr(obuf, "select"), NULL);
+    PASS();
+}
+TH_REG("rpi", 313, "only one arm of a calling ternary runs", rpi313)
+
+static void rpi314(void)
+{
+    CHNE(scratch("rpi314.cu",
+        "__global__ void k(int *o, int n) {\n"
+        "  int i = threadIdx.x; ((i < n) ? (o[0] = 1) : (o[0] = 2)); }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi314.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "br_cond"), NULL);
+    CHNE(strstr(obuf, "tern.then"), NULL);
+    CHNE(strstr(obuf, "tern.else"), NULL);
+    PASS();
+}
+TH_REG("rpi", 314, "a storing ternary stores once", rpi314)
+
+static void rpi315(void)
+{
+    CHNE(scratch("rpi315.cu",
+        "__global__ void k(int *o, int m, int n) {\n"
+        "  int i = threadIdx.x; o[i] = (i < n) ? m + i : 0; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi315.cu", obuf, (int)sizeof obuf), 0);
+    CHNE(strstr(obuf, "select i32"), NULL);
+    CHEQ(strstr(obuf, "tern.then"), NULL);
+
+    CHNE(scratch("rpi315b.cu",
+        "__global__ void k(float *o, const float *p) {\n"
+        "  int i = threadIdx.x; o[i] = p ? p[i] : 2.0f; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi315b.cu", obuf, (int)sizeof obuf), 0);
+    CHEQ(strstr(obuf, "select f32"), NULL);
+    CHNE(strstr(obuf, "tern.then"), NULL);
+    PASS();
+}
+TH_REG("rpi", 315, "a ternary selects values and branches on reads", rpi315)
+
+static void rpi316(void)
+{
+    CHNE(scratch("rpi316.cu",
+        "template <typename S, typename D>\n"
+        "__global__ void kk(const S *s, D *d, int n) {\n"
+        "  int i = threadIdx.x; if (i < n) d[i] = (D)s[i]; }\n"
+        "template <typename S, typename D>\n"
+        "static void inner(const S *s, D *d, int n) {\n"
+        "  kk<S, D><<<1, n>>>(s, d, n); }\n"
+        "template <typename S>\n"
+        "static void outer(const void *p, float *d, int n) {\n"
+        "  const S *s = (const S *)p;\n"
+        "  inner(s, d, n); }\n"
+        "void host(const void *p, float *d, int n) {\n"
+        "  outer<double>(p, d, n); }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi316.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @kk(ptr<global, f64>"), NULL);
+    CHEQ(strstr(obuf, "func @kk(ptr<global, i32>"), NULL);
+    PASS();
+}
+TH_REG("rpi", 316, "a wrapper's local keeps its dependent type", rpi316)
+
+static void rpi317(void)
+{
+    const char *p = rpi_ptx(
+        "struct cf { float re, im; };\n"
+        "static __device__ float pick(cf v) { return v.re + v.im; }\n"
+        "__global__ void k(float *o, const float *p, int n, int m) {\n"
+        "  int i = threadIdx.x;\n"
+        "  const cf v = (i < n && i < m) ? *(const cf *)(p + 2 * i)\n"
+        "                                : cf{0.0f, 0.0f};\n"
+        "  o[i] = pick(v); }\n", "rpi317");
+
+    CHNE(p, NULL);
+    CHEQ(strstr(obuf, "E840"), NULL);
+    CHNE(strstr(p, "st.global.f32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 317, "either arm of a ternary can yield a struct", rpi317)
+
+static void rpi318(void)
+{
+    const char *p = rpi_ptx(
+        "template <typename T, bool ids>\n"
+        "__global__ void k(const T *x, int n) {\n"
+        "  extern __shared__ char data[];\n"
+        "  char *shb = data;\n"
+        "  char *cb = ids ? (shb + 64) : shb;\n"
+        "  T *t = (T *) cb + threadIdx.y * 4;\n"
+        "  int i = threadIdx.x;\n"
+        "  if (i < n) t[i] = x[i]; }\n"
+        "template __global__ void k<float, false>(const float *, int);\n"
+        "template __global__ void k<float, true>(const float *, int);\n",
+        "rpi318");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, "st.shared.f32"), NULL);
+    CHEQ(strstr(p, "st.global.f32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 318, "a shared pointer stays shared past a ternary", rpi318)
+
+static void rpi319(void)
+{
+    const char *p = rpi_ptx(
+        "__global__ void k(float *o, int n) {\n"
+        "  int t = threadIdx.x; long long i = t;\n"
+        "  if (t < n) o[t] = (float)(int)((i * 3000000007LL + 5) >> 20); }\n",
+        "rpi319");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, "mul.lo.u64"), NULL);
+    CHEQ(strstr(strstr(p, "mul.lo.u64"), "-1294967289"), NULL);
+    CHNE(strstr(p, "shl.b64"), NULL);
+    PASS();
+}
+TH_REG("rpi", 319, "a 64-bit constant is built, not cut to 32 bits", rpi319)
+
+static void rpi320(void)
+{
+    CHNE(scratch("rpi320.cu",
+        "__global__ void k(float *o, const float *x, int bs) {\n"
+        "  int t = threadIdx.x, row = blockIdx.x;\n"
+        "  o += row * bs; x -= t; x++; ++x; x--;\n"
+        "  o[t] = *x; }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi320.cu", obuf, (int)sizeof obuf), 0);
+
+    CHEQ(strstr(obuf, "add ptr<"), NULL);
+    CHEQ(strstr(obuf, "sub ptr<"), NULL);
+    CHNE(strstr(obuf, "gep ptr<global, f32>, %0"), NULL);
+    PASS();
+}
+TH_REG("rpi", 320, "a pointer steps by elements, however written", rpi320)
+
+static void rpi321(void)
+{
+    const char *p = rpi_ptx(
+        "__global__ void k(float *o, const signed char *q,\n"
+        "                  const unsigned char *u, int n) {\n"
+        "  int i = threadIdx.x;\n"
+        "  if (i < n) o[i] = (float)q[i] * 0.5f + (float)u[i]; }\n", "rpi321");
+
+    CHNE(p, NULL);
+    CHNE(strstr(p, "shr.s32"), NULL);
+    CHEQ(strstr(p, "cvt.s32.s16"), NULL);
+    CHNE(strstr(p, "cvt.rn.f32.u32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 321, "a signed byte keeps its sign when it widens", rpi321)
+
+static void rpi322(void)
+{
+    CHNE(scratch("rpi322.cu",
+        "__global__ void k(float *o, const half2 *x, const float2 *y) {\n"
+        "  int i = threadIdx.x;\n"
+        "  const float2 t = y[i];\n"
+        "  const half2 p = x[i] * make_half2(t.x, t.y);\n"
+        "  o[i] = __low2float(p) + __high2float(p); }\n"), NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi322.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "fptrunc f32"), NULL);
+    {
+        const char *t = strstr(obuf, "fptrunc f32");
+        const char *st = strstr(obuf, "store f16 %");
+        CHNE(st, NULL);
+        CHECK(t < st);
+    }
+    {
+        const char *p = obuf;
+        int bad = 0;
+        while ((p = strstr(p, "store f32 ")) != NULL) {
+            const char *q = strchr(p, ',');
+            if (q && strstr(q, "ptr<private, f16>") == q + 2) bad++;
+            p += 10;
+        }
+        CHEQ(bad, 0);
+    }
+    PASS();
+}
+TH_REG("rpi", 322, "make_half2 narrows its floats before it stores", rpi322)
+
+static void rpi323(void)
+{
+    CHNE(scratch("rpi323.cu",
+        "template <typename D, typename S>\n"
+        "static __device__ D conv(S x) { return D(x); }\n"
+        "template <typename S, typename D>\n"
+        "static __device__ void one(const char *ci, char *co) {\n"
+        "  *(D *) co = conv<D>(*(const S *) ci); }\n"
+        "__global__ void k(const char *a, char *b) {\n"
+        "  one<float, float>(a + 4 * threadIdx.x, b + 4 * threadIdx.x); }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi323.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @conv(f32"), NULL);
+    CHEQ(strstr(obuf, "fptosi"), NULL);
+    PASS();
+}
+TH_REG("rpi", 323, "a deduction sees through a dereferenced cast", rpi323)
+
+static void rpi324(void)
+{
+    CHNE(scratch("rpi324.cu",
+        "__global__ void k(const unsigned short *x, int *o) {\n"
+        "  int v = x[2 * threadIdx.x] << 0;\n"
+        "  v |= x[2 * threadIdx.x + 1] << 16;\n"
+        "  o[threadIdx.x] = v; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi324.cu", obuf, (int)sizeof obuf), 0);
+
+    CHEQ(strstr(obuf, "shl i16"), NULL);
+    CHEQ(strstr(obuf, "sext"), NULL);
+    CHNE(strstr(obuf, "shl i32"), NULL);
+    PASS();
+}
+TH_REG("rpi", 324, "a short promotes to int before it shifts", rpi324)
+
+static void rpi325(void)
+{
+    CHNE(scratch("rpi325.cu",
+        "#include <array>\n"
+        "__global__ void k(float *o) { o[threadIdx.x] = 1.0f; }\n"
+        "void go(float *o) {\n"
+        "  constexpr std::array<int, 2> slow = { 1, 2 };\n"
+        "  k<<<1, slow[1]>>>(o); }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi325.cu", obuf, (int)sizeof obuf), 0);
+
+    CHEQ(strstr(obuf, "E134"), NULL);
+    CHNE(strstr(obuf, "func @k("), NULL);
+    PASS();
+}
+TH_REG("rpi", 325, "a wrapper local Booth cannot name is skipped", rpi325)
+
+static void rpi326(void)
+{
+    CHNE(scratch("rpi326.cu",
+        "template <typename T> __global__ void k(T *o) { o[threadIdx.x] = T(1); }\n"
+        "template <typename T> static void go(T *o) { k<T><<<1, 4>>>(o); }\n"
+        "typedef void (*fn_t)(float *);\n"
+        "fn_t pick(int i) { return go<float>; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi326.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @k(ptr<global, f32>"), NULL);
+    PASS();
+}
+TH_REG("rpi", 326, "a template handed out as a pointer launches", rpi326)
+
+static void rpi327(void)
+{
+    CHNE(scratch("rpi327.cu",
+        "template <typename S, typename D> __global__ void k(const S *x, D *y) {\n"
+        "  y[threadIdx.x] = (D) x[threadIdx.x]; }\n"
+        "template <typename S, typename D> static void go(const void *x, D *y) {\n"
+        "  k<S><<<1, 4>>>((const S *) x, y); }\n"
+        "typedef void (*to16_t)(const void *, short *);\n"
+        "to16_t pick(int i) { return go<float>; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi327.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @k(ptr<global, f32> %0, ptr<global, i16> %1)"), NULL);
+    PASS();
+}
+TH_REG("rpi", 327, "a pointer typedef lends deduction its params", rpi327)
+
+static void rpi328(void)
+{
+    const char *p = rpi_sass(
+        "__global__ void k(const float *x, const float *g, float *o, long long n){\n"
+        "  const bool use_g = g != nullptr; float acc = 0.0f;\n"
+        "  for (long long i = threadIdx.x; i < n; i += 32) {\n"
+        "    acc += x[i]; if (use_g) acc += g[i]; }\n"
+        "  o[threadIdx.x] = acc; }\n", "rpi328");
+    int seen = 0;
+
+    CHNE(p, NULL);
+    for (const char *q = strstr(p, "NV_SETP_NE_U64"); q; q = strstr(q + 1, "NV_SETP_NE_U64")) {
+        const char *ln = q;
+        unsigned long long lo, hi;
+
+        while (ln > p && ln[-1] != '\n') ln--;
+        CHEQ(sscanf(ln, "%*x %llx %llx", &lo, &hi), 2);
+        if ((lo & 0xFFFull) != 0x20Cull) continue;
+        CHECK(((hi >> 17) & 7ull) >= 2ull);
+        seen++;
+    }
+    CHECK(seen >= 2);
+    PASS();
+}
+TH_REG("rpi", 328, "P1 is scratch for wide compares, never a value", rpi328)
+
+static void rpi329(void)
+{
+    CHNE(scratch("rpi329.cu",
+        "template <typename T> using fp_t = void (*)(const void *, T *, long);\n"
+        "typedef fp_t<short> to16_t;\n"
+        "template <typename S, typename D> __global__ void k(const S *x, D *y) {\n"
+        "  y[threadIdx.x] = (D) x[threadIdx.x]; }\n"
+        "template <typename S, typename D> static void go(const void *x, D *y, long n) {\n"
+        "  k<S><<<1, 4>>>((const S *) x, y); }\n"
+        "to16_t pick(int i) { return go<float>; }\n"),
+        NULL);
+    CHEQ(th_run(BC_BIN " --ir build/rpi329.cu", obuf, (int)sizeof obuf), 0);
+
+    CHNE(strstr(obuf, "func @k(ptr<global, f32> %0, ptr<global, i16> %1)"), NULL);
+    PASS();
+}
+TH_REG("rpi", 329, "an alias template of a pointer keeps params", rpi329)

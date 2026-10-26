@@ -280,7 +280,7 @@ typedef struct {
 /* ---- Machine Instruction ---- */
 
 #define NV_MAX_FRAME (512u * 1024u)
-#define NV_MAX_ASM    4096
+#define NV_MAX_ASM    (1 << 15)
 #define NV_MAX_ASMOP  BIR_ASM_MAXOP
 
 #define NV_MAX_OPS  6
@@ -294,7 +294,7 @@ typedef struct {
     uint16_t  pad;
 } nv_minst_t;
 
-#define NV_MAX_CALL  4096
+#define NV_MAX_CALL  (1 << 15)
 #define NV_MAX_CARG    24
 
 typedef struct {
@@ -310,7 +310,8 @@ typedef struct {
 typedef struct {
     uint32_t   tmpl;     /* BIR strings offset of the template text */
     uint8_t    nops;
-    uint8_t    pad[3];
+    uint8_t    nout;
+    uint8_t    pad[2];
     nv_opnd_t  ops[NV_MAX_ASMOP];
 } nv_asm_t;
 
@@ -328,8 +329,13 @@ typedef struct {
 typedef struct {
     uint32_t name;       /* string table offset */
     uint8_t  rfile;      /* NV_RF_U32/U64/F32/F64 */
-    uint8_t  pad[3];
+    uint8_t  algn;
+    uint16_t size;
 } nv_param_t;
+
+#define NV_RFSZ(rf) (((rf) == NV_RF_U64 || (rf) == NV_RF_F64) ? 8u : \
+                     ((rf) == NV_RF_U16 || (rf) == NV_RF_F16) ? 2u : 4u)
+#define NV_PAGG(P)  ((P)->size != 0u)
 
 typedef struct {
     uint32_t    name;        /* string table offset */
@@ -352,8 +358,8 @@ typedef struct {
 
 /* ---- Module ---- */
 
-#define NV_MAX_MINST  (1 << 21)   /* 2097152 */
-#define NV_MAX_MBLK   (1 << 18)   /* 262144 */
+#define NV_MAX_MINST  (1 << 22)   /* 4194304 */
+#define NV_MAX_MBLK   (1 << 19)   /* 524288 */
 #define NV_MAX_MFUNC  (1 << 12)   /* 4096 */
 #define NV_MAX_OUT    (2 * 1024 * 1024)  /* 2 MB output buffer */
 
@@ -383,7 +389,8 @@ typedef struct {
     uint32_t    num_call;
     uint32_t    cur_emf;
     uint8_t     vprt;
-    uint8_t     vp_pad[3];
+    uint8_t     sass;
+    uint8_t     vp_pad[2];
 
     /* Block-hit instrumentation (diagnostic) */
     uint8_t     bkhit;      /* emit atom.add at each block label */

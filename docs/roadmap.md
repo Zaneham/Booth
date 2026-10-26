@@ -47,7 +47,6 @@ Booth takes seven inputs. They all meet at BIR and go down the same pipeline.
 | HIP | `--hip`, or a `.hip` file | Macro layer over the CUDA path |
 | Triton | `--triton` | Python subset, `tl.*`, `tl.dot` on the CPU backend |
 | Fortran | via LFortran | `do concurrent`, elementwise, SLATEC-checked in CI |
-| MLIR | `--mlir` | `func`, `return` and `arith`. No LLVM in the path |
 | OCaml | via `kcomp` | Kernels as typed OCaml functions |
 | BIR text | `--bir-in` | What `--ir` prints, read back in |
 
@@ -55,9 +54,6 @@ What each still owes:
 
 - **Triton** — rank-2 tiles refuse on GPU targets with E099. `tl.load` masks are
   not honoured on the CPU backend.
-- **MLIR** — no `memref`, `scf` or `gpu` dialect. A function body with more than
-  one block is refused rather than flattened, and nothing marks an MLIR function
-  as a kernel, so it lowers as a device function.
 - **OCaml** — no `while` and no early exit, no `f64`, no warp shuffles, and no
   atomic min or max until the IR question above is settled.
 - **Fortran** — This is more LFortran work than on Booth as Fortran already has GPU support through `do concurrent`. I'm working on the LFortran compiler at the moment to shore up some support around legacy f77 Fortran and also send a patch upstream so I can get Fortran compiling to GPUs properly rather than the limited subset. 

@@ -64,6 +64,7 @@ typedef enum {
     BC_E051 = 51,  /* unknown directive: #%s */
     BC_E052 = 52,  /* unterminated #if/#ifdef (missing %d #endif) */
     BC_E053 = 53,  /* preprocessor output overflow (max %d bytes) */
+    BC_E054 = 54,  /* #include: cannot find '%s' on any search path */
 
     /* ---- Sema (E070-E099) ---- */
     BC_E070 = 70,  /* arrow on non-pointer */
@@ -232,6 +233,12 @@ typedef enum {
     BC_E609 = 609, /* operand kind with no SASS form */
     BC_E610 = 610, /* special register with no SASS form */
     BC_E611 = 611, /* access address or width with no SASS form */
+
+    BC_E620 = 620, /* a launch naming a kernel with no compiled symbol */
+    BC_E621 = 621, /* a kernel parameter list the host stub cannot carry */
+    BC_E622 = 622, /* more kernels than the host registration table holds */
+    BC_E623 = 623, /* the host compiler refused the emitted source */
+
     BC_E640 = 640, /* CUDA intrinsic with no PTX form any backend emits */
 
     BC_E660 = 660,

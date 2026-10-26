@@ -1,6 +1,86 @@
 Booth — Changelog
 =================
 
+## Unreleased
+
+### Backends
+
+- `--nvidia-cubin` puts every kernel of a module into the one cubin, so
+  ggml-cuda files with several kernels no longer stop at E600
+  (Zane Hambly, 2026-10-26)
+
+- `--nvidia-cubin` lowers local loads and stores, half and bfloat16
+  conversions, rounding, votes, membar, nanosleep, 16-bit parameters and
+  constant divisors, and sizes each kernel's registers from its own counts
+  (Zane Hambly, 2026-10-26)
+
+- `--nvidia-cubin` holds a register only where its value is live, places join
+  barriers by the blocks a region covers, and lowers wmma load, store and mma
+  to scalar SASS, so topk-moe and lightning-indexer build (Zane Hambly,
+  2026-10-26)
+
+- `--nvidia-cubin` lowers cvta.local and cvta.global, so cumsum and quantize
+  get as far as their vprintf call (Zane Hambly, 2026-10-26)
+
+- `--nvidia-cubin` spills values to the local frame when a kernel needs more
+  registers than SASS has, so mmvq gets past E603 (Zane Hambly, 2026-10-26)
+
+- `--cuda-host` and `--cuda-exe` emit the host half of a CUDA compile, so kath
+  builds a whole program the way nvcc does: the source back out with the device
+  definitions removed, each launch through `__cudaPushCallConfiguration` and a
+  stub calling `cudaLaunchKernel`, the kernels registered from a constructor out
+  of a fatbin carrying both the cubin and the PTX, and the system C++ compiler
+  driven to link it. Clean-room `cuda.h`, `cuda_runtime.h`, `cuda_fp16.h`,
+  `cuda_bf16.h` and `cublas_v2.h` under `runtime/include` (Zane Hambly,
+  2026-10-26)
+
+- `--cuda-host` writes each kernel's stub where the kernel stood and keys a
+  launch on the instantiation rather than its position, so a kernel launched
+  from inside a host template or through a macro reaches the right one, and it
+  spells enum, struct, vector and function template arguments, so ggml-cuda
+  files get through the host pass (Zane Hambly, 2026-10-26)
+
+- `--cuda-host` writes out a variadic template argument pack, spells a function
+  template-id argument rather than the symbol it lowered to, keeps a launch
+  whose callee ends in `>>`, registers up to 4096 kernels and refuses with E622
+  above that instead of falling silent, and `kath cuda` finds Booth's own
+  `runtime/include` from the binary rather than the working directory, so
+  binbcast and cpy get through (Zane Hambly, 2026-10-26)
+- `--cuda-host` carries const on the BIR type itself, so a kernel taking
+  `const float *` registers the instantiation its launch actually names
+  rather than one spelled without the qualifier (Zane Hambly, 2026-10-26)
+
+- `kath cuda -c` compiles one `.cu` to one relocatable object rather than a
+  whole program, with `-fPIC` for a shared library, each object carrying its
+  own fatbin and registration constructor the way nvcc does, so many
+  translation units link into one library (Zane Hambly, 2026-10-26)
+
+- `kath cuda` takes `-Idir` written up against the flag as well as `-I dir`,
+  rather than dropping it and compiling with the include path missing
+- `--cuda-host` leaves a declaration where it deleted a device function, so
+  host code naming one as a template argument still resolves, expands an
+  argument pack in the stub body, keeps default arguments, tells a commented
+  out parameter name from a type, and the clean-room headers gain
+  `cudaFuncSetAttribute`, the host-mapped allocation flags, occupancy without
+  the flags suffix, `cudaDataType_t`, the cuBLAS side, fill, diag, compute and
+  algo enums with `cublasStrsmBatched` and the `GemmEx` family, and a minimal
+  `cooperative_groups.h`, so 63 of the 67 ggml-cuda files compile to objects
+  (Zane Hambly, 2026-10-26)
+
+### Frontend
+
+- Explicit template instantiation, `template void f<args>(params);` with
+  `extern template` as its declaration form, deduces and instantiates down the
+  same path as an implicit one, and a launch through a function-pointer local
+  resolves to the kernel it holds, so ggml-cuda's template-instance files get
+  through the device and host passes (Zane Hambly, 2026-10-26)
+
+- `--cuda-host` strips `__device__`, `__global__`, `__host__` and
+  `__forceinline__` wherever they survive into host output, and leaves an angle
+  include a directive rather than inlining Booth's own headers over the one g++
+  will read, while `kath cuda` now hands every `-I` to every stage instead of
+  only the last, so the emitted C++ compiles (Zane Hambly, 2026-10-26)
+
 ## Booth 0.6.0
 
 ### Runtime

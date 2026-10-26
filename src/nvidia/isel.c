@@ -11,6 +11,8 @@ static struct {
     nv_module_t        *nv;
     const bir_module_t *bir;
     uint32_t            block_map[BIR_MAX_BLOCKS];
+    uint32_t            blk_lst[BIR_MAX_BLOCKS];
+    uint32_t            cmb;
     uint32_t            lcl_off;   /* local (alloca) byte offset */
     uint32_t            shr_off;   /* shared memory byte offset */
     uint32_t            lcl_alg;
@@ -33,6 +35,7 @@ static void nv_refuse(const char *what)
 
 /* Forward declaration — rslv needs em1 for f64 constant materialisation */
 static void em1(uint16_t op, nv_opnd_t d, nv_opnd_t a, nv_opnd_t b);
+static void em1u(uint16_t op, nv_opnd_t d, nv_opnd_t a);
 static nv_opnd_t mat_pred(nv_opnd_t op);
 static uint16_t movof(uint8_t rf);
 
@@ -115,6 +118,9 @@ static uint16_t new_vreg(uint8_t rf)
     return S.nv->rc[rf]++;
 }
 
+static int pagg(uint32_t ty);
+static uint32_t vtyof(uint32_t val);
+
 /* BIR type -> PTX register file */
 static uint8_t bir_rfile(uint32_t type_idx)
 {
@@ -138,6 +144,23 @@ static uint8_t bir_rfile(uint32_t type_idx)
     default:
         return NV_RF_U32;
     }
+}
+
+static int psinf(nv_param_t *P, uint32_t ty)
+{
+    uint32_t z, a;
+
+    P->rfile = bir_rfile(ty);
+    P->size = 0u;
+    P->algn = 0u;
+    if (!pagg(ty)) return 1;
+
+    z = bir_bsz(S.bir, ty, 8);
+    a = bir_balg(S.bir, ty, 8);
+    if (z == 0u || z > 0xFFFFu || a == 0u || a > 16u) return 0;
+    P->size = (uint16_t)z;
+    P->algn = (uint8_t)a;
+    return 1;
 }
 
 static uint8_t def_rf(uint32_t idx, uint32_t type_idx)
@@ -166,6 +189,33 @@ static nv_opnd_t map_val(uint32_t idx, uint32_t type_idx)
     return mop_reg(rf, rn);
 }
 
+static int kwide(uint32_t val)
+{
+    const bir_const_t *C;
+
+    if (val == BIR_VAL_NONE || !BIR_VAL_IS_CONST(val)) return 0;
+    if (BIR_VAL_INDEX(val) >= S.bir->num_consts) return 0;
+    C = &S.bir->consts[BIR_VAL_INDEX(val)];
+    return C->kind == BIR_CONST_INT && bir_rfile(C->type) == NV_RF_U64
+        && C->d.ival != (int64_t)(int32_t)C->d.ival;
+}
+
+static nv_opnd_t k64(int64_t v)
+{
+    nv_opnd_t lo = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    nv_opnd_t zl = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    nv_opnd_t hi = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    nv_opnd_t sh = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    nv_opnd_t d  = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+
+    em1u(NV_MOV_U32, lo, mop_imm((int32_t)(uint32_t)v));
+    em1u(NV_CVT_U64_U32, zl, lo);
+    em1u(NV_MOV_U64, hi, mop_imm((int32_t)(v >> 32)));
+    em1(NV_SHL_B64, sh, hi, mop_imm(32));
+    em1(NV_OR_B64, d, sh, zl);
+    return d;
+}
+
 static nv_opnd_t rslv_p(uint32_t val)
 {
     if (val == BIR_VAL_NONE) return mop_imm(0);
@@ -178,7 +228,7 @@ static nv_opnd_t rslv_p(uint32_t val)
         if (C->kind == BIR_CONST_ZERO || C->kind == BIR_CONST_NULL)
             return mop_imm(0);
         if (C->kind == BIR_CONST_INT)
-            return mop_imm((int32_t)C->d.ival);
+            return kwide(val) ? k64(C->d.ival) : mop_imm((int32_t)C->d.ival);
         if (C->kind == BIR_CONST_FLOAT) {
             uint8_t rf = bir_rfile(C->type);
             if (rf == NV_RF_F64) {
@@ -280,6 +330,19 @@ static uint32_t algnb(uint8_t subop)
     uint32_t k = subop & 31u;
 
     return (k > 12u) ? (1u << 12) : (1u << k);
+}
+
+static nv_opnd_t mapu64(uint32_t idx)
+{
+    uint16_t rn;
+
+    if (idx >= BIR_MAX_INSTS) return mop_reg(NV_RF_U64, 0);
+    if (S.nv->val_vreg[idx] != 0)
+        return mop_reg(S.nv->val_rfile[idx], S.nv->val_vreg[idx]);
+    rn = new_vreg(NV_RF_U64);
+    S.nv->val_vreg[idx] = rn;
+    S.nv->val_rfile[idx] = NV_RF_U64;
+    return mop_reg(NV_RF_U64, rn);
 }
 
 static void unsz(const char *what, uint32_t ty)
@@ -831,10 +894,27 @@ static void is_f2i(nv_opnd_t d, nv_opnd_t s, uint32_t v0, int sgn)
     cocpy(d, t, sgn);
 }
 
+static nv_opnd_t sx8(uint32_t v0, nv_opnd_t s)
+{
+    uint32_t ty = vtyof(v0);
+    nv_opnd_t w, l, r;
+
+    if (s.kind != NV_MOP_REG || ty >= S.bir->num_types
+        || S.bir->types[ty].kind != BIR_TYPE_INT
+        || S.bir->types[ty].width != 8u) return s;
+    w = cofit(s, NV_RF_U32, 0);
+    l = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    r = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    em1(NV_SHL_B32, l, w, mop_imm(24));
+    em1(NV_SHR_S32, r, l, mop_imm(24));
+    return r;
+}
+
 static void is_i2f(nv_opnd_t d, nv_opnd_t s, uint32_t v0, int sgn)
 {
     uint8_t drf = d.rfile;
-    uint8_t srf = rslv_rf(v0);
+    uint8_t srf = (s.kind == NV_MOP_REG && s.rfile == NV_RF_U32)
+                ? (uint8_t)NV_RF_U32 : rslv_rf(v0);
     uint16_t op;
     nv_opnd_t t;
 
@@ -898,12 +978,14 @@ static void is_cvt(uint32_t idx, const bir_inst_t *I)
         is_f2i(d, s, v0, I->op == BIR_FPTOSI);
         return;
     case BIR_SITOFP: case BIR_UITOFP:
+        if (I->op == BIR_SITOFP) s = sx8(v0, s);
         is_i2f(d, s, v0, I->op == BIR_SITOFP);
         return;
     case BIR_FPTRUNC: case BIR_FPEXT:
         is_fext(d, s, v0, I->type);
         return;
     case BIR_ZEXT: case BIR_SEXT: case BIR_TRUNC:
+        if (I->op == BIR_SEXT) s = sx8(v0, s);
         cocpy(d, s, I->op == BIR_SEXT);
         return;
     default:
@@ -989,14 +1071,118 @@ static uint16_t stop(int as, uint8_t vrf, uint32_t psz)
     }
 }
 
+static int pagg(uint32_t ty)
+{
+    uint8_t k;
+
+    if (ty >= S.bir->num_types) return 0;
+    k = S.bir->types[ty].kind;
+    return k == BIR_TYPE_STRUCT || k == BIR_TYPE_ARRAY
+        || k == BIR_TYPE_VECTOR;
+}
+
+static uint32_t agea(uint32_t al, uint32_t sz)
+{
+    return (al < 4u && (sz & 3u) == 0u) ? 4u : al;
+}
+
+static uint32_t agstp(uint32_t off, uint32_t rem, uint32_t al)
+{
+    uint32_t w = (al < 8u) ? al : 8u;
+
+    while (w > 1u && (rem < w || (off & (w - 1u)) != 0u)) w >>= 1;
+    return w;
+}
+
+static uint8_t agrf(uint32_t w)
+{
+    return (w == 8u) ? (uint8_t)NV_RF_U64
+         : (w == 2u) ? (uint8_t)NV_RF_U16 : (uint8_t)NV_RF_U32;
+}
+
+static uint32_t lslot(uint32_t sz, uint32_t a)
+{
+    uint32_t off = (S.lcl_off + a - 1u) & ~(a - 1u);
+
+    if (off < S.lcl_off || off >= NV_MAX_FRAME || sz > NV_MAX_FRAME - off)
+        return NV_MAX_FRAME;
+    S.lcl_off = off + sz;
+    if (a > S.lcl_alg) S.lcl_alg = a;
+    return off;
+}
+
+static nv_opnd_t agadd(nv_opnd_t base, uint32_t off)
+{
+    nv_opnd_t d;
+
+    if (off == 0u) return base;
+    d = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    em1(NV_ADD_U64, d, base, mop_imm((int32_t)off));
+    return d;
+}
+
+static int aghome(uint32_t idx, uint32_t ty, nv_opnd_t *out,
+                  uint32_t *psz, uint32_t *pal)
+{
+    uint32_t sz = bir_bsz(S.bir, ty, 8);
+    uint32_t al = bir_balg(S.bir, ty, 8);
+    uint32_t off;
+
+    if (sz == 0u || al == 0u) { unsz("aggregate", ty); return 0; }
+    off = lslot(sz, al);
+    if (off >= NV_MAX_FRAME) {
+        nv_refuse("a local frame this large");
+        return 0;
+    }
+    *out = mapu64(idx);
+    *psz = sz;
+    *pal = agea(al, sz);
+    em1u(NV_LEA_LOCAL, *out, mop_imm((int32_t)off));
+    return 1;
+}
+
+static void agcpy(nv_opnd_t dst, int das, nv_opnd_t src, int sas,
+                  uint32_t sz, uint32_t al)
+{
+    uint32_t off = 0u, g = sz + 8u;
+
+    while (off < sz && g--) {
+        uint32_t w = agstp(off, sz - off, al);
+        uint8_t rf;
+        nv_opnd_t t, ops[2];
+
+        if (w == 1u) {
+            nv_refuse("an aggregate with an odd byte size");
+            return;
+        }
+        rf = agrf(w);
+        t = mop_reg(rf, new_vreg(rf));
+        em1u(ldop(sas, rf, 0u), t, agadd(src, off));
+        ops[0] = agadd(dst, off);
+        ops[1] = t;
+        emit(stop(das, rf, 0u), 0, 2, ops, 0);
+        off += w;
+    }
+}
+
 static void is_load(uint32_t idx, const bir_inst_t *I)
 {
-    nv_opnd_t d = map_val(idx, I->type);
-    uint8_t drf = S.nv->val_rfile[idx];
     uint32_t ptr_val = I->operands[0];
     int as = pas(ptr_val);
     nv_opnd_t addr = mat_const(ptr_val, NV_RF_U64);
+    nv_opnd_t d;
+    uint8_t drf;
 
+    if (pagg(I->type)) {
+        uint32_t sz, al;
+
+        if (!aghome(idx, I->type, &d, &sz, &al)) return;
+        agcpy(d, BIR_AS_PRIVATE, addr, as, sz, al);
+        return;
+    }
+
+    d = map_val(idx, I->type);
+    drf = S.nv->val_rfile[idx];
     em1u(ldop(as, drf, pntsz(ptr_val)), d, addr);
 }
 
@@ -1005,15 +1191,30 @@ static void is_load(uint32_t idx, const bir_inst_t *I)
 static void is_store(const bir_inst_t *I)
 {
     /* BIR store: ops[0]=value, ops[1]=address */
-    nv_opnd_t val = rslv(I->operands[0]);
-    uint8_t vrf = rslv_rf(I->operands[0]);
+    uint32_t vval = I->operands[0];
+    uint32_t vty = vtyof(vval);
     uint32_t ptr_val = I->operands[1];
     int as = pas(ptr_val);
     nv_opnd_t addr = mat_const(ptr_val, NV_RF_U64);
+    nv_opnd_t val;
+    uint8_t vrf;
+
+    if (pagg(vty)) {
+        uint32_t sz = bir_bsz(S.bir, vty, 8);
+        uint32_t al = bir_balg(S.bir, vty, 8);
+
+        if (sz == 0u || al == 0u) { unsz("store", vty); return; }
+        agcpy(addr, as, mat_const(vval, NV_RF_U64), BIR_AS_PRIVATE, sz,
+              agea(al, sz));
+        return;
+    }
+
+    val = rslv(vval);
+    vrf = rslv_rf(vval);
 
     /* Value must be in a register for stores */
     if (val.kind != NV_MOP_REG)
-        val = mat_const(I->operands[0], vrf);
+        val = mat_const(vval, vrf);
 
     /* Store: 0 defs, 2 uses (addr, value) */
     nv_opnd_t ops[2] = { addr, val };
@@ -1090,7 +1291,8 @@ static void is_asm(const bir_inst_t *I)
     X = &S.nv->asms[S.nv->num_asm];
     X->tmpl = A->tmpl;
     X->nops = (uint8_t)A->nops;
-    X->pad[0] = X->pad[1] = X->pad[2] = 0;
+    X->nout = (uint8_t)A->nout;
+    X->pad[0] = X->pad[1] = 0;
     if (!asmb(A, I, X, pv, pr)) return;
 
     zero[0] = mop_none();
@@ -1226,10 +1428,41 @@ static void is_gep(uint32_t idx, const bir_inst_t *I)
 static void is_param(uint32_t idx, const bir_inst_t *I)
 {
     uint8_t rf = bir_rfile(I->type);
-    nv_opnd_t d = map_val(idx, I->type);
     uint32_t pi = I->subop;
-
+    nv_opnd_t d;
     uint16_t op;
+
+    if (pagg(I->type)) {
+        uint32_t sz, al, o = 0u, g;
+
+        if (!aghome(idx, I->type, &d, &sz, &al)) return;
+        g = sz + 8u;
+        while (o < sz && g--) {
+            uint32_t w = agstp(o, sz - o, al);
+            uint8_t crf;
+            nv_opnd_t t, lops[3], sops[2];
+
+            if (w == 1u) {
+                nv_refuse("an aggregate with an odd byte size");
+                return;
+            }
+            crf = agrf(w);
+            t = mop_reg(crf, new_vreg(crf));
+            lops[0] = t;
+            lops[1] = mop_imm((int32_t)pi);
+            lops[2] = mop_imm((int32_t)o);
+            emit(w == 8u ? NV_LD_PARAM_U64
+               : w == 2u ? NV_LD_PARAM_B16 : NV_LD_PARAM_U32,
+                 1, 2, lops, 0);
+            sops[0] = agadd(d, o);
+            sops[1] = t;
+            emit(stop(BIR_AS_PRIVATE, crf, 0u), 0, 2, sops, 0);
+            o += w;
+        }
+        return;
+    }
+
+    d = map_val(idx, I->type);
     switch (rf) {
     case NV_RF_U64:  op = NV_LD_PARAM_U64; break;
     case NV_RF_F32:  op = NV_LD_PARAM_F32; break;
@@ -1295,6 +1528,13 @@ static int mblk(uint32_t bir_bi, uint32_t *out)
         return 1;
     }
     *out = S.block_map[bir_bi];
+    return 0;
+}
+
+static int mblkl(uint32_t bir_bi, uint32_t *out)
+{
+    if (mblk(bir_bi, out) != 0) return 1;
+    *out = S.blk_lst[bir_bi];
     return 0;
 }
 
@@ -1400,6 +1640,47 @@ static void is_brcond(const bir_inst_t *I)
 
 /* ---- PHI Nodes ---- */
 
+static int aphsrc(uint32_t val, uint32_t idx, uint32_t bir_bi,
+                  nv_opnd_t *src)
+{
+    const bir_block_t *B = &S.bir->blocks[bir_bi];
+    uint32_t vi = BIR_VAL_INDEX(val);
+
+    if (val == BIR_MAKE_VAL(idx)) return 1;
+    if (BIR_VAL_IS_CONST(val) || vi >= S.bir->num_insts) {
+        nv_refuse("an aggregate phi fed by a constant");
+        return 2;
+    }
+    if (S.bir->insts[vi].op == BIR_PHI && vi >= B->first_inst
+        && vi < B->first_inst + B->num_insts) {
+        nv_refuse("an aggregate phi fed by another phi of its own block");
+        return 2;
+    }
+    *src = mapu64(vi);
+    return 0;
+}
+
+static int phsrc(uint32_t val, uint32_t idx, uint32_t bir_bi, int ag,
+                 nv_opnd_t *src)
+{
+    if (kwide(val)) {
+        nv_refuse("a phi fed by a 64-bit constant wider than an immediate");
+        return 2;
+    }
+    if (ag) return aphsrc(val, idx, bir_bi, src);
+    *src = rslv_p(val);
+    return 0;
+}
+
+static void aphend(uint32_t idx, uint32_t ty, nv_opnd_t from)
+{
+    nv_opnd_t h;
+    uint32_t sz, al;
+
+    if (!aghome(idx, ty, &h, &sz, &al)) return;
+    agcpy(h, BIR_AS_PRIVATE, from, BIR_AS_PRIVATE, sz, al);
+}
+
 static void is_phi(uint32_t idx, const bir_inst_t *I,
                    uint32_t cur_bir_blk)
 {
@@ -1408,8 +1689,10 @@ static void is_phi(uint32_t idx, const bir_inst_t *I,
      * positions, value at odd. Getting this backwards gives you
      * undefined predicate registers and a kernel that treats GPU
      * memory like a pinball machine. We learned this the hard way. */
-    uint8_t rf = bir_rfile(I->type);
-    nv_opnd_t d = map_val(idx, I->type);
+    int ag = pagg(I->type);
+    uint8_t rf = ag ? (uint8_t)NV_RF_U64 : bir_rfile(I->type);
+    nv_opnd_t d = ag ? mop_reg(NV_RF_U64, new_vreg(NV_RF_U64))
+                     : map_val(idx, I->type);
     uint32_t nop = n_ops(I);
 
     uint16_t mop = movof(rf);
@@ -1425,10 +1708,14 @@ static void is_phi(uint32_t idx, const bir_inst_t *I,
         if (val == BIR_VAL_NONE) continue;
 
         uint32_t m_pred;
-        if (mblk(pred_bir, &m_pred) != 0) return;
+        if (mblkl(pred_bir, &m_pred) != 0) return;
         if (m_pred >= NV_MAX_MBLK) continue;
 
-        nv_opnd_t src = rslv_p(val);
+        nv_opnd_t src = mop_imm(0);
+        int ar = phsrc(val, idx, cur_bir_blk, ag, &src);
+
+        if (ar == 2) return;
+        if (ar == 1) continue;
 
         /* Self-copy: skip */
         if (src.kind == NV_MOP_REG && src.rfile == d.rfile &&
@@ -1447,13 +1734,164 @@ static void is_phi(uint32_t idx, const bir_inst_t *I,
             S_npc++;
         }
     }
+    if (ag) aphend(idx, I->type, d);
 }
 
 /* ---- Barriers ---- */
 
-static void is_barrier(void)
+static void is_barrier(const bir_inst_t *I)
 {
+    em0(I->subop ? NV_BARWARP : NV_BAR_SYNC);
+}
+
+#define GB_NBLK 4u
+
+static uint32_t gbcnt(uint32_t bir_bi)
+{
+    const bir_block_t *B;
+    uint32_t n = 0;
+
+    if (bir_bi >= S.bir->num_blocks) return 0;
+    B = &S.bir->blocks[bir_bi];
+    for (uint32_t ii = 0; ii < B->num_insts && ii < 65536u; ii++)
+        if (S.bir->insts[B->first_inst + ii].op == BIR_GRIDBAR) n++;
+    return n;
+}
+
+static uint32_t bcut(uint32_t bir_bi)
+{
+    nv_mblk_t *MB;
+
+    if (S.cmb + 1u >= NV_MAX_MBLK) {
+        nv_cap("machine blocks", (unsigned)NV_MAX_MBLK);
+        return 0;
+    }
+    MB = &S.nv->mblks[S.cmb];
+    MB->num_insts = S.nv->num_minst - MB->first_inst;
+    S.cmb++;
+    MB = &S.nv->mblks[S.cmb];
+    MB->first_inst = S.nv->num_minst;
+    MB->num_insts  = 0;
+    MB->bir_block  = bir_bi;
+    if (S.nv->num_mblk <= S.cmb) S.nv->num_mblk = S.cmb + 1u;
+    return S.cmb;
+}
+
+static void gbbr(nv_opnd_t p, uint32_t t, uint32_t f)
+{
+    nv_opnd_t ops[2] = { p, mop_lbl(t) };
+    nv_opnd_t fops[1] = { mop_lbl(f) };
+
+    emit(NV_BRA_PRED, 0, 2, ops, 0);
+    emit(NV_BRA, 0, 1, fops, 0);
+}
+
+static nv_opnd_t gbfold(uint16_t op, int32_t a, int32_t b, int32_t c)
+{
+    nv_opnd_t r = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    nv_opnd_t t = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+
+    em1u(NV_MOV_U32, r, mop_spec(a));
+    em1u(NV_MOV_U32, t, mop_spec(b));
+    em1(op, r, r, t);
+    em1u(NV_MOV_U32, t, mop_spec(c));
+    em1(op, r, r, t);
+    return r;
+}
+
+static void gbfen(void)
+{
+    nv_opnd_t ops[1] = { mop_none() };
+    emit(NV_MEMBAR, 0, 0, ops, NV_SCOPE_GPU);
+}
+
+static nv_opnd_t gbadd(nv_opnd_t a)
+{
+    nv_opnd_t d = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    nv_opnd_t v = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    nv_opnd_t ops[3];
+
+    em1u(NV_MOV_U32, v, mop_imm(1));
+    ops[0] = d; ops[1] = a; ops[2] = v;
+    emit(NV_ATOM_ADD_U32, 1, 2, ops, NV_ASP_GLB);
+    return d;
+}
+
+static void gbhd(nv_opnd_t p, uint32_t w, uint32_t l1)
+{
+    nv_opnd_t n;
+
     em0(NV_BAR_SYNC);
+    n = gbfold(NV_OR_B32, NV_SPEC_TID_X, NV_SPEC_TID_Y, NV_SPEC_TID_Z);
+    em1(NV_SETP_NE_U32, p, n, mop_imm(0));
+    gbbr(p, w, l1);
+}
+
+static void gbarr(nv_opnd_t p, nv_opnd_t rd, nv_opnd_t rg, nv_opnd_t gen,
+                  uint32_t sp, uint32_t l2)
+{
+    nv_opnd_t n, a;
+
+    em1u(NV_LEA_GLB, rd, mop_imm((int32_t)S.bir->num_globals));
+    em1(NV_ADD_U64, rg, rd, mop_imm(4));
+    gbfen();
+    em1u(NV_LD_GLB_U32, gen, rg);
+    n = gbfold(NV_MUL_LO_U32, NV_SPEC_NCTAID_X, NV_SPEC_NCTAID_Y,
+               NV_SPEC_NCTAID_Z);
+    em1(NV_SUB_U32, n, n, mop_imm(1));
+    a = gbadd(rd);
+    em1(NV_SETP_NE_U32, p, a, n);
+    gbbr(p, sp, l2);
+}
+
+static void gbrel(nv_opnd_t rd, nv_opnd_t rg, uint32_t w)
+{
+    nv_opnd_t z = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+    nv_opnd_t ops[2];
+    nv_opnd_t bops[1] = { mop_lbl(w) };
+
+    em1u(NV_MOV_U32, z, mop_imm(0));
+    ops[0] = rd; ops[1] = z;
+    emit(NV_ST_GLB_U32, 0, 2, ops, 0);
+    gbfen();
+    (void)gbadd(rg);
+    emit(NV_BRA, 0, 1, bops, 0);
+}
+
+static void gbspn(nv_opnd_t p, nv_opnd_t rg, nv_opnd_t gen, uint32_t sp,
+                  uint32_t w)
+{
+    nv_opnd_t c = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+
+    em1u(NV_LD_GLB_U32, c, rg);
+    em1(NV_SETP_EQ_U32, p, c, gen);
+    gbbr(p, sp, w);
+}
+
+static void is_gbar(uint32_t bir_bi)
+{
+    uint32_t b, l1, l2, sp, w;
+    nv_opnd_t p, rd, rg, gen;
+
+    S.nv->gbar = 1;
+    if (S.nv->sass == 0) { em0(NV_GBAR); return; }
+
+    b = S.cmb; l1 = b + 1u; l2 = b + 2u; sp = b + 3u; w = b + 4u;
+    p   = mop_reg(NV_RF_PRED, new_vreg(NV_RF_PRED));
+    rd  = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    rg  = mop_reg(NV_RF_U64, new_vreg(NV_RF_U64));
+    gen = mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+
+    gbhd(p, w, l1);
+    if (bcut(bir_bi) != l1) return;
+    gbarr(p, rd, rg, gen, sp, l2);
+    if (bcut(bir_bi) != l2) return;
+    gbrel(rd, rg, w);
+    if (bcut(bir_bi) != sp) return;
+    gbspn(p, rg, gen, sp, w);
+    if (bcut(bir_bi) != w) return;
+    em0(NV_BAR_SYNC);
+    gbfen();
 }
 
 static void is_fence(const bir_inst_t *I)
@@ -2141,8 +2579,394 @@ static void wm_in(uint32_t fp, uint16_t tb, uint8_t rf, uint8_t n)
              wm_ea(base, (int32_t)k * w));
 }
 
+typedef struct {
+    uint32_t lm, ln, lk;
+    uint32_t ab, cb;
+    uint32_t kind;
+} wsh_t;
+
+static int wslog(uint32_t v)
+{
+    for (int i = 0; i < 16; i++)
+        if (v == (1u << i)) return i;
+    return -1;
+}
+
+static uint32_t wsnum(const char *s, char tag, uint32_t *at)
+{
+    uint32_t v = 0u, i = *at;
+
+    if (s[i] != tag) return 0u;
+    i++;
+    for (uint32_t g = 0; g < 4u && s[i] >= '0' && s[i] <= '9'; g++)
+        v = v * 10u + (uint32_t)(s[i++] - '0');
+    *at = i;
+    return v;
+}
+
+static int wsdim(uint32_t row, wsh_t *h)
+{
+    const bir_wmma_t *W = &bir_wmma[row % BIR_WM_NROW];
+    uint32_t at = 0u;
+    int lm = wslog(wsnum(W->shp, 'm', &at));
+    int ln = wslog(wsnum(W->shp, 'n', &at));
+    int lk = wslog(wsnum(W->shp, 'k', &at));
+
+    if (lm < 0 || ln < 0 || lk < 0 || W->shp[at] != 0) {
+        nv_refuse("a wmma shape the SASS lowering cannot read");
+        return 0;
+    }
+    h->lm = (uint32_t)lm;
+    h->ln = (uint32_t)ln;
+    h->lk = (uint32_t)lk;
+    if (strcmp(W->abt, "f16") == 0)       { h->kind = 0u; h->ab = 16u; }
+    else if (strcmp(W->abt, "bf16") == 0) { h->kind = 1u; h->ab = 16u; }
+    else if (strcmp(W->abt, "s8") == 0)   { h->kind = 2u; h->ab = 8u; }
+    else if (strcmp(W->abt, "u8") == 0)   { h->kind = 3u; h->ab = 8u; }
+    else {
+        nv_refuse("a wmma fragment of tf32, f64, four-bit or single-bit elements on the SASS backend");
+        return 0;
+    }
+    h->cb = (strcmp(W->act, "f16") == 0) ? 16u : 32u;
+    if ((h->kind < 2u) == (strcmp(W->act, "s32") == 0)) {
+        nv_refuse("a wmma accumulator whose type does not match its multiplicands");
+        return 0;
+    }
+    return 1;
+}
+
+static int wsfit(const wsh_t *h, unsigned role, uint32_t n, uint32_t epr,
+                 uint32_t *lc)
+{
+    int l = wslog(n * epr);
+    int ok = l >= 0;
+
+    if (ok) *lc = (uint32_t)l;
+    if (ok && role == NV_WM_ROLE_A)
+        ok = h->lm + h->lk <= 5u + *lc && *lc <= h->lk;
+    else if (ok && role == NV_WM_ROLE_B)
+        ok = h->lk + h->ln <= 5u + *lc && *lc <= h->lk;
+    else if (ok)
+        ok = h->lm + h->ln == 5u + *lc && *lc <= h->ln;
+    if (!ok)
+        nv_refuse("a wmma shape the SASS lowering cannot distribute across one warp");
+    return ok;
+}
+
+static nv_opnd_t wsu(void)
+{
+    return mop_reg(NV_RF_U32, new_vreg(NV_RF_U32));
+}
+
+static nv_opnd_t wsop(uint16_t op, nv_opnd_t a, nv_opnd_t b)
+{
+    nv_opnd_t d = wsu();
+    em1(op, d, a, b);
+    return d;
+}
+
+static nv_opnd_t wsfop(uint16_t op, nv_opnd_t a, nv_opnd_t b)
+{
+    nv_opnd_t d = mop_reg(NV_RF_F32, new_vreg(NV_RF_F32));
+    em1(op, d, a, b);
+    return d;
+}
+
+static nv_opnd_t wsbit(nv_opnd_t r, uint8_t rf)
+{
+    nv_opnd_t d = mop_reg(rf, new_vreg(rf));
+    em1u(NV_MOV_B32, d, r);
+    return d;
+}
+
+static nv_opnd_t wslane(uint32_t sh)
+{
+    nv_opnd_t l = wsu();
+    em1u(NV_MOV_U32, l, mop_spec(NV_SPEC_LANEID));
+    return (sh != 0u) ? wsop(NV_SHL_B32, l, mop_imm((int32_t)sh)) : l;
+}
+
+static nv_opnd_t wsshf(nv_opnd_t v, nv_opnd_t lane)
+{
+    nv_opnd_t ops[3] = { wsu(), v, lane };
+    emit(NV_SHFL_IDX, 1, 2, ops, 0);
+    return ops[0];
+}
+
+static void wsmap(const wsh_t *h, unsigned role, nv_opnd_t tl, uint32_t e,
+                  nv_opnd_t *i, nv_opnd_t *j)
+{
+    nv_opnd_t t = wsop(NV_ADD_U32, tl, mop_imm((int32_t)e));
+    int32_t km = (int32_t)((1u << h->lk) - 1u);
+
+    if (role == NV_WM_ROLE_A) {
+        t = wsop(NV_AND_B32, t, mop_imm((int32_t)((1u << (h->lm + h->lk)) - 1u)));
+        *i = wsop(NV_SHR_U32, t, mop_imm((int32_t)h->lk));
+        *j = wsop(NV_AND_B32, t, mop_imm(km));
+    } else if (role == NV_WM_ROLE_B) {
+        t = wsop(NV_AND_B32, t, mop_imm((int32_t)((1u << (h->lk + h->ln)) - 1u)));
+        *i = wsop(NV_AND_B32, t, mop_imm(km));
+        *j = wsop(NV_SHR_U32, t, mop_imm((int32_t)h->lk));
+    } else {
+        *i = wsop(NV_SHR_U32, t, mop_imm((int32_t)h->ln));
+        *j = wsop(NV_AND_B32, t, mop_imm((int32_t)((1u << h->ln) - 1u)));
+    }
+}
+
+static nv_opnd_t wsadr(nv_opnd_t base, nv_opnd_t std, unsigned lay,
+                       nv_opnd_t i, nv_opnd_t j, uint32_t bits)
+{
+    int32_t esz = (int32_t)(bits / 8u);
+    return (lay != 0u) ? mma_adr(base, std, j, i, esz)
+                       : mma_adr(base, std, i, j, esz);
+}
+
+static nv_opnd_t wsget(int as, nv_opnd_t a, uint32_t bits)
+{
+    nv_opnd_t d = wsu();
+
+    if (bits == 16u) {
+        nv_opnd_t h = mop_reg(NV_RF_U16, new_vreg(NV_RF_U16));
+        em1u(ldop(as, NV_RF_U16, 2u), h, a);
+        em1u(NV_CVT_U32_U16, d, h);
+        return d;
+    }
+    em1u(ldop(as, NV_RF_U32, bits / 8u), d, a);
+    return d;
+}
+
+static void wsput(int as, nv_opnd_t a, nv_opnd_t v, uint32_t bits)
+{
+    nv_opnd_t ops[2] = { a, v };
+
+    if (bits == 16u) {
+        ops[1] = mop_reg(NV_RF_U16, new_vreg(NV_RF_U16));
+        em1u(NV_CVT_U16_U32, ops[1], v);
+    }
+    emit(stop(as, bits == 16u ? NV_RF_U16 : NV_RF_U32, bits / 8u), 0, 2, ops, 0);
+}
+
+static nv_opnd_t wswide(uint32_t kind, nv_opnd_t r, uint32_t off)
+{
+    nv_opnd_t h, f, g;
+
+    if (kind == 2u) {
+        nv_opnd_t t = wsop(NV_SHL_B32, r, mop_imm((int32_t)(24u - off)));
+        return wsop(NV_SHR_S32, t, mop_imm(24));
+    }
+    if (off != 0u) r = wsop(NV_SHR_U32, r, mop_imm((int32_t)off));
+    if (kind == 3u) return wsop(NV_AND_B32, r, mop_imm(0xFF));
+    h = mop_reg(NV_RF_U16, new_vreg(NV_RF_U16));
+    em1u(NV_CVT_U16_U32, h, r);
+    f = mop_reg(NV_RF_F32, new_vreg(NV_RF_F32));
+    if (kind == 1u) {
+        em1u(NV_CVT_F32_BF16, f, h);
+        return f;
+    }
+    g = mop_reg(NV_RF_F16, new_vreg(NV_RF_F16));
+    em1u(NV_MOV_B16, g, h);
+    em1u(NV_CVT_F32_F16, f, g);
+    return f;
+}
+
+static nv_opnd_t wsacc(const wsh_t *h, nv_opnd_t r, uint32_t off)
+{
+    if (h->cb == 16u) return wswide(0u, r, off);
+    if (h->kind < 2u) return wsbit(r, NV_RF_F32);
+    return r;
+}
+
+static nv_opnd_t wsnar(const wsh_t *h, nv_opnd_t v)
+{
+    nv_opnd_t g, u, z;
+
+    if (h->kind >= 2u) return v;
+    if (h->cb == 32u) return wsbit(v, NV_RF_U32);
+    g = mop_reg(NV_RF_F16, new_vreg(NV_RF_F16));
+    em1u(NV_CVT_F16_F32, g, v);
+    u = mop_reg(NV_RF_U16, new_vreg(NV_RF_U16));
+    em1u(NV_MOV_B16, u, g);
+    z = wsu();
+    em1u(NV_CVT_U32_U16, z, u);
+    return z;
+}
+
+static void wsld(const bir_inst_t *I)
+{
+    uint32_t row = (uint32_t)(I->subop & 31u);
+    unsigned role = ((unsigned)I->subop >> 6) & 3u;
+    unsigned lay = ((unsigned)I->subop >> 5) & 1u;
+    uint8_t rf = nv_wmrf(row);
+    uint8_t n = bir_wmn(row, role);
+    uint32_t bits, epr, lc = 0u;
+    wsh_t h;
+
+    if (!wsdim(row, &h)) return;
+    bits = (role == NV_WM_ROLE_C) ? h.cb : h.ab;
+    epr = 32u / bits;
+    if (!wsfit(&h, role, n, epr, &lc)) return;
+
+    int as = pas(I->operands[1]);
+    nv_opnd_t base = mat_const(I->operands[1], NV_RF_U64);
+    nv_opnd_t std = mat_const(I->operands[2], NV_RF_U32);
+    uint16_t tb = mma_frag(rf, n);
+
+    em0(NV_BAR_SYNC);
+    nv_opnd_t tl = wslane(lc);
+    for (uint32_t r = 0; r < n; r++) {
+        nv_opnd_t acc = mop_none();
+
+        for (uint32_t x = 0; x < epr; x++) {
+            nv_opnd_t i, j, v;
+
+            wsmap(&h, role, tl, r * epr + x, &i, &j);
+            v = wsget(as, wsadr(base, std, lay, i, j, bits), bits);
+            if (x == 0u) { acc = v; continue; }
+            v = wsop(NV_SHL_B32, v, mop_imm((int32_t)(x * bits)));
+            acc = wsop(NV_OR_B32, acc, v);
+        }
+        em1u(NV_MOV_B32, mop_reg(rf, (uint16_t)(tb + r)), acc);
+    }
+    wm_out(I->operands[0], tb, rf, n);
+}
+
+static void wsst(const bir_inst_t *I)
+{
+    uint32_t row = (uint32_t)(I->subop & 31u);
+    unsigned lay = ((unsigned)I->subop >> 5) & 1u;
+    uint8_t rf = nv_wmrf(row);
+    uint8_t n = bir_wmn(row, NV_WM_ROLE_D);
+    uint32_t epr, lc = 0u;
+    wsh_t h;
+
+    if (!wsdim(row, &h)) return;
+    epr = 32u / h.cb;
+    if (!wsfit(&h, NV_WM_ROLE_D, n, epr, &lc)) return;
+
+    uint16_t tb = mma_frag(rf, n);
+    wm_in(I->operands[1], tb, rf, n);
+    int as = pas(I->operands[0]);
+    nv_opnd_t base = mat_const(I->operands[0], NV_RF_U64);
+    nv_opnd_t std = mat_const(I->operands[2], NV_RF_U32);
+
+    em0(NV_BAR_SYNC);
+    nv_opnd_t tl = wslane(lc);
+    for (uint32_t r = 0; r < n; r++) {
+        nv_opnd_t g = wsbit(mop_reg(rf, (uint16_t)(tb + r)), NV_RF_U32);
+
+        for (uint32_t x = 0; x < epr; x++) {
+            nv_opnd_t i, j;
+            nv_opnd_t v = (x != 0u)
+                ? wsop(NV_SHR_U32, g, mop_imm((int32_t)(x * h.cb))) : g;
+
+            wsmap(&h, NV_WM_ROLE_D, tl, r * epr + x, &i, &j);
+            wsput(as, wsadr(base, std, lay, i, j, h.cb), v, h.cb);
+        }
+    }
+}
+
+static nv_opnd_t wsar[16][8], wsbr[16][8], wscr[8], wsdv[16];
+
+static void wsbrow(uint8_t rf, uint16_t bbas, uint8_t nb, uint32_t sh,
+                   uint32_t qb, nv_opnd_t c)
+{
+    nv_opnd_t cl = wsop(NV_SHL_B32, c, mop_imm((int32_t)sh));
+
+    for (uint32_t q = 0; q < qb; q++) {
+        nv_opnd_t ln = wsop(NV_ADD_U32, cl, mop_imm((int32_t)q));
+
+        for (uint32_t j = 0; j < nb; j++)
+            wsbr[q][j] = wsshf(mop_reg(rf, (uint16_t)(bbas + j)), ln);
+    }
+}
+
+static nv_opnd_t wsdot(const wsh_t *h, uint32_t la, uint32_t lb, uint32_t e)
+{
+    uint32_t ea = 32u / h->ab, ed = 32u / h->cb;
+    nv_opnd_t acc = wsacc(h, wscr[e / ed], (e % ed) * h->cb);
+
+    for (uint32_t k = 0; k < (1u << h->lk); k++) {
+        uint32_t ka = k & ((1u << la) - 1u);
+        uint32_t kb = k & ((1u << lb) - 1u);
+        nv_opnd_t a = wswide(h->kind, wsar[k >> la][ka / ea], (ka % ea) * h->ab);
+        nv_opnd_t b = wswide(h->kind, wsbr[k >> lb][kb / ea], (kb % ea) * h->ab);
+
+        if (h->kind < 2u)
+            acc = wsfop(NV_ADD_F32, acc, wsfop(NV_MUL_F32, a, b));
+        else
+            acc = wsop(NV_ADD_S32, acc, wsop(NV_MUL_LO_S32, a, b));
+    }
+    return wsnar(h, acc);
+}
+
+static void wspack(const wsh_t *h, uint8_t rf, uint16_t dbas, uint8_t nc)
+{
+    uint32_t ed = 32u / h->cb;
+
+    for (uint32_t j = 0; j < nc; j++) {
+        nv_opnd_t v = wsdv[j * ed];
+
+        for (uint32_t x = 1; x < ed; x++)
+            v = wsop(NV_OR_B32, v, wsop(NV_SHL_B32, wsdv[j * ed + x],
+                                        mop_imm((int32_t)(x * h->cb))));
+        em1u(NV_MOV_B32, mop_reg(rf, (uint16_t)(dbas + j)), v);
+    }
+}
+
+static void wsmm(const bir_inst_t *I)
+{
+    uint32_t row = (uint32_t)(I->subop & 31u);
+    uint8_t rf = nv_wmrf(row);
+    uint8_t na = bir_wmn(row, NV_WM_ROLE_A);
+    uint8_t nb = bir_wmn(row, NV_WM_ROLE_B);
+    uint8_t nc = bir_wmn(row, NV_WM_ROLE_C);
+    uint32_t la = 0u, lb = 0u, ld = 0u;
+    wsh_t h;
+
+    if (!wsdim(row, &h)) return;
+    if (!wsfit(&h, NV_WM_ROLE_A, na, 32u / h.ab, &la)
+        || !wsfit(&h, NV_WM_ROLE_B, nb, 32u / h.ab, &lb)
+        || !wsfit(&h, NV_WM_ROLE_C, nc, 32u / h.cb, &ld)) return;
+    if (h.lk - la > 4u || h.lk - lb > 4u || na > 8u || nb > 8u || nc > 8u
+        || ld > 4u) {
+        nv_refuse("a wmma shape the SASS lowering cannot distribute across one warp");
+        return;
+    }
+
+    uint16_t abas = mma_frag(rf, na);
+    wm_in(I->operands[1], abas, rf, na);
+    uint16_t bbas = mma_frag(rf, nb);
+    wm_in(I->operands[2], bbas, rf, nb);
+    uint16_t cbas = mma_frag(rf, nc);
+    wm_in(I->operands[3], cbas, rf, nc);
+    uint16_t dbas = mma_frag(rf, nc);
+
+    em0(NV_BAR_SYNC);
+    nv_opnd_t tl = wslane(ld);
+    nv_opnd_t cs = wsop(NV_AND_B32, tl, mop_imm((int32_t)((1u << h.ln) - 1u)));
+    nv_opnd_t rr = wsop(NV_SHR_U32, tl, mop_imm((int32_t)h.ln));
+    nv_opnd_t rl = wsop(NV_SHL_B32, rr, mop_imm((int32_t)(h.lk - la)));
+
+    for (uint32_t q = 0; q < (1u << (h.lk - la)); q++) {
+        nv_opnd_t ln = wsop(NV_ADD_U32, rl, mop_imm((int32_t)q));
+
+        for (uint32_t j = 0; j < na; j++)
+            wsar[q][j] = wsshf(mop_reg(rf, (uint16_t)(abas + j)), ln);
+    }
+    for (uint32_t j = 0; j < nc; j++)
+        wscr[j] = wsbit(mop_reg(rf, (uint16_t)(cbas + j)), NV_RF_U32);
+    for (uint32_t e = 0; e < (1u << ld); e++) {
+        wsbrow(rf, bbas, nb, h.lk - lb, 1u << (h.lk - lb),
+               wsop(NV_ADD_U32, cs, mop_imm((int32_t)e)));
+        wsdv[e] = wsdot(&h, la, lb, e);
+    }
+    wspack(&h, rf, dbas, nc);
+    wm_out(I->operands[0], dbas, rf, nc);
+}
+
 static void is_wld(const bir_inst_t *I)
 {
+    if (S.nv->sass != 0u) { wsld(I); return; }
     uint32_t row = (uint32_t)(I->subop & 31u);
     unsigned role = ((unsigned)I->subop >> 6) & 3u;
     unsigned lay = ((unsigned)I->subop >> 5) & 1u;
@@ -2159,6 +2983,7 @@ static void is_wld(const bir_inst_t *I)
 
 static void is_wst(const bir_inst_t *I)
 {
+    if (S.nv->sass != 0u) { wsst(I); return; }
     uint32_t row = (uint32_t)(I->subop & 31u);
     unsigned lay = ((unsigned)I->subop >> 5) & 1u;
     uint8_t rf = nv_wmrf(row);
@@ -2174,6 +2999,7 @@ static void is_wst(const bir_inst_t *I)
 
 static void is_wmma(const bir_inst_t *I)
 {
+    if (S.nv->sass != 0u) { wsmm(I); return; }
     uint32_t row = (uint32_t)(I->subop & 31u);
     unsigned al = ((unsigned)I->subop >> 5) & 1u;
     unsigned bl = ((unsigned)I->subop >> 6) & 1u;
@@ -2292,7 +3118,7 @@ static void isel_blk(uint32_t bir_bi)
 
         /* ---- Barriers ---- */
         case BIR_BARRIER: case BIR_BARRIER_GROUP:
-            is_barrier(); break;
+            is_barrier(I); break;
         case BIR_FENCE:
             is_fence(I); break;
         case BIR_NANOSLP:
@@ -2300,8 +3126,7 @@ static void isel_blk(uint32_t bir_bi)
         case BIR_BARRED:
             is_barred(idx, I); break;
         case BIR_GRIDBAR:
-            S.nv->gbar = 1;
-            em0(NV_GBAR); break;
+            is_gbar(bir_bi); break;
 
         /* ---- Atomics ---- */
         case BIR_ATOMIC_ADD: case BIR_ATOMIC_SUB:
@@ -2738,7 +3563,8 @@ static void fsig(nv_mfunc_t *MF, const bir_func_t *F)
     for (i = 0; i < np; i++) {
         uint32_t pt = (FT->count + i < S.bir->num_type_fields)
                     ? S.bir->type_fields[FT->count + i] : 0;
-        MF->params[i].rfile = bir_rfile(pt);
+        if (!psinf(&MF->params[i], pt))
+            nv_refuse("a parameter this large");
     }
     MF->num_params = np;
 
@@ -2806,35 +3632,44 @@ static int isel_func(uint32_t fi)
                 nv_cap("kernel parameters", (unsigned)NV_MAX_PARAMS);
                 break;
             }
-            MF->params[pi].rfile = bir_rfile(I->type);
+            if (!psinf(&MF->params[pi], I->type))
+                nv_refuse("a parameter this large");
             pi++;
         }
         MF->num_params = pi;
     }
 
     /* Pre-create block map */
-    for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
-        uint32_t bir_bi = F->first_block + bi;
-        S.block_map[bir_bi] = S.nv->num_mblk + bi;
+    {
+        uint32_t ex = 0;
+        for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
+            uint32_t bir_bi = F->first_block + bi;
+
+            S.block_map[bir_bi] = S.nv->num_mblk + bi + ex;
+            if (S.nv->sass) ex += GB_NBLK * gbcnt(bir_bi);
+            S.blk_lst[bir_bi] = S.nv->num_mblk + bi + ex;
+        }
     }
 
     /* Select instructions per block */
     for (uint32_t bi = 0; bi < F->num_blocks; bi++) {
         uint32_t bir_bi = F->first_block + bi;
+        nv_mblk_t *MB;
         if (S.nv->num_mblk >= NV_MAX_MBLK) {
             nv_cap("machine blocks", (unsigned)NV_MAX_MBLK);
             break;
         }
 
-        uint32_t mbi = S.nv->num_mblk;
-        nv_mblk_t *MB = &S.nv->mblks[mbi];
+        S.cmb = S.nv->num_mblk;
+        MB = &S.nv->mblks[S.cmb];
         MB->first_inst = S.nv->num_minst;
         MB->bir_block = bir_bi;
 
         isel_blk(bir_bi);
 
+        MB = &S.nv->mblks[S.cmb];
         MB->num_insts = S.nv->num_minst - MB->first_inst;
-        S.nv->num_mblk++;
+        S.nv->num_mblk = S.cmb + 1u;
     }
 
     /* Insert deferred PHI copies into predecessor blocks.
@@ -2877,8 +3712,8 @@ int nv_compile(const bir_module_t *bir, nv_module_t *nv)
     nv->out_len = 0;
 
     memset(nv->rc, 0, sizeof(nv->rc));
-    memset(nv->val_vreg, 0, sizeof(nv->val_vreg));
-    memset(nv->val_rfile, 0, sizeof(nv->val_rfile));
+    memset(nv->val_vreg, 0, (size_t)bir->num_insts * sizeof(nv->val_vreg[0]));
+    memset(nv->val_rfile, 0, (size_t)bir->num_insts * sizeof(nv->val_rfile[0]));
 
     fmark();
 

@@ -658,6 +658,7 @@ typedef struct {
 
 static const cuda_builtin_t cuda_builtins[] = {
     {"__syncthreads",    0, 1, -1},
+    {"__syncwarp",      -1, 1, -1},
     {"__threadfence",    0, 1, -1},
     {"atomicAdd",        2, 0,  1},
     {"atomicSub",        2, 0,  1},
