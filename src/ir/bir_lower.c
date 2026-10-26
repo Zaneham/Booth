@@ -13435,10 +13435,23 @@ static void vscn(lower_t *L, uint32_t vd)
     }
 }
 
+static int psdup(const lower_t *L, int base, const char *nm)
+{
+    for (int k = base; k < L->nsyms; k++)
+        if (strcmp(L->syms[k].name, nm) == 0) return 1;
+    return 0;
+}
+
+/* A parameter shadows whatever the enclosing scan had in scope. The kernel
+   is instantiated from inside its launcher's own scan, so the launcher's
+   locals are still live here, and ggml names several of them exactly as the
+   kernel names its parameters at a different width. Only a repeat inside
+   this one parameter list is a duplicate. */
 static void pscn(lower_t *L, uint32_t fd)
 {
     uint32_t pv[MAX_PARM];
     int np = collect_params(L, fd, pv, MAX_PARM);
+    int base = L->nsyms;
 
     for (int i = 0; i < np; i++) {
         const ast_node_t *pn = ND(L, pv[i]);
@@ -13452,7 +13465,7 @@ static void pscn(lower_t *L, uint32_t fd)
                 get_text(L, pc, pnm, (int)sizeof pnm);
                 break;
             }
-        if (!pnm[0] || find_sym(L, pnm)) continue;
+        if (!pnm[0] || psdup(L, base, pnm)) continue;
         t = rtype(L, pn->first_child, pn->d.oper.flags, pn->cuda_flags);
         if (t) add_sym(L, pnm, BIR_VAL_NONE, t, 0);
     }
