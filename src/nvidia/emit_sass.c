@@ -17,6 +17,7 @@
 #define SA_NPR   6u
 #define SA_NOIX  0xFFFFu
 #define SA_MAT   12u
+#define SA_MREG  10u
 #define SA_STK   0x028u
 #define SA_NVW   (SA_NV / 64u)
 #define SA_NIW   1024u
@@ -62,6 +63,7 @@ typedef struct {
     uint64_t pocc[SA_NPR][SA_NIW];
     uint32_t rbas[NV_RF_COUNT];
     uint32_t nvr;
+    uint32_t mbas;
     uint32_t nreg;
     uint32_t npr;
     uint32_t f0;
@@ -2807,6 +2809,99 @@ static void saldsm(const nv_minst_t *I, const nv_asm_t *A, uint32_t n,
     }
 }
 
+/* ---- mma.sync: the forms ptxas output in the corpus pins down ---- */
+
+typedef struct { uint8_t na, nb, nd, msz, dty, sty, imm; } samm_t;
+
+static int samsh(const char *t, samm_t *m)
+{
+    static const struct { const char *p; samm_t m; } tab[] = {
+        { "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32",
+          { 4u, 2u, 4u, 1u, 1u, 0u, 0u } },
+        { "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16",
+          { 4u, 2u, 2u, 1u, 0u, 0u, 0u } },
+        { "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32",
+          { 4u, 2u, 4u, 1u, 1u, 1u, 0u } },
+        { "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32",
+          { 4u, 2u, 4u, 0u, 1u, 2u, 0u } },
+        { "mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32",
+          { 2u, 1u, 4u, 0u, 0u, 0u, 1u } },
+        { "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32",
+          { 4u, 2u, 4u, 0u, 0u, 0u, 2u } },
+    };
+
+    for (uint32_t i = 0; i < sizeof tab / sizeof tab[0]; i++)
+        if (sapfx(t, tab[i].p)) { *m = tab[i].m; return 1; }
+    return 0;
+}
+
+/* a frame that holds one of these needs somewhere to stage the runs, and
+   the block is reserved once for the whole function rather than per call. */
+static int samany(const nv_module_t *M)
+{
+    for (uint32_t i = 0; i < sast.fn; i++) {
+        const nv_minst_t *I = &M->minsts[sast.f0 + i];
+        const nv_asm_t *A;
+        samm_t m;
+
+        if (I->op != (uint16_t)NV_ASM) continue;
+        A = saaof(I);
+        if (A == NULL || M->bir == NULL || A->tmpl >= M->bir->string_len)
+            continue;
+        if (samsh(M->bir->strings + A->tmpl, &m)) return 1;
+    }
+    return 0;
+}
+
+/* every operand arrives as its own value, so each run is copied into the
+   staging block the frame reserved, the same way the AMD host stages a
+   matmul before it can name one register for the run. */
+static void samcp(uint32_t d, uint32_t sr, uint32_t n)
+{
+    uint64_t w[2];
+
+    for (uint32_t k = 0; k < n; k++) {
+        lt_nrw_t y;
+
+        memset(&y, 0, sizeof y);
+        samsr(&y.rd, sr + k, 1u);
+        samsr(&y.wr, d + k, 1u);
+        lt_nvmov(w, d + k, sr + k);
+        safire(w, &y, 0u);
+    }
+}
+
+static void samma(const nv_minst_t *I, const nv_asm_t *A, const samm_t *m)
+{
+    uint32_t b = sast.mbas, ab = b, bb = b + 4u, cb = b + 6u;
+    uint32_t n = (uint32_t)m->na + m->nb + m->nd;
+    uint64_t w[2];
+    lt_nrw_t x;
+
+    if (sast.mbas == 0u || (uint32_t)A->nout != m->nd
+        || (uint32_t)A->nops != n) { sabad(I->op, BC_E609); return; }
+    for (uint32_t k = 0; k < (uint32_t)A->nops; k++)
+        if (A->ops[k].kind != (uint8_t)NV_MOP_REG) { sabad(I->op, BC_E609); return; }
+
+    for (uint32_t k = 0; k < m->na; k++)
+        samcp(ab + k, sarg(&A->ops[m->nd + k]), 1u);
+    for (uint32_t k = 0; k < m->nb; k++)
+        samcp(bb + k, sarg(&A->ops[m->nd + m->na + k]), 1u);
+    for (uint32_t k = 0; k < m->nd; k++)
+        samcp(cb + k, sarg(&A->ops[k]), 1u);
+
+    memset(&x, 0, sizeof x);
+    samsr(&x.rd, ab, m->na);
+    samsr(&x.rd, bb, m->nb);
+    samsr(&x.rd, cb, m->nd);
+    samsr(&x.wr, cb, m->nd);
+    if (m->imm != 0u) lt_nvimma(w, cb, ab, bb, cb, m->imm == 2u ? 1u : 0u);
+    else              lt_nvhmma(w, cb, ab, bb, cb, m->msz, m->dty, m->sty);
+    safire(w, &x, 3u);
+    for (uint32_t k = 0; k < m->nd; k++)
+        samcp(sarg(&A->ops[k]), cb + k, 1u);
+}
+
 static void saasm(const nv_minst_t *I)
 {
     const nv_asm_t *A = saaof(I);
@@ -2835,6 +2930,11 @@ static void saasm(const nv_minst_t *I)
     }
     if (sapfx(t, "ldmatrix.sync.aligned.m8n8.x4.trans.b16")) {
         saldsm(I, A, 4u, 1u); return;
+    }
+    {
+        samm_t m;
+
+        if (samsh(t, &m)) { samma(I, A, &m); return; }
     }
     (void)be_fail(BC_E541, "nvptx", saawhy(t));
     sast.nbad++;
@@ -3169,6 +3269,7 @@ static int sabld(const nv_module_t *M, uint32_t fi)
     sast.fbas = (sast.isfn != 0u && sast.ktop > SA_RBAS) ? sast.ktop
                                                          : SA_RBAS;
     sast.rlo = sast.fbas;
+    sast.mbas = 0u;
     if (F->num_blks == 0u || F->num_params > LT_MAX_NVPRM) {
         (void)be_fail(BC_E600, "nvptx", (unsigned)LT_MAX_NVKRN, 0u);
         return 1;
@@ -3185,6 +3286,10 @@ static int sabld(const nv_module_t *M, uint32_t fi)
             sast.kcall = 1u;
             break;
         }
+    if (samany(M) != 0) {
+        sast.mbas = sast.rlo;
+        sast.rlo += SA_MREG;
+    }
     if (sast.fn >= 0xFFFFu || F->num_blks >= SA_NBB) {
         (void)be_fail(BC_E602, "nvptx", sast.name, (unsigned)F->num_blks,
                       (unsigned)SA_NBB);

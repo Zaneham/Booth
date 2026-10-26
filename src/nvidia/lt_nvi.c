@@ -503,6 +503,56 @@ lt_nvldsm(uint64_t *w, uint32_t d, uint32_t ra, uint32_t off,
     lt_nvput(w, 79u, 78u, tr);
 }
 
+/* The matrix shape sits in two pieces, a low bit at 75 and the rest at 78,
+   which is why it reads as a field nothing records if you look in one
+   place. m16n8k16 is the low bit on its own. dty picks the accumulator,
+   f16 or f32, and sty picks the source, f16 or bf16. */
+void
+lt_nvhmma(uint64_t *w, uint32_t d, uint32_t ra, uint32_t rb, uint32_t rc,
+          uint32_t msz, uint32_t dty, uint32_t sty)
+{
+    assert(w != NULL);
+    assert(d < 256u && ra < 256u && rb < 256u && rc < 256u);
+    assert(msz < 4u && dty < 2u && sty < 4u);
+
+    /* per nak-mesa-90320e12 sm70_encode.rs, differenced against nv_isa_sm89.
+       msz is the shape in its two pieces, 0 for m16n8k8 and 1 for m16n8k16,
+       and sty names the source, 0 f16, 1 bf16, 2 tf32. */
+    head(w, 0x23Cu, 0u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 39u, 32u, rb);
+    lt_nvput(w, 71u, 64u, rc);
+    lt_nvput(w, 75u, 75u, msz & 1u);
+    lt_nvput(w, 76u, 76u, dty);
+    lt_nvput(w, 78u, 78u, (msz >> 1) & 1u);
+    lt_nvput(w, 83u, 82u, sty);
+}
+
+/* imma spells its shape the same way but wider, and signs each side on its
+   own. Both sources signed and b transposed is the only form ptxas emits
+   for the s8 mma the corpus carries. */
+void
+lt_nvimma(uint64_t *w, uint32_t d, uint32_t ra, uint32_t rb, uint32_t rc,
+          uint32_t k32)
+{
+    assert(w != NULL);
+    assert(d < 256u && ra < 256u && rb < 256u && rc < 256u);
+    assert(k32 < 2u);
+
+    /* per nak-mesa-90320e12 sm70_encode.rs, differenced against nv_isa_sm89 */
+    head(w, 0x237u, 0u);
+    lt_nvput(w, 23u, 16u, d);
+    lt_nvput(w, 31u, 24u, ra);
+    lt_nvput(w, 39u, 32u, rb);
+    lt_nvput(w, 71u, 64u, rc);
+    lt_nvput(w, 74u, 74u, 1u);
+    lt_nvput(w, 75u, 75u, k32 ? 0u : 1u);
+    lt_nvput(w, 76u, 76u, 1u);
+    lt_nvput(w, 78u, 78u, 1u);
+    lt_nvput(w, 86u, 85u, 2u);
+}
+
 /* ---- Lanes ---- */
 
 void
