@@ -25,7 +25,7 @@ static void bsall(lt_nbs_t *s)
 static void bsadd(lt_nbs_t *s, uint32_t k)
 {
     assert(s != NULL);
-    assert(k < LT_MAX_NVBB);
+    if (k >= LT_MAX_NVBB) return;
 
     s->w[k >> 6] |= 1ull << (k & 63u);
 }
@@ -33,7 +33,7 @@ static void bsadd(lt_nbs_t *s, uint32_t k)
 static int bshas(const lt_nbs_t *s, uint32_t k)
 {
     assert(s != NULL);
-    assert(k < LT_MAX_NVBB);
+    if (k >= LT_MAX_NVBB) return 0;
 
     return (int)((s->w[k >> 6] >> (k & 63u)) & 1ull);
 }
