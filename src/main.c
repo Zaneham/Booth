@@ -17,9 +17,7 @@
 #include "metal.h"
 #include "intel.h"
 #include "triton.h"
-#include "mlir/mlir_fe.h"
 #include "bir_parse.h"
-#include "mlir/mlir_lower.h"
 #include "tdf.h"
 #include "rv_buf.h"
 #include "rv_elf.h"
@@ -462,7 +460,6 @@ static void usage(const char *prog)
         "                hard failure again and a build lists every gap\n"
         "  --hip         HIP frontend mode (predefines __HIPCC__ and platform macros;\n"
         "                auto-on for .hip files; combine with --amdgpu-bin or --nvidia-ptx)\n"
-        "  --mlir        Read MLIR text. Core dialects only, anything else is refused\n"
         "  --triton      Triton frontend mode (parses Python source). Pair with a target\n"
         "                backend (--cpu, --amdgpu-bin, --nvidia-ptx). tl.dot matmul runs.\n"
         "  --cpu         x86-64 host backend; emits a normal object you can link and run\n"
@@ -502,7 +499,6 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
     int mode_tdf_fission = 0;
     int mode_hip = 0;
     int mode_triton = 0;        /* Triton frontend: see TRITON NOTES below */
-    int mode_mlir = 0;          /* MLIR frontend: see MLIR NOTES below */
     int mode_bir_in = 0;        /* BIR text in: see BIR NOTES below */
     int mode_chost = 0;
     const char *fat_file = NULL;
@@ -559,8 +555,6 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
             mode_hip = 1;
         else if (strcmp(argv[i], "--triton") == 0)
             mode_triton = 1;
-        else if (strcmp(argv[i], "--mlir") == 0)
-            mode_mlir = 1;
         else if (strcmp(argv[i], "--tt-chip") == 0 && i + 1 < argc) {
             if (td_pchip(argv[++i], &tt_chip) != BC_OK) {
                 fprintf(stderr, "unknown Tenstorrent chip: %s "
@@ -662,8 +656,8 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
     /* Load translation file before any diagnostics fire */
     if (lang_file) bc_eload(lang_file);
 
-    if (nfile > 1 && (mode_bir_in || mode_mlir || mode_triton)) {
-        fprintf(stderr, "only one input file for --bir-in, --mlir "
+    if (nfile > 1 && (mode_bir_in || mode_triton)) {
+        fprintf(stderr, "only one input file for --bir-in "
                         "and --triton (%d given)\n", nfile);
         return 1;
     }
@@ -705,57 +699,6 @@ int kath_compile(int argc, char *argv[], kath_out_t *out)
                   ? 0 : 1;
         bb_free(B);
         return brc;
-    }
-
-    /* ---- MLIR NOTES ---------------------------------------------------
-     * MLIR arrives already structured, so there is no lexer, parser or
-     * sema on this path. src/mlir/vendor/ reads the text, src/mlir/lower.c
-     * walks it into BIR, and from there it is the same pipeline CUDA and
-     * Triton use. --pp reprints what was read instead, which is the
-     * quickest way to tell a misreading from a bad file. */
-    if (mode_mlir) {
-        ml_ctx_t *mc = ml_open(64u * 1024u * 1024u);
-        int mrc;
-
-        if (!mc) {
-            fprintf(stderr, "mlir: out of memory\n");
-            return 1;
-        }
-        mrc = ml_parse(mc, source_buf, src_len);
-        if (mrc != 0) {
-            ml_close(mc);
-            return 1;
-        }
-        if (mode_pp) {
-            mrc = ml_echo(mc, stdout);
-            ml_close(mc);
-            return mrc == 0 ? 0 : 1;
-        }
-
-        bir_module = (bir_module_t *)malloc(sizeof(bir_module_t));
-        if (!bir_module) {
-            fprintf(stderr, "error: failed to allocate BIR module\n");
-            ml_close(mc);
-            return 1;
-        }
-        mrc = ml_lowr(mc, (struct bir_module *)bir_module);
-        ml_close(mc);
-
-        if (mrc == 0) {
-            backend_cfg_t cfg = {0};
-            cfg.no_mem2reg = no_mem2reg;
-            cfg.no_cfold   = no_cfold;
-            cfg.no_dce     = no_dce;
-            cfg.no_sched   = no_sched;
-            cfg.no_sroa    = no_sroa;
-            cfg.mode_ir    = mode_ir;
-            cfg.mode_tdf   = mode_tdf;
-            cfg.mode_tdf_fission = mode_tdf_fission;
-            cfg.output_file      = output_file;
-            mrc = (run_bir_backends(bir_module, &cfg) == BC_OK) ? 0 : 1;
-        }
-        free(bir_module);
-        return mrc == 0 ? 0 : 1;
     }
 
     /* ---- TRITON NOTES -------------------------------------------------

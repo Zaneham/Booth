@@ -116,7 +116,7 @@ static int is_source(const char *file)
 {
     const char *e = ext_of(file);
     return streq(e, "cu") || streq(e, "hip") || streq(e, "py")
-        || streq(e, "mlir") || streq(e, "bir") || streq(e, "ml")
+        || streq(e, "bir") || streq(e, "ml")
         || streq(e, "f90");
 }
 
@@ -249,7 +249,6 @@ static int build_source(const char *file, const char *bflag,
     }
     const char *ffe = NULL;
     if (streq(e, "py"))   ffe = "--triton";
-    else if (streq(e, "mlir")) ffe = "--mlir";
     else if (streq(e, "bir"))  ffe = "--bir-in";
     else if (streq(e, "hip"))  ffe = "--hip";
     return compile3(ffe, bflag, file, out, ko);
@@ -391,7 +390,6 @@ static int verb_build(int argc, char **argv)
     if (streq(e, "f90")) { if (cvt_f90(file, conv, sizeof conv) != 0) return 1; src = conv; }
     else if (streq(e, "ml")) { if (cvt_ml(file, conv, sizeof conv) != 0) return 1; src = conv; ffe = "--bir-in"; }
     else if (streq(e, "py"))   ffe = "--triton";
-    else if (streq(e, "mlir")) ffe = "--mlir";
     else if (streq(e, "bir"))  ffe = "--bir-in";
 
     char *av[MAXPASS + 8]; int n = 0;

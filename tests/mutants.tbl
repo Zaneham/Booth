@@ -16,16 +16,6 @@
 # Matching is literal, not regex, and the pattern has to appear exactly once
 # in the file or the row reports NOMATCH.
 
-# ---- MLIR lowering ----
-# Every row here is a defect that existed at some point on the way in, so the
-# tests were written against the real thing rather than against a guess.
-
-mlr01 | src/mlir/lower.c | case OP_TYPE_ARITH_XORI:  r = lw_bin(op, BIR_XOR,  ty); break; | case OP_TYPE_ARITH_XORI:  r = lw_bin(op, BIR_OR,   ty); break; | mlr | xor lowers to or
-mlr02 | src/mlir/lower.c | if (strcmp(buf, "slt") == 0) return BIR_ICMP_SLT; | if (strcmp(buf, "slt") == 0) return BIR_ICMP_SGT; | mlr | signed less-than compares the other way
-mlr03 | src/mlir/lower.c | lw_no(op, "op is outside the accepted subset"); | (void)0; | mlr | an op off the list is skipped instead of refused
-mlr04 | src/mlir/lower.c | if (ty < lw.M->num_types && lw.M->types[ty].kind == BIR_TYPE_FLOAT) { | if (0) { | mlr | a float result type stops deciding, so an integer literal keeps its bits
-mlr05 | src/mlir/lower.c | F->cuda_flags = CUDA_DEVICE; | F->cuda_flags = CUDA_GLOBAL; | mlr | every function becomes a kernel
-
 # ---- Triton lowering ----
 
 tri01 | src/triton/lower.c | M->blocks[idx].name = bir_add_string(M, name, (uint32_t)strlen(name)); | M->blocks[idx].name = 0; (void)name; | tri | blocks go back to being nameless

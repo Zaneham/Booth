@@ -186,3 +186,7 @@ tdf_flag_out.txt
 # Mutation harness scratch copy. Removed on exit, but an interrupted run
 # can leave it behind.
 /.mutscratch/
+
+src/mlir/
+tests/mlir/
+tests/tmlir.c
